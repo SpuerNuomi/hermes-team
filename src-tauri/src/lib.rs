@@ -91,6 +91,52 @@ struct HermesInstallStatus {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ConfigHealthSummary {
+    errors: usize,
+    warnings: usize,
+    infos: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigHealthIssue {
+    code: String,
+    severity: String,
+    message: String,
+    detail: Option<String>,
+    locations: Vec<String>,
+    auto_fixable: bool,
+    fix_description: Option<String>,
+    fix_location: Option<String>,
+    context: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigHealthReport {
+    ran_at: u64,
+    profile: String,
+    issues: Vec<ConfigHealthIssue>,
+    summary: ConfigHealthSummary,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigHealthFixInput {
+    profile: Option<String>,
+    code: String,
+    context: Option<std::collections::BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigHealthFixResult {
+    ok: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ToolsetInfo {
     key: String,
     label: String,
@@ -866,6 +912,74 @@ async fn inspect_hermes_install() -> Result<HermesInstallStatus, String> {
         gateway_running: health == "healthy",
         gateway_health: health,
     })
+}
+
+#[tauri::command]
+async fn get_config_health(profile: Option<String>) -> Result<ConfigHealthReport, String> {
+    let profile = normalize_profile(profile.as_deref());
+    build_config_health_report(profile.as_deref())
+}
+
+#[tauri::command]
+async fn rerun_config_health(profile: Option<String>) -> Result<ConfigHealthReport, String> {
+    get_config_health(profile).await
+}
+
+#[tauri::command]
+async fn autofix_config_issue(
+    input: ConfigHealthFixInput,
+) -> Result<ConfigHealthFixResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let code = input.code.trim();
+    match code {
+        "API_SERVER_KEY_NON_CANONICAL" => {
+            let token = input
+                .context
+                .as_ref()
+                .and_then(|context| context.get("value"))
+                .map(String::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    first_api_server_key_source(profile.as_deref()).map(|source| source.value)
+                });
+            let Some(token) = token else {
+                return Err("没有可迁移的 API_SERVER_KEY。".to_string());
+            };
+            upsert_env_value(profile.as_deref(), "API_SERVER_KEY", &token)?;
+            append_config_health_log(profile.as_deref(), code, "copied API_SERVER_KEY to .env")?;
+            Ok(ConfigHealthFixResult {
+                ok: true,
+                message: "已将 API_SERVER_KEY 写入当前 profile 的 .env。".to_string(),
+            })
+        }
+        "LEGACY_TOOLSET_NAME" => {
+            let config = read_profile_file(profile.as_deref(), "config.yaml")?.unwrap_or_default();
+            if !config.contains("code-execution") {
+                return Ok(ConfigHealthFixResult {
+                    ok: true,
+                    message: "未发现旧 toolset 名称，无需修复。".to_string(),
+                });
+            }
+            let next = config.replace("code-execution", "code_execution");
+            write_profile_file(
+                profile.as_deref(),
+                "config.yaml",
+                &ensure_trailing_newline(&next),
+            )?;
+            append_config_health_log(
+                profile.as_deref(),
+                code,
+                "renamed code-execution to code_execution",
+            )?;
+            Ok(ConfigHealthFixResult {
+                ok: true,
+                message: "已将 code-execution 更新为 code_execution。".to_string(),
+            })
+        }
+        other => Err(format!("该配置问题暂不支持自动修复：{other}")),
+    }
 }
 
 #[tauri::command]
@@ -4735,6 +4849,279 @@ fn read_configured_port(profile: Option<&str>) -> Result<Option<u16>, String> {
     )
 }
 
+#[derive(Debug, Clone)]
+struct ApiServerKeySource {
+    location: String,
+    value: String,
+    canonical: bool,
+}
+
+fn build_config_health_report(profile: Option<&str>) -> Result<ConfigHealthReport, String> {
+    let profile_name = profile.unwrap_or("default").to_string();
+    let mut issues = Vec::new();
+    let profile_home_path = profile_home(profile)?;
+    let config_path = profile_home_path.join("config.yaml");
+    let env_path = profile_home_path.join(".env");
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    let env = read_env_map(profile)?;
+    let sources = api_server_key_sources(profile)?;
+
+    if !sources.is_empty() {
+        let unique_values = sources
+            .iter()
+            .map(|source| source.value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<std::collections::HashSet<_>>();
+        if unique_values.len() > 1 {
+            issues.push(config_health_issue(
+                "API_SERVER_KEY_MULTIPLE_VALUES",
+                "error",
+                "API_SERVER_KEY 在多个位置存在且值不一致。",
+                Some("Hermes Gateway 鉴权可能读取到不同 token。请人工确认保留哪一个值。"),
+                sources
+                    .iter()
+                    .map(|source| source.location.clone())
+                    .collect(),
+                false,
+                None,
+                None,
+                None,
+            ));
+        } else if !sources.iter().any(|source| source.canonical) {
+            let mut context = std::collections::BTreeMap::new();
+            if let Some(source) = sources.first() {
+                context.insert("value".to_string(), source.value.clone());
+                context.insert("source".to_string(), source.location.clone());
+            }
+            issues.push(config_health_issue(
+                "API_SERVER_KEY_NON_CANONICAL",
+                "warning",
+                "API_SERVER_KEY 不在当前 profile 的 .env 中。",
+                Some("Hermes Desktop 将 .env 作为本地 Gateway token 的规范位置。"),
+                sources
+                    .iter()
+                    .map(|source| source.location.clone())
+                    .collect(),
+                true,
+                Some("复制到当前 profile 的 .env"),
+                Some(env_path.to_string_lossy().to_string()),
+                Some(context),
+            ));
+        }
+    } else if config_path.exists() || env_path.exists() {
+        issues.push(config_health_issue(
+            "EMPTY_API_SERVER_KEY",
+            "warning",
+            "未发现 API_SERVER_KEY。",
+            Some("本地 Gateway 启动后无法通过 Hermes Team 探测命令鉴权。"),
+            vec![env_path.to_string_lossy().to_string()],
+            false,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    let model = read_model_config(profile)?;
+    let provider = model.provider.trim();
+    let base_url = model.base_url.trim();
+    if !provider.is_empty()
+        && provider != "auto"
+        && !provider_can_discover_without_key(provider, base_url)
+    {
+        if let Some(env_key) = provider_env_key(provider, base_url) {
+            let key_value = env.get(env_key).cloned().unwrap_or_default();
+            if key_value.trim().is_empty() {
+                let mut context = std::collections::BTreeMap::new();
+                context.insert("provider".to_string(), provider.to_string());
+                context.insert("envKey".to_string(), env_key.to_string());
+                issues.push(config_health_issue(
+                    "MODEL_KEY_MISSING",
+                    "warning",
+                    "当前模型 Provider 缺少 API key。",
+                    Some(&format!(
+                        "Provider `{provider}` 需要 `{env_key}`，否则模型发现和聊天请求会失败。"
+                    )),
+                    vec![
+                        config_path.to_string_lossy().to_string(),
+                        env_path.to_string_lossy().to_string(),
+                    ],
+                    false,
+                    None,
+                    None,
+                    Some(context),
+                ));
+            }
+        }
+    }
+
+    for (key, value) in env.iter() {
+        if is_sensitive_env_key(key) && !value.is_ascii() {
+            issues.push(config_health_issue(
+                "NON_ASCII_CREDENTIAL",
+                "warning",
+                "凭据字段包含非 ASCII 字符。",
+                Some(&format!(
+                    "`{key}` 可能包含复制粘贴引入的不可见字符，请人工核对。"
+                )),
+                vec![env_path.to_string_lossy().to_string()],
+                false,
+                None,
+                None,
+                None,
+            ));
+        }
+    }
+
+    if config.contains("code-execution") {
+        issues.push(config_health_issue(
+            "LEGACY_TOOLSET_NAME",
+            "warning",
+            "配置中仍使用旧 toolset 名称 code-execution。",
+            Some("当前 Hermes toolset 名称为 code_execution。"),
+            vec![config_path.to_string_lossy().to_string()],
+            true,
+            Some("替换为 code_execution"),
+            Some(config_path.to_string_lossy().to_string()),
+            None,
+        ));
+    }
+
+    let summary = ConfigHealthSummary {
+        errors: issues
+            .iter()
+            .filter(|issue| issue.severity == "error")
+            .count(),
+        warnings: issues
+            .iter()
+            .filter(|issue| issue.severity == "warning")
+            .count(),
+        infos: issues
+            .iter()
+            .filter(|issue| issue.severity == "info")
+            .count(),
+    };
+
+    Ok(ConfigHealthReport {
+        ran_at: unix_millis(),
+        profile: profile_name,
+        issues,
+        summary,
+    })
+}
+
+fn config_health_issue(
+    code: &str,
+    severity: &str,
+    message: &str,
+    detail: Option<&str>,
+    locations: Vec<String>,
+    auto_fixable: bool,
+    fix_description: Option<&str>,
+    fix_location: Option<String>,
+    context: Option<std::collections::BTreeMap<String, String>>,
+) -> ConfigHealthIssue {
+    ConfigHealthIssue {
+        code: code.to_string(),
+        severity: severity.to_string(),
+        message: message.to_string(),
+        detail: detail.map(str::to_string),
+        locations,
+        auto_fixable,
+        fix_description: fix_description.map(str::to_string),
+        fix_location,
+        context,
+    }
+}
+
+fn api_server_key_sources(profile: Option<&str>) -> Result<Vec<ApiServerKeySource>, String> {
+    let mut sources = Vec::new();
+    collect_api_server_key_sources(profile, true, &mut sources)?;
+    if profile.is_some() {
+        collect_api_server_key_sources(None, false, &mut sources)?;
+    }
+    Ok(sources)
+}
+
+fn collect_api_server_key_sources(
+    profile: Option<&str>,
+    current_profile: bool,
+    sources: &mut Vec<ApiServerKeySource>,
+) -> Result<(), String> {
+    let home = profile_home(profile)?;
+    let label = profile.unwrap_or("default");
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    let env = read_profile_file(profile, ".env")?.unwrap_or_default();
+    let config_path = home.join("config.yaml").to_string_lossy().to_string();
+    let env_path = home.join(".env").to_string_lossy().to_string();
+
+    if let Some(value) =
+        read_env_value(&env, "API_SERVER_KEY").filter(|value| !value.trim().is_empty())
+    {
+        sources.push(ApiServerKeySource {
+            location: format!("{env_path} · {label} .env"),
+            value,
+            canonical: current_profile,
+        });
+    }
+    if let Some(value) = read_top_level_yaml_scalar(&config, "API_SERVER_KEY")
+        .filter(|value| !value.trim().is_empty())
+    {
+        sources.push(ApiServerKeySource {
+            location: format!("{config_path} · {label} top-level API_SERVER_KEY"),
+            value,
+            canonical: false,
+        });
+    }
+    if let Some(value) = read_nested_yaml_scalar(&config, &["api_server", "token"])
+        .filter(|value| !value.trim().is_empty())
+    {
+        sources.push(ApiServerKeySource {
+            location: format!("{config_path} · {label} api_server.token"),
+            value,
+            canonical: false,
+        });
+    }
+    Ok(())
+}
+
+fn first_api_server_key_source(profile: Option<&str>) -> Option<ApiServerKeySource> {
+    api_server_key_sources(profile)
+        .ok()
+        .and_then(|sources| sources.into_iter().next())
+}
+
+fn is_sensitive_env_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.ends_with("_API_KEY")
+        || upper.ends_with("_TOKEN")
+        || upper.ends_with("_SECRET")
+        || upper.ends_with("_PASSWORD")
+        || upper == "API_SERVER_KEY"
+        || upper == "HF_TOKEN"
+}
+
+fn append_config_health_log(profile: Option<&str>, code: &str, action: &str) -> Result<(), String> {
+    let dir = app_home()?.join("logs");
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("创建 {} 失败：{error}", dir.to_string_lossy()))?;
+    let path = dir.join("config-health.log");
+    let line = format!(
+        "{} profile={} code={} action={}\n",
+        unix_millis(),
+        profile.unwrap_or("default"),
+        code,
+        action
+    );
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("打开 {} 失败：{error}", path.to_string_lossy()))?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
 fn read_api_server_key(profile: Option<&str>) -> Result<Option<String>, String> {
     let profile_config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
     let default_config = if profile.is_some() {
@@ -7246,6 +7633,9 @@ pub fn run() {
             app_ready,
             open_external_url,
             inspect_hermes_install,
+            get_config_health,
+            rerun_config_health,
+            autofix_config_issue,
             list_hermes_profiles,
             create_hermes_profile,
             delete_hermes_profile,

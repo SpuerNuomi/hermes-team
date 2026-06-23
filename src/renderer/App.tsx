@@ -46,6 +46,7 @@ import { useReasoningEffort } from "./useReasoningEffort";
 import {
   addCredentialPoolEntry,
   activateHermesModel,
+  autofixConfigIssue,
   buildSessionSummary,
   cancelHermesTask,
   createHermesCronJob,
@@ -58,6 +59,7 @@ import {
   createHermesDebugDump,
   restoreHermesBackupFile,
   generateApiServerKey,
+  getConfigHealth,
   getHermesModelConfig,
   getRemoteConnectionConfig,
   getRemoteConnectionStatus,
@@ -114,6 +116,8 @@ import {
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
+  type ConfigHealthIssue,
+  type ConfigHealthReport,
   type CronJobActionResult,
   type CronJobInfo,
   type CredentialPoolGroup,
@@ -386,6 +390,7 @@ export function App() {
   const [remoteStatus, setRemoteStatus] = useState<RemoteConnectionStatus | null>(null);
   const [profiles, setProfiles] = useState<HermesProfileInfo[]>([]);
   const [installStatus, setInstallStatus] = useState<HermesInstallStatus | null>(null);
+  const [configHealth, setConfigHealth] = useState<ConfigHealthReport | null>(null);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
   const [skills, setSkills] = useState<InstalledSkillInfo[]>([]);
@@ -416,6 +421,8 @@ export function App() {
   const [messagingBusy, setMessagingBusy] = useState(false);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
+  const [configHealthBusy, setConfigHealthBusy] = useState(false);
+  const [configFixingCode, setConfigFixingCode] = useState<string | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -604,15 +611,40 @@ export function App() {
     }
   }
 
+  const currentProfileName = (profileName?: string) =>
+    profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
+
+  const refreshConfigHealth = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setConfigHealth(null);
+      return null;
+    }
+    const targetProfile = currentProfileName(profileName);
+    setConfigHealthBusy(true);
+    try {
+      const report = await getConfigHealth({ profile: targetProfile });
+      setConfigHealth(report);
+      return report;
+    } catch (error) {
+      setConfigHealth(null);
+      setNotice(`配置健康检查失败：${runtimeErrorMessage(error)}`);
+      return null;
+    } finally {
+      setConfigHealthBusy(false);
+    }
+  };
+
   const refreshInstallStatus = async () => {
     if (!isTauriRuntimeAvailable()) {
       setInstallStatus(null);
+      setConfigHealth(null);
       return null;
     }
     setInstallBusy(true);
     try {
       const status = await inspectHermesInstall();
       setInstallStatus(status);
+      void refreshConfigHealth(status.activeProfile);
       return status;
     } catch (error) {
       setInstallStatus(null);
@@ -637,7 +669,7 @@ export function App() {
       setCredentialPool([]);
       return;
     }
-    const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
+    const targetProfile = currentProfileName(profileName);
     try {
       const [
         nextToolsets,
@@ -977,6 +1009,7 @@ export function App() {
       }
       void refreshRuntime();
       void refreshHermesCapabilities();
+      void refreshConfigHealth();
       void refreshHermesLogs();
     } catch (error) {
       setNotice(`恢复 Hermes 备份失败：${runtimeErrorMessage(error)}`);
@@ -1072,6 +1105,7 @@ export function App() {
           message: `${result.profile} · ${result.baseUrl} · ${result.message}`,
         });
         void refreshHermesCapabilities(result.profile);
+        void refreshConfigHealth(result.profile);
       })
       .catch((error: unknown) => {
         setProfiles([]);
@@ -1412,6 +1446,7 @@ export function App() {
       }
       await refreshRuntime({ autoStart: true });
       await refreshHermesCapabilities(profileName);
+      await refreshConfigHealth(profileName);
       await refreshMessagingPlatforms(profileName);
       await refreshCronJobs(profileName);
       setNotice(`已切换到 Profile：${profileName}`);
@@ -1599,6 +1634,9 @@ export function App() {
         await ensureHermesGateway({ profile: targetProfile, replace: true });
       }
       await refreshRuntime();
+      await refreshInstallStatus();
+      await refreshHermesCapabilities(targetProfile);
+      await refreshConfigHealth(targetProfile);
       return result.ok;
     } catch (error) {
       const message = runtimeErrorMessage(error);
@@ -1606,6 +1644,26 @@ export function App() {
       return false;
     } finally {
       setKeyBusy(false);
+    }
+  };
+
+  const fixConfigIssue = async (issue: ConfigHealthIssue) => {
+    const targetProfile = currentProfileName(configHealth?.profile) ?? "default";
+    setConfigFixingCode(issue.code);
+    try {
+      const result = await autofixConfigIssue({
+        profile: targetProfile,
+        code: issue.code,
+        context: issue.context ?? undefined,
+      });
+      setNotice(result.message);
+      await refreshInstallStatus();
+      await refreshHermesCapabilities(targetProfile);
+      await refreshConfigHealth(targetProfile);
+    } catch (error) {
+      setNotice(`修复配置失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setConfigFixingCode(null);
     }
   };
 
@@ -1639,6 +1697,7 @@ export function App() {
       setNotice(`模型已保存：${saved.name}`);
       resetModelForm();
       await refreshHermesCapabilities(installStatus?.activeProfile);
+      await refreshConfigHealth(installStatus?.activeProfile);
     } catch (error) {
       setNotice(`保存模型失败：${runtimeErrorMessage(error)}`);
     } finally {
@@ -1652,6 +1711,7 @@ export function App() {
       const removed = await removeHermesModel(model.id);
       setNotice(removed ? `模型已删除：${model.name}` : `未找到模型：${model.name}`);
       await refreshHermesCapabilities(installStatus?.activeProfile);
+      await refreshConfigHealth(installStatus?.activeProfile);
     } catch (error) {
       setNotice(`删除模型失败：${runtimeErrorMessage(error)}`);
     } finally {
@@ -1678,6 +1738,7 @@ export function App() {
       } else {
         await refreshHermesCapabilities(targetProfile);
       }
+      await refreshConfigHealth(targetProfile);
     } catch (error) {
       setNotice(`激活模型失败：${runtimeErrorMessage(error)}`);
     } finally {
@@ -1691,6 +1752,7 @@ export function App() {
     updateAgentProfile(agent.id, profileName);
     setNotice(`聊天 Profile 已切换为 ${profileName}。`);
     void refreshHermesCapabilities(profileName);
+    void refreshConfigHealth(profileName);
   };
 
   const activateChatModel = async (model: SavedModel) => {
@@ -1715,6 +1777,7 @@ export function App() {
         await refreshRuntime({ autoStart: false });
       }
       await refreshHermesCapabilities(targetProfile);
+      await refreshConfigHealth(targetProfile);
     } catch (error) {
       setNotice(`激活聊天模型失败：${runtimeErrorMessage(error)}`);
     } finally {
@@ -1741,6 +1804,7 @@ export function App() {
         await ensureHermesGateway({ profile: targetProfile, replace: true });
         await refreshRuntime({ autoStart: false });
       }
+      await refreshConfigHealth(targetProfile);
     } catch (error) {
       setNotice(`保存 Provider API key 失败：${runtimeErrorMessage(error)}`);
     } finally {
@@ -2594,6 +2658,73 @@ export function App() {
                   </div>
                 ) : (
                   <p className="empty-note">配置状态需要 Tauri Runtime 读取本机 Hermes 目录。</p>
+                )}
+              </section>
+
+              <section className={settingsCardClass("overview", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Config Health</p>
+                    <h2>配置健康检查</h2>
+                  </div>
+                  <button
+                    className="refresh-runtime"
+                    disabled={configHealthBusy}
+                    type="button"
+                    onClick={() => void refreshConfigHealth(installStatus?.activeProfile)}
+                  >
+                    <RefreshCw size={14} />
+                    <span>{configHealthBusy ? "检查中..." : "重新检查"}</span>
+                  </button>
+                </div>
+                {configHealth ? (
+                  <div className="config-health-panel">
+                    <div className="config-health-summary">
+                      <span className={configHealth.summary.errors > 0 ? "danger" : "ok"}>
+                        {configHealth.summary.errors} errors
+                      </span>
+                      <span className={configHealth.summary.warnings > 0 ? "warning" : "ok"}>
+                        {configHealth.summary.warnings} warnings
+                      </span>
+                      <span>{configHealth.profile} · {formatTime(configHealth.ranAt)}</span>
+                    </div>
+                    {configHealth.issues.length === 0 ? (
+                      <p className="empty-note">配置健康检查通过。</p>
+                    ) : (
+                      <div className="config-health-list">
+                        {configHealth.issues.map((issue) => (
+                          <article className={`config-health-issue ${issue.severity}`} key={issue.code}>
+                            <div>
+                              <div className="config-health-title">
+                                <strong>{issue.message}</strong>
+                                <em>{configSeverityLabel(issue.severity)}</em>
+                              </div>
+                              {issue.detail && <p>{issue.detail}</p>}
+                              {issue.locations.length > 0 && (
+                                <small title={issue.locations.join("\n")}>
+                                  {issue.locations.slice(0, 2).join(" · ")}
+                                </small>
+                              )}
+                            </div>
+                            {issue.autoFixable && (
+                              <button
+                                className="refresh-runtime"
+                                disabled={configFixingCode === issue.code}
+                                type="button"
+                                onClick={() => void fixConfigIssue(issue)}
+                                title={issue.fixLocation ?? undefined}
+                              >
+                                <Settings size={14} />
+                                <span>{configFixingCode === issue.code ? "修复中..." : issue.fixDescription ?? "修复"}</span>
+                              </button>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="empty-note">尚未运行配置健康检查。</p>
                 )}
               </section>
 
@@ -3910,6 +4041,19 @@ function StatusRow({ label, value, ok }: { label: string; value: string; ok: boo
       <em className={ok ? "ok" : "warning"}>{ok ? "OK" : "需要处理"}</em>
     </div>
   );
+}
+
+function configSeverityLabel(severity: string): string {
+  switch (severity) {
+    case "error":
+      return "错误";
+    case "warning":
+      return "警告";
+    case "info":
+      return "提示";
+    default:
+      return severity;
+  }
 }
 
 function basename(path: string): string {

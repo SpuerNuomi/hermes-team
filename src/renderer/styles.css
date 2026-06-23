@@ -2268,6 +2268,124 @@ textarea:focus {
   background: #f5ead7;
 }
 
+.config-health-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.config-health-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.config-health-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 8px;
+  color: #647067;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.config-health-summary span.ok {
+  color: #0f5f47;
+  background: #eef7f2;
+  border-color: #b8d9ca;
+}
+
+.config-health-summary span.warning {
+  color: #9b5a10;
+  background: #fff8ec;
+  border-color: #e9cf9d;
+}
+
+.config-health-summary span.danger {
+  color: #9f1d1d;
+  background: #fff1f1;
+  border-color: #e8bbbb;
+}
+
+.config-health-list {
+  display: grid;
+  gap: 10px;
+}
+
+.config-health-issue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-left-width: 4px;
+  border-radius: 8px;
+}
+
+.config-health-issue.error {
+  border-left-color: #bd2b2b;
+}
+
+.config-health-issue.warning {
+  border-left-color: #c9851a;
+}
+
+.config-health-issue.info {
+  border-left-color: #2879a8;
+}
+
+.config-health-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.config-health-title strong {
+  color: #17201c;
+  font-size: 14px;
+}
+
+.config-health-title em {
+  padding: 3px 7px;
+  color: #647067;
+  background: #eef0ec;
+  border-radius: 999px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.config-health-issue p {
+  margin: 6px 0 0;
+  color: #4a544d;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.config-health-issue small {
+  display: block;
+  min-width: 0;
+  margin-top: 8px;
+  overflow: hidden;
+  color: #7b857d;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-health-issue > .refresh-runtime {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
 .settings-actions {
   display: flex;
   flex-wrap: wrap;

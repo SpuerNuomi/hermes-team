@@ -78,6 +78,36 @@ export interface HermesInstallStatus {
   gatewayHealth: string;
 }
 
+export interface ConfigHealthSummary {
+  errors: number;
+  warnings: number;
+  infos: number;
+}
+
+export interface ConfigHealthIssue {
+  code: string;
+  severity: "error" | "warning" | "info" | string;
+  message: string;
+  detail?: string | null;
+  locations: string[];
+  autoFixable: boolean;
+  fixDescription?: string | null;
+  fixLocation?: string | null;
+  context?: Record<string, string> | null;
+}
+
+export interface ConfigHealthReport {
+  ranAt: number;
+  profile: string;
+  issues: ConfigHealthIssue[];
+  summary: ConfigHealthSummary;
+}
+
+export interface ConfigHealthFixResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface ToolsetInfo {
   key: string;
   label: string;
@@ -433,6 +463,33 @@ export async function setActiveHermesProfile(input: {
 export async function inspectHermesInstall(): Promise<HermesInstallStatus> {
   ensureTauriRuntime();
   return invoke<HermesInstallStatus>("inspect_hermes_install");
+}
+
+export async function getConfigHealth(params: {
+  profile?: string;
+} = {}): Promise<ConfigHealthReport> {
+  ensureTauriRuntime();
+  return invoke<ConfigHealthReport>("get_config_health", {
+    profile: params.profile,
+  });
+}
+
+export async function rerunConfigHealth(params: {
+  profile?: string;
+} = {}): Promise<ConfigHealthReport> {
+  ensureTauriRuntime();
+  return invoke<ConfigHealthReport>("rerun_config_health", {
+    profile: params.profile,
+  });
+}
+
+export async function autofixConfigIssue(input: {
+  profile?: string;
+  code: string;
+  context?: Record<string, string> | null;
+}): Promise<ConfigHealthFixResult> {
+  ensureTauriRuntime();
+  return invoke<ConfigHealthFixResult>("autofix_config_issue", { input });
 }
 
 export async function listHermesToolsets(params: {
