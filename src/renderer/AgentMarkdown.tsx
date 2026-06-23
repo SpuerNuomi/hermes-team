@@ -1,20 +1,65 @@
-import { memo, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy } from "lucide-react";
 
-let highlighterModule: typeof import("react-syntax-highlighter") | null = null;
+type SyntaxHighlighterComponent = ComponentType<{
+  children: string;
+  language?: string;
+  PreTag?: string;
+  style?: Record<string, CSSProperties>;
+  customStyle?: CSSProperties;
+}> & {
+  registerLanguage: (name: string, language: unknown) => void;
+  alias?: (name: string, aliases: string | string[]) => void;
+};
+
+let SyntaxHighlighter: SyntaxHighlighterComponent | null = null;
 let oneDarkStyle: Record<string, CSSProperties> | null = null;
 let highlighterLoadingPromise: Promise<void> | null = null;
 
 function loadHighlighter(): Promise<void> {
-  if (highlighterModule && oneDarkStyle) return Promise.resolve();
+  if (SyntaxHighlighter && oneDarkStyle) return Promise.resolve();
   if (highlighterLoadingPromise) return highlighterLoadingPromise;
   highlighterLoadingPromise = Promise.all([
-    import("react-syntax-highlighter"),
+    import("react-syntax-highlighter/dist/esm/prism-light"),
     import("react-syntax-highlighter/dist/esm/styles/prism/one-dark"),
-  ]).then(([module, style]) => {
-    highlighterModule = module;
+    import("react-syntax-highlighter/dist/esm/languages/prism/bash"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/javascript"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/typescript"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/tsx"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/jsx"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/json"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/markdown"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/python"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/rust"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/go"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/java"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/yaml"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/sql"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/css"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/scss"),
+    import("react-syntax-highlighter/dist/esm/languages/prism/docker"),
+  ]).then(([module, style, bash, javascript, typescript, tsx, jsx, json, markdown, python, rust, go, java, yaml, sql, css, scss, docker]) => {
+    SyntaxHighlighter = module.default;
+    SyntaxHighlighter.registerLanguage("bash", bash.default);
+    SyntaxHighlighter.registerLanguage("javascript", javascript.default);
+    SyntaxHighlighter.registerLanguage("typescript", typescript.default);
+    SyntaxHighlighter.registerLanguage("tsx", tsx.default);
+    SyntaxHighlighter.registerLanguage("jsx", jsx.default);
+    SyntaxHighlighter.registerLanguage("json", json.default);
+    SyntaxHighlighter.registerLanguage("markdown", markdown.default);
+    SyntaxHighlighter.registerLanguage("python", python.default);
+    SyntaxHighlighter.registerLanguage("rust", rust.default);
+    SyntaxHighlighter.registerLanguage("go", go.default);
+    SyntaxHighlighter.registerLanguage("java", java.default);
+    SyntaxHighlighter.registerLanguage("yaml", yaml.default);
+    SyntaxHighlighter.registerLanguage("sql", sql.default);
+    SyntaxHighlighter.registerLanguage("css", css.default);
+    SyntaxHighlighter.registerLanguage("scss", scss.default);
+    SyntaxHighlighter.registerLanguage("docker", docker.default);
+    SyntaxHighlighter.alias?.("bash", ["sh", "shell", "zsh"]);
+    SyntaxHighlighter.alias?.("docker", ["dockerfile"]);
     oneDarkStyle = style.default;
   });
   return highlighterLoadingPromise;
@@ -59,7 +104,7 @@ function CodeBlock({
     blockId ? !expandedCodeBlocks.has(blockId) : true,
   );
   const [highlighterReady, setHighlighterReady] = useState(
-    () => highlighterModule !== null && oneDarkStyle !== null,
+    () => SyntaxHighlighter !== null && oneDarkStyle !== null,
   );
   const code = String(children).replace(/\n$/, "");
   const match = /language-(\w+)/.exec(className || "");
@@ -90,7 +135,6 @@ function CodeBlock({
     </pre>
   );
 
-  const SyntaxHighlighter = highlighterModule?.Prism;
   const codeContent = isDiff ? (
     <DiffView code={code} />
   ) : highlighterReady && SyntaxHighlighter && oneDarkStyle ? (
