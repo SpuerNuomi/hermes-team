@@ -367,6 +367,7 @@ struct RuntimeAttachment {
     size: Option<u64>,
     text: Option<String>,
     data_url: Option<String>,
+    original_size: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2099,28 +2100,21 @@ async fn run_hermes_agent(input: RunHermesAgentInput) -> Result<RunHermesAgentOu
             "content": item.content,
         }));
     }
-    let attachment_context = read_attachment_context(&input.attachments)?;
-    let user_content = if attachment_context.is_empty() {
-        format!(
-            "请以 {} 的身份完成任务：\n{}",
-            input.agent_name, input.instruction
-        )
-    } else {
-        format!(
-            "请以 {} 的身份完成任务：\n{}\n\n附件内容：\n{}",
-            input.agent_name, input.instruction, attachment_context
-        )
-    };
     messages.push(json!({
         "role": "user",
-        "content": user_content,
+        "content": build_user_message_content(&input.agent_name, &input.instruction, &input.attachments)?,
     }));
 
-    let body = json!({
+    let mut body = json!({
         "model": input.model.unwrap_or_else(|| "hermes-agent".to_string()),
         "messages": messages,
         "stream": false,
     });
+    if let Some(reasoning_effort) = reasoning_effort_for_profile(input.profile.as_deref())? {
+        if let Some(body_obj) = body.as_object_mut() {
+            body_obj.insert("reasoning_effort".to_string(), json!(reasoning_effort));
+        }
+    }
 
     let response = http_request_with_cancel(
         &endpoint.base_url,
@@ -2200,21 +2194,9 @@ async fn run_hermes_agent_stream(
             "content": item.content,
         }));
     }
-    let attachment_context = read_attachment_context(&input.attachments)?;
-    let user_content = if attachment_context.is_empty() {
-        format!(
-            "请以 {} 的身份完成任务：\n{}",
-            input.agent_name, input.instruction
-        )
-    } else {
-        format!(
-            "请以 {} 的身份完成任务：\n{}\n\n附件内容：\n{}",
-            input.agent_name, input.instruction, attachment_context
-        )
-    };
     messages.push(json!({
         "role": "user",
-        "content": user_content,
+        "content": build_user_message_content(&input.agent_name, &input.instruction, &input.attachments)?,
     }));
 
     let mut body = json!({
@@ -2305,6 +2287,45 @@ fn is_task_cancelled(task_id: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn build_user_message_content(
+    agent_name: &str,
+    instruction: &str,
+    attachments: &[RuntimeAttachment],
+) -> Result<serde_json::Value, String> {
+    let attachment_context = read_attachment_context(attachments)?;
+    let text = if attachment_context.is_empty() {
+        format!("请以 {agent_name} 的身份完成任务：\n{instruction}")
+    } else {
+        format!(
+            "请以 {agent_name} 的身份完成任务：\n{instruction}\n\n附件内容：\n{attachment_context}"
+        )
+    };
+    let image_urls: Vec<&str> = attachments
+        .iter()
+        .filter(|attachment| attachment.kind.as_deref() == Some("image"))
+        .filter_map(|attachment| attachment.data_url.as_deref())
+        .map(str::trim)
+        .filter(|value| value.starts_with("data:image/"))
+        .collect();
+    if image_urls.is_empty() {
+        return Ok(json!(text));
+    }
+
+    let mut parts = vec![json!({
+        "type": "text",
+        "text": text,
+    })];
+    for url in image_urls {
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": {
+                "url": url,
+            },
+        }));
+    }
+    Ok(json!(parts))
+}
+
 fn read_attachment_context(attachments: &[RuntimeAttachment]) -> Result<String, String> {
     if attachments.is_empty() {
         return Ok(String::new());
@@ -2330,11 +2351,22 @@ fn read_attachment_context(attachments: &[RuntimeAttachment]) -> Result<String, 
         }
         if kind == "image" {
             let data_url = attachment.data_url.as_deref().unwrap_or("");
+            let original = attachment
+                .original_size
+                .map(|value| format!("\n原始大小：{value} bytes"))
+                .unwrap_or_default();
+            let status = if data_url.trim().starts_with("data:image/") {
+                "图片已作为 image_url 视觉 payload 随消息附加。".to_string()
+            } else {
+                format!(
+                    "图片缺少有效 data URL；无法作为视觉 payload 附加。data URL 前缀：{}",
+                    truncate(data_url, 180)
+                )
+            };
             sections.push(format!(
-                "## {title}\n类型：image\nMIME：{}\n大小：{} bytes\n状态：图片已作为 data URL 随消息附加。data URL 前缀：{}",
+                "## {title}\n类型：image\nMIME：{}\n大小：{} bytes{original}\n状态：{status}",
                 attachment.mime.as_deref().unwrap_or("image/*"),
                 attachment.size.unwrap_or(0),
-                truncate(data_url, 180)
             ));
             continue;
         }

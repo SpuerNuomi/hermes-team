@@ -1,7 +1,9 @@
 export type AttachmentKind = "image" | "text-file" | "path-ref";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_IMAGE_INPUT_BYTES = 50 * 1024 * 1024;
+export const MAX_IMAGE_TARGET_BYTES = 5 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = MAX_IMAGE_INPUT_BYTES;
 export const MAX_TEXT_BYTES = 256 * 1024;
 
 export const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);

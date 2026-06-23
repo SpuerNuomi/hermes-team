@@ -28,10 +28,18 @@ function folderName(path: string): string {
 
 function attachmentLabel(attachment: MessageAttachment): string {
   const kind = attachment.kind === "path-ref" || attachment.kind === "file" ? "file" : attachment.kind;
-  if (!attachment.size) return kind;
-  if (attachment.size < 1024) return `${kind} · ${attachment.size} B`;
-  if (attachment.size < 1024 * 1024) return `${kind} · ${(attachment.size / 1024).toFixed(1)} KB`;
-  return `${kind} · ${(attachment.size / 1024 / 1024).toFixed(1)} MB`;
+  const size = formatAttachmentSize(attachment.size);
+  const original = formatAttachmentSize(attachment.originalSize);
+  if (size && original) return `${kind} · ${original} -> ${size}`;
+  if (size) return `${kind} · ${size}`;
+  return kind;
+}
+
+function formatAttachmentSize(size?: number): string {
+  if (!size) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export function ChatView({

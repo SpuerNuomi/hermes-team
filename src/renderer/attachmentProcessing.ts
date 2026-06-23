@@ -3,6 +3,7 @@ import {
   isTextLikeFile,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_IMAGE_BYTES,
+  MAX_IMAGE_TARGET_BYTES,
   MAX_TEXT_BYTES,
 } from "../core/attachments";
 import type { ClipboardEvent as ReactClipboardEvent } from "react";
@@ -42,6 +43,131 @@ async function readAsBase64(file: File): Promise<string> {
   return comma >= 0 ? dataUrl.slice(comma + 1) : "";
 }
 
+function loadHtmlImage(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("image-decode-failed"));
+      image.src = String(reader.result || "");
+    };
+    reader.onerror = () => reject(reader.error || new Error("image-decode-failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("toBlob-failed"))),
+      type,
+      quality,
+    );
+  });
+}
+
+function canvasHasTransparency(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return false;
+  const { width, height } = canvas;
+  if (width === 0 || height === 0) return false;
+  const samples = 100;
+  const stepX = Math.max(1, Math.floor(width / samples));
+  const stepY = Math.max(1, Math.floor(height / samples));
+  for (let y = 0; y < height; y += stepY) {
+    const row = ctx.getImageData(0, y, width, 1).data;
+    for (let x = 0; x < width; x += stepX) {
+      if (row[x * 4 + 3] < 255) return true;
+    }
+  }
+  return false;
+}
+
+async function canvasSupportsType(source: HTMLCanvasElement, type: string): Promise<boolean> {
+  const probe = document.createElement("canvas");
+  probe.width = 1;
+  probe.height = 1;
+  const ctx = probe.getContext("2d");
+  if (ctx) ctx.drawImage(source, 0, 0, 1, 1);
+  try {
+    const blob = await canvasToBlob(probe, type, 0.5);
+    return blob.type === type;
+  } catch {
+    return false;
+  }
+}
+
+async function compressImageToFit(file: File, targetBytes: number): Promise<File> {
+  if (file.size <= targetBytes) return file;
+  if (file.type === "image/gif") throw new Error("image-uncompressible");
+
+  const image = await loadHtmlImage(file);
+  const probeCanvas = document.createElement("canvas");
+  probeCanvas.width = image.naturalWidth;
+  probeCanvas.height = image.naturalHeight;
+  const probeCtx = probeCanvas.getContext("2d");
+  if (!probeCtx) throw new Error("canvas-unavailable");
+  probeCtx.drawImage(image, 0, 0);
+
+  const hasAlpha = canvasHasTransparency(probeCanvas);
+  const candidates: Array<{ type: string; ext: string }> = hasAlpha
+    ? [{ type: "image/png", ext: "png" }]
+    : [
+        ...((await canvasSupportsType(probeCanvas, "image/webp"))
+          ? [{ type: "image/webp", ext: "webp" }]
+          : []),
+        { type: "image/jpeg", ext: "jpg" },
+      ];
+
+  let scale = 1;
+  let quality = 0.85;
+  let workingCanvas = probeCanvas;
+
+  for (let index = 0; index < 20; index += 1) {
+    let bestBlob: Blob | null = null;
+    let bestCandidate: { type: string; ext: string } | null = null;
+    for (const candidate of candidates) {
+      const blob = await canvasToBlob(
+        workingCanvas,
+        candidate.type,
+        hasAlpha ? undefined : quality,
+      );
+      if (blob.type !== candidate.type) continue;
+      if (!bestBlob || blob.size < bestBlob.size) {
+        bestBlob = blob;
+        bestCandidate = candidate;
+      }
+    }
+    if (!bestBlob || !bestCandidate) throw new Error("canvas-unavailable");
+    if (bestBlob.size <= targetBytes) {
+      const basename = file.name.replace(/\.[^.]+$/, "") || "image";
+      return new File([bestBlob], `${basename}.${bestCandidate.ext}`, {
+        type: bestCandidate.type,
+      });
+    }
+    if (!hasAlpha && quality > 0.5) {
+      quality -= 0.15;
+      continue;
+    }
+
+    scale *= 0.8;
+    if (image.naturalWidth * scale < 64 || image.naturalHeight * scale < 64) {
+      throw new Error("image-uncompressible");
+    }
+    const scaled = document.createElement("canvas");
+    scaled.width = Math.max(64, Math.floor(image.naturalWidth * scale));
+    scaled.height = Math.max(64, Math.floor(image.naturalHeight * scale));
+    const scaledCtx = scaled.getContext("2d");
+    if (!scaledCtx) throw new Error("canvas-unavailable");
+    scaledCtx.drawImage(image, 0, 0, scaled.width, scaled.height);
+    workingCanvas = scaled;
+    quality = 0.85;
+  }
+
+  throw new Error("image-uncompressible");
+}
+
 export async function processDroppedOrPastedFiles(params: {
   files: File[] | FileList;
   existingCount: number;
@@ -67,17 +193,25 @@ export async function processDroppedOrPastedFiles(params: {
         continue;
       }
       try {
+        const image = await compressImageToFit(file, MAX_IMAGE_TARGET_BYTES);
+        const compressed = image !== file;
         attachments.push({
           id: newAttachmentId(),
           kind: "image",
-          name,
-          mime,
-          size: file.size,
-          dataUrl: await readAsDataUrl(file),
+          name: image.name || name,
+          mime: image.type || mime,
+          size: image.size,
+          dataUrl: await readAsDataUrl(image),
+          originalSize: compressed ? file.size : undefined,
           createdAt: Date.now(),
         });
       } catch (error) {
-        errors.push(`${name}: 图片读取失败：${error instanceof Error ? error.message : String(error)}`);
+        const detail = error instanceof Error ? error.message : String(error);
+        const message =
+          detail === "image-uncompressible"
+            ? `图片无法压缩到 ${(MAX_IMAGE_TARGET_BYTES / 1024 / 1024).toFixed(0)} MB 以内。`
+            : `图片读取或压缩失败：${detail}`;
+        errors.push(`${name}: ${message}`);
       }
       continue;
     }

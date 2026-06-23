@@ -17,6 +17,7 @@ export interface RuntimeAttachment {
   size?: number;
   text?: string;
   dataUrl?: string;
+  originalSize?: number;
 }
 
 export interface SelectedPathInfo {
@@ -840,6 +841,7 @@ function attachmentsForTask(messages: Message[], triggerMessageId: string): Runt
       size: attachment.size,
       text: attachment.text,
       dataUrl: attachment.dataUrl,
+      originalSize: attachment.originalSize,
     })) ?? [];
 }
 
