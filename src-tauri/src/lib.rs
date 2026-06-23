@@ -38,6 +38,26 @@ struct HermesProfileInfo {
     home: String,
     gateway_url: String,
     has_api_key: bool,
+    is_default: bool,
+    model: String,
+    provider: String,
+    has_env: bool,
+    has_soul: bool,
+    skill_count: usize,
+    gateway_running: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateProfileInput {
+    name: String,
+    clone_config: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileNameInput {
+    name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -674,21 +694,94 @@ async fn list_hermes_profiles() -> Result<Vec<HermesProfileInfo>, String> {
             let profile = normalize_profile(Some(&name));
             let home = profile_home(profile.as_deref()).unwrap_or_else(|_| PathBuf::new());
             let api_key = read_api_server_key(profile.as_deref()).unwrap_or(None);
+            let model_config = read_model_config(profile.as_deref()).unwrap_or(ActiveModelConfig {
+                provider: "auto".to_string(),
+                model: String::new(),
+                base_url: String::new(),
+                context_length: None,
+            });
+            let gateway_url = resolve_gateway_url(profile.as_deref()).unwrap_or_else(|_| {
+                if profile.is_some() {
+                    "http://127.0.0.1:8643".to_string()
+                } else {
+                    "http://127.0.0.1:8642".to_string()
+                }
+            });
+            let gateway_running = gateway_is_ready(&gateway_url, api_key.as_deref());
             HermesProfileInfo {
-                gateway_url: resolve_gateway_url(profile.as_deref()).unwrap_or_else(|_| {
-                    if profile.is_some() {
-                        "http://127.0.0.1:8643".to_string()
-                    } else {
-                        "http://127.0.0.1:8642".to_string()
-                    }
-                }),
+                gateway_url,
                 active: name == active,
-                name,
+                is_default: profile.is_none(),
+                name: name.clone(),
                 home: home.to_string_lossy().to_string(),
                 has_api_key: api_key.is_some(),
+                model: model_config.model,
+                provider: model_config.provider,
+                has_env: home.join(".env").exists(),
+                has_soul: home.join("SOUL.md").exists(),
+                skill_count: count_profile_skills(&home),
+                gateway_running,
             }
         })
         .collect())
+}
+
+#[tauri::command]
+async fn create_hermes_profile(
+    input: CreateProfileInput,
+) -> Result<Vec<HermesProfileInfo>, String> {
+    let name = input.name.trim().to_ascii_lowercase();
+    if name == "default" {
+        return Err("不能创建 default profile。".to_string());
+    }
+    if !is_valid_profile_name(&name) {
+        return Err(
+            "Profile 名称只能包含小写字母、数字、下划线和短横线，且不能超过 64 个字符。"
+                .to_string(),
+        );
+    }
+    let mut args = vec!["profile".to_string(), "create".to_string(), name];
+    if input.clone_config {
+        args.push("--clone".to_string());
+    }
+    run_hermes_cli(&args, Duration::from_secs(30))?;
+    list_hermes_profiles().await
+}
+
+#[tauri::command]
+async fn delete_hermes_profile(input: ProfileNameInput) -> Result<Vec<HermesProfileInfo>, String> {
+    let name = input.name.trim();
+    if name == "default" {
+        return Err("不能删除 default profile。".to_string());
+    }
+    if !is_valid_profile_name(name) {
+        return Err("无效 Profile 名称。".to_string());
+    }
+    run_hermes_cli(
+        &[
+            "profile".to_string(),
+            "delete".to_string(),
+            name.to_string(),
+            "--yes".to_string(),
+        ],
+        Duration::from_secs(30),
+    )?;
+    list_hermes_profiles().await
+}
+
+#[tauri::command]
+async fn set_active_hermes_profile(
+    input: ProfileNameInput,
+) -> Result<Vec<HermesProfileInfo>, String> {
+    let name = input.name.trim();
+    if name != "default" && !is_valid_profile_name(name) {
+        return Err("无效 Profile 名称。".to_string());
+    }
+    run_hermes_cli(
+        &["profile".to_string(), "use".to_string(), name.to_string()],
+        Duration::from_secs(10),
+    )?;
+    list_hermes_profiles().await
 }
 
 #[tauri::command]
@@ -4040,6 +4133,86 @@ fn find_hermes_command() -> Result<PathBuf, String> {
     Err("未找到 hermes 命令。请确认 Hermes 已安装，或设置 HERMES_CLI。".to_string())
 }
 
+fn run_hermes_cli(args: &[String], timeout: Duration) -> Result<String, String> {
+    let command = find_hermes_command()?;
+    let mut process = Command::new(command);
+    process
+        .args(args)
+        .env("HOME", home_dir()?)
+        .env("PATH", enhanced_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let repo_dir = hermes_home()?.join("hermes-agent");
+    if repo_dir.exists() {
+        process.current_dir(repo_dir);
+    }
+    let started = SystemTime::now();
+    let mut child = process
+        .spawn()
+        .map_err(|error| format!("启动 hermes 命令失败：{error}"))?;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("等待 hermes 命令失败：{error}"))?
+        {
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                let _ = pipe.read_to_string(&mut stdout);
+            }
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            if status.success() {
+                return Ok(stdout.trim().to_string());
+            }
+            let message = if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else if !stdout.trim().is_empty() {
+                stdout.trim().to_string()
+            } else {
+                format!("hermes 命令退出：{status}")
+            };
+            return Err(message);
+        }
+        if SystemTime::now()
+            .duration_since(started)
+            .unwrap_or_default()
+            > timeout
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("hermes 命令执行超时。".to_string());
+        }
+        sleep(Duration::from_millis(100));
+    }
+}
+
+fn count_profile_skills(profile_home: &Path) -> usize {
+    let root = profile_home.join("skills");
+    let Ok(categories) = fs::read_dir(root) else {
+        return 0;
+    };
+    let mut count = 0;
+    for category in categories.flatten() {
+        let category_path = category.path();
+        if !category_path.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(category_path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("SKILL.md").exists() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 fn hermes_version(path: &PathBuf) -> Result<String, String> {
     let output = Command::new(path)
         .arg("--version")
@@ -6589,6 +6762,9 @@ pub fn run() {
             app_ready,
             inspect_hermes_install,
             list_hermes_profiles,
+            create_hermes_profile,
+            delete_hermes_profile,
+            set_active_hermes_profile,
             list_hermes_toolsets,
             set_hermes_toolset_enabled,
             list_hermes_mcp_servers,

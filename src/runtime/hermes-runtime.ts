@@ -55,6 +55,13 @@ export interface HermesProfileInfo {
   home: string;
   gatewayUrl: string;
   hasApiKey: boolean;
+  isDefault: boolean;
+  model: string;
+  provider: string;
+  hasEnv: boolean;
+  hasSoul: boolean;
+  skillCount: number;
+  gatewayRunning: boolean;
 }
 
 export interface HermesInstallStatus {
@@ -378,6 +385,28 @@ export const TAURI_UNAVAILABLE_MESSAGE =
 export async function listHermesProfiles(): Promise<HermesProfileInfo[]> {
   ensureTauriRuntime();
   return invoke<HermesProfileInfo[]>("list_hermes_profiles");
+}
+
+export async function createHermesProfile(input: {
+  name: string;
+  cloneConfig: boolean;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("create_hermes_profile", { input });
+}
+
+export async function deleteHermesProfile(input: {
+  name: string;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("delete_hermes_profile", { input });
+}
+
+export async function setActiveHermesProfile(input: {
+  name: string;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("set_active_hermes_profile", { input });
 }
 
 export async function inspectHermesInstall(): Promise<HermesInstallStatus> {

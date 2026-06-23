@@ -48,7 +48,9 @@ import {
   buildSessionSummary,
   cancelHermesTask,
   createHermesCronJob,
+  createHermesProfile,
   deleteHermesTeamSession,
+  deleteHermesProfile,
   discoverProviderModels,
   ensureHermesGateway,
   createHermesBackupFile,
@@ -94,6 +96,7 @@ import {
   selectContextFolder,
   removeHermesModel,
   searchHermesSkills,
+  setActiveHermesProfile,
   setHermesToolsetEnabled,
   resumeHermesCronJob,
   startSshTunnel,
@@ -133,7 +136,7 @@ import {
 } from "../runtime/hermes-runtime";
 
 type ActiveView = "team" | "sessions" | "settings";
-type SettingsPanel = "overview" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "logs";
+type SettingsPanel = "overview" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
   id?: string;
@@ -148,6 +151,10 @@ type PoolForm = {
   provider: string;
   apiKey: string;
   label: string;
+};
+type ProfileForm = {
+  name: string;
+  cloneConfig: boolean;
 };
 type McpForm = {
   name: string;
@@ -203,6 +210,11 @@ const emptyPoolForm: PoolForm = {
   provider: "",
   apiKey: "",
   label: "",
+};
+
+const emptyProfileForm: ProfileForm = {
+  name: "",
+  cloneConfig: true,
 };
 
 const emptyMcpForm: McpForm = {
@@ -374,6 +386,7 @@ export function App() {
   const [providerKeyDrafts, setProviderKeyDrafts] = useState<ProviderKeyDrafts>({});
   const [credentialPool, setCredentialPool] = useState<CredentialPoolGroup[]>([]);
   const [poolForm, setPoolForm] = useState<PoolForm>(emptyPoolForm);
+  const [profileForm, setProfileForm] = useState<ProfileForm>(emptyProfileForm);
   const [mcpForm, setMcpForm] = useState<McpForm>(emptyMcpForm);
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([]);
   const [cronForm, setCronForm] = useState<CronJobForm>(emptyCronJobForm);
@@ -388,6 +401,7 @@ export function App() {
   const [messagingBusy, setMessagingBusy] = useState(false);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
+  const [profileBusy, setProfileBusy] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [logBusy, setLogBusy] = useState(false);
@@ -414,6 +428,7 @@ export function App() {
   );
   const settingsPanels: Array<{ id: SettingsPanel; label: string }> = [
     { id: "overview", label: "概览" },
+    { id: "profiles", label: "Profiles" },
     { id: "providers", label: "Provider" },
     { id: "models", label: "Models" },
     { id: "gateway", label: "Gateway" },
@@ -1242,6 +1257,87 @@ export function App() {
       if (right === "default") return 1;
       return left.localeCompare(right);
     });
+  };
+
+  const refreshProfiles = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setProfiles([]);
+      return;
+    }
+    try {
+      const next = await listHermesProfiles();
+      setProfiles(next);
+    } catch (error) {
+      setNotice(`刷新 Profiles 失败：${runtimeErrorMessage(error)}`);
+    }
+  };
+
+  const createProfileFromForm = async () => {
+    const name = profileForm.name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    if (!name) {
+      setNotice("Profile 名称不能为空。");
+      return;
+    }
+    setProfileBusy(true);
+    try {
+      const next = await createHermesProfile({
+        name,
+        cloneConfig: profileForm.cloneConfig,
+      });
+      setProfiles(next);
+      setProfileForm(emptyProfileForm);
+      setNotice(`Profile 已创建：${name}`);
+    } catch (error) {
+      setNotice(`创建 Profile 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const activateProfile = async (profileName: string, openChat = false) => {
+    setProfileBusy(true);
+    try {
+      const next = await setActiveHermesProfile({ name: profileName });
+      setProfiles(next);
+      if (chatAgent) {
+        updateAgentProfile(chatAgent.id, profileName);
+      }
+      await refreshRuntime({ autoStart: true });
+      await refreshHermesCapabilities(profileName);
+      await refreshMessagingPlatforms(profileName);
+      await refreshCronJobs(profileName);
+      setNotice(`已切换到 Profile：${profileName}`);
+      if (openChat) {
+        setActiveView("team");
+      }
+    } catch (error) {
+      setNotice(`切换 Profile 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const deleteProfileByName = async (profile: HermesProfileInfo) => {
+    if (profile.isDefault) {
+      setNotice("default profile 不能删除。");
+      return;
+    }
+    const confirmed = window.confirm(`删除 Profile「${profile.name}」？该操作会调用 Hermes CLI 删除对应 profile。`);
+    if (!confirmed) return;
+    setProfileBusy(true);
+    try {
+      const next = await deleteHermesProfile({ name: profile.name });
+      setProfiles(next);
+      if (profile.active || currentChatProfile === profile.name) {
+        if (chatAgent) updateAgentProfile(chatAgent.id, "default");
+        await activateProfile("default");
+      }
+      setNotice(`Profile 已删除：${profile.name}`);
+    } catch (error) {
+      setNotice(`删除 Profile 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setProfileBusy(false);
+    }
   };
 
   const refreshRemoteConnection = async () => {
@@ -2366,6 +2462,94 @@ export function App() {
                 ) : (
                   <p className="empty-note">配置状态需要 Tauri Runtime 读取本机 Hermes 目录。</p>
                 )}
+              </section>
+
+              <section className={settingsCardClass("profiles", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Profiles</p>
+                    <h2>Hermes Profiles</h2>
+                  </div>
+                  <div className="settings-actions">
+                    <span className="count-pill">{profiles.length}</span>
+                    <button className="refresh-runtime" disabled={profileBusy} type="button" onClick={() => void refreshProfiles()}>
+                      <RefreshCw size={14} />
+                      <span>{profileBusy ? "处理中..." : "刷新"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="profile-manager">
+                  <div className="profile-create-form">
+                    <input
+                      value={profileForm.name}
+                      onChange={(event) =>
+                        setProfileForm((current) => ({
+                          ...current,
+                          name: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""),
+                        }))
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void createProfileFromForm();
+                      }}
+                      placeholder="profile-name"
+                    />
+                    <label className="mcp-check">
+                      <input
+                        checked={profileForm.cloneConfig}
+                        type="checkbox"
+                        onChange={(event) => setProfileForm((current) => ({ ...current, cloneConfig: event.target.checked }))}
+                      />
+                      clone config
+                    </label>
+                    <button className="refresh-runtime" disabled={profileBusy || !profileForm.name.trim()} type="button" onClick={() => void createProfileFromForm()}>
+                      <Plus size={14} />
+                      <span>创建 Profile</span>
+                    </button>
+                  </div>
+
+                  <div className="profile-card-grid">
+                    {profiles.length > 0 ? (
+                      profiles.map((profile) => (
+                        <article className={`profile-card ${profile.active ? "active" : ""}`} key={profile.name}>
+                          <div className="profile-card-head">
+                            <div>
+                              <strong>{profile.name}</strong>
+                              <span>{profile.provider || "auto"} · {profile.model || "no model"}</span>
+                              <small>{profile.home}</small>
+                            </div>
+                            <em>{profile.active ? "active" : profile.isDefault ? "default" : "profile"}</em>
+                          </div>
+                          <div className="profile-card-stats">
+                            <span>{profile.hasEnv ? ".env" : "no env"}</span>
+                            <span>{profile.hasSoul ? "SOUL" : "no SOUL"}</span>
+                            <span>{profile.skillCount} skills</span>
+                            <span>{profile.gatewayRunning ? "gateway on" : "gateway off"}</span>
+                            <span>{profile.hasApiKey ? "api key" : "no key"}</span>
+                          </div>
+                          <div className="model-card-actions profile-card-actions">
+                            <button disabled={profileBusy || profile.active} type="button" onClick={() => void activateProfile(profile.name)}>
+                              <Plug size={14} />
+                              <span>{profile.active ? "已激活" : "激活"}</span>
+                            </button>
+                            <button disabled={profileBusy} type="button" onClick={() => void activateProfile(profile.name, true)}>
+                              <MessageSquareText size={14} />
+                              <span>聊天</span>
+                            </button>
+                            {!profile.isDefault && (
+                              <button disabled={profileBusy} type="button" onClick={() => void deleteProfileByName(profile)}>
+                                <Trash2 size={14} />
+                                <span>删除</span>
+                              </button>
+                            )}
+                          </div>
+                        </article>
+                      ))
+                    ) : (
+                      <p className="empty-note">未读取到 Hermes profile。请先刷新 Runtime。</p>
+                    )}
+                  </div>
+                </div>
               </section>
 
               <section className={settingsCardClass("providers", "settings-card-wide")}>
