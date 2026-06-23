@@ -6,9 +6,12 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
 } from "react";
 import type { Message, MessageAttachment } from "../core/types";
+import { filesFromClipboard } from "./attachmentProcessing";
 import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
 import { useInputHistory } from "./chatInput/useInputHistory";
@@ -20,6 +23,14 @@ import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtim
 function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) || path;
+}
+
+function attachmentLabel(attachment: MessageAttachment): string {
+  const kind = attachment.kind === "path-ref" || attachment.kind === "file" ? "file" : attachment.kind;
+  if (!attachment.size) return kind;
+  if (attachment.size < 1024) return `${kind} · ${attachment.size} B`;
+  if (attachment.size < 1024 * 1024) return `${kind} · ${(attachment.size / 1024).toFixed(1)} KB`;
+  return `${kind} · ${(attachment.size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export function ChatView({
@@ -44,6 +55,7 @@ export function ChatView({
   onDraftChange,
   onAttachmentPathChange,
   onAddAttachment,
+  onAttachFiles,
   onPickAttachments,
   onRemoveAttachment,
   onNewChat,
@@ -78,6 +90,7 @@ export function ChatView({
   onDraftChange: (value: string) => void;
   onAttachmentPathChange: (value: string) => void;
   onAddAttachment: (path?: string) => void;
+  onAttachFiles: (files: File[]) => void;
   onPickAttachments: () => void;
   onRemoveAttachment: (id: string) => void;
   onNewChat: () => void;
@@ -195,6 +208,21 @@ export function ChatView({
     }
   }
 
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const { files, hasText } = filesFromClipboard(event);
+    if (files.length === 0) return;
+    if (!hasText) event.preventDefault();
+    onAttachFiles(files);
+  }
+
+  function handleDrop(event: DragEvent<HTMLElement>) {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    setAttachmentError(null);
+    onAttachFiles(files);
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event) || composingRef.current) return;
 
@@ -308,7 +336,13 @@ export function ChatView({
         <WorktreePanel rootPath={contextFolder} onAttachFile={onAddAttachment} />
       )}
 
-      <footer className="composer chat-composer">
+      <footer
+        className="composer chat-composer"
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+        }}
+        onDrop={handleDrop}
+      >
         {slashMenuOpen && filteredSlashCommands.length > 0 && (
           <div className="slash-menu" ref={slashMenuRef}>
             <div className="slash-menu-header">
@@ -334,9 +368,10 @@ export function ChatView({
         {draftAttachments.length > 0 && (
           <div className="draft-attachments">
             {draftAttachments.map((attachment) => (
-              <span key={attachment.id} title={attachment.path}>
+              <span key={attachment.id} title={attachment.path || attachment.mime || attachment.kind}>
                 <Paperclip size={13} />
                 {attachment.name}
+                <small>{attachmentLabel(attachment)}</small>
                 <button type="button" onClick={() => onRemoveAttachment(attachment.id)}>
                   <XCircle size={13} />
                 </button>
@@ -357,6 +392,7 @@ export function ChatView({
             placeholder="Message Hermes..."
             value={draft}
             onChange={handleInputChange}
+            onPaste={handlePaste}
             onKeyDown={handleKeyDown}
             onCompositionStart={() => {
               composingRef.current = true;

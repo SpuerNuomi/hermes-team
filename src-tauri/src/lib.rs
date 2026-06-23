@@ -353,8 +353,21 @@ struct RuntimeMessage {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeAttachment {
-    path: String,
+    path: Option<String>,
     name: Option<String>,
+    kind: Option<String>,
+    mime: Option<String>,
+    size: Option<u64>,
+    text: Option<String>,
+    data_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StageAttachmentInput {
+    session_id: Option<String>,
+    filename: String,
+    base64_bytes: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2272,7 +2285,45 @@ fn read_attachment_context(attachments: &[RuntimeAttachment]) -> Result<String, 
     }
     let mut sections = Vec::new();
     for attachment in attachments.iter().take(8) {
-        let path = PathBuf::from(attachment.path.trim());
+        let title = attachment
+            .name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or(attachment.path.as_deref())
+            .unwrap_or("attachment");
+        let kind = attachment.kind.as_deref().unwrap_or("path-ref");
+        if kind == "text-file" {
+            let content = attachment.text.as_deref().unwrap_or("");
+            sections.push(format!(
+                "## {title}\n类型：text-file\nMIME：{}\n大小：{} bytes\n内容：\n{}",
+                attachment.mime.as_deref().unwrap_or("text/plain"),
+                attachment.size.unwrap_or(content.len() as u64),
+                truncate(content, 12000)
+            ));
+            continue;
+        }
+        if kind == "image" {
+            let data_url = attachment.data_url.as_deref().unwrap_or("");
+            sections.push(format!(
+                "## {title}\n类型：image\nMIME：{}\n大小：{} bytes\n状态：图片已作为 data URL 随消息附加。data URL 前缀：{}",
+                attachment.mime.as_deref().unwrap_or("image/*"),
+                attachment.size.unwrap_or(0),
+                truncate(data_url, 180)
+            ));
+            continue;
+        }
+        let Some(raw_path) = attachment
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            sections.push(format!(
+                "## {title}\n类型：{kind}\n状态：附件缺少可读取路径"
+            ));
+            continue;
+        };
+        let path = PathBuf::from(raw_path);
         let title = attachment
             .name
             .as_deref()
@@ -2350,6 +2401,50 @@ fn directory_entry_info(path: PathBuf) -> Result<DirectoryEntryInfo, String> {
         is_dir: metadata.is_dir(),
         size_bytes: metadata.is_file().then_some(metadata.len()),
     })
+}
+
+fn sanitize_filename(value: &str) -> String {
+    let cleaned = value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if cleaned.is_empty() {
+        "attachment".to_string()
+    } else {
+        cleaned.chars().take(120).collect()
+    }
+}
+
+fn unique_staged_path(dir: &Path, filename: &str) -> PathBuf {
+    let candidate = dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment");
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    if ext.is_empty() {
+        dir.join(format!("{stem}-{millis}"))
+    } else {
+        dir.join(format!("{stem}-{millis}.{ext}"))
+    }
 }
 
 #[tauri::command]
@@ -2540,6 +2635,32 @@ return POSIX path of chosenFolder
     }
     #[allow(unreachable_code)]
     Err("当前平台暂未实现系统文件夹选择器。".to_string())
+}
+
+#[tauri::command]
+fn stage_attachment_file(input: StageAttachmentInput) -> Result<SelectedPathInfo, String> {
+    use base64::Engine;
+    let filename = sanitize_filename(&input.filename);
+    let session_id = input
+        .session_id
+        .as_deref()
+        .map(sanitize_filename)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    let target_dir = app_home()?.join("attachments").join(session_id);
+    fs::create_dir_all(&target_dir).map_err(|error| {
+        format!(
+            "创建附件暂存目录 {} 失败：{error}",
+            target_dir.to_string_lossy()
+        )
+    })?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input.base64_bytes.trim())
+        .map_err(|error| format!("解析附件 base64 失败：{error}"))?;
+    let target = unique_staged_path(&target_dir, &filename);
+    fs::write(&target, bytes)
+        .map_err(|error| format!("写入暂存附件 {} 失败：{error}", target.to_string_lossy()))?;
+    selected_path_info(target)
 }
 
 fn context_folder_system_message(context_folder: Option<&str>) -> Option<serde_json::Value> {
@@ -4955,6 +5076,7 @@ pub fn run() {
             probe_hermes_gateway,
             select_attachment_files,
             select_context_folder,
+            stage_attachment_file,
             read_directory,
             read_file,
             read_image_file,

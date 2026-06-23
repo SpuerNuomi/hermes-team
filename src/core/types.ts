@@ -31,9 +31,14 @@ export interface CapabilityBinding {
 
 export interface MessageAttachment {
   id: string;
-  path: string;
+  path?: string;
   name: string;
-  kind: "file";
+  kind: "file" | "path-ref" | "text-file" | "image";
+  mime?: string;
+  size?: number;
+  text?: string;
+  dataUrl?: string;
+  originalSize?: number;
   createdAt: number;
 }
 

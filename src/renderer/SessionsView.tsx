@@ -200,7 +200,9 @@ function sessionMatchesQuery(session: HermesTeamSessionSummary, query: string): 
     return message.attachments?.some(
       (attachment) =>
         attachment.name.toLowerCase().includes(query) ||
-        attachment.path.toLowerCase().includes(query),
+        attachment.path?.toLowerCase().includes(query) ||
+        attachment.text?.toLowerCase().includes(query) ||
+        attachment.mime?.toLowerCase().includes(query),
     );
   });
 }

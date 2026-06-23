@@ -13,6 +13,14 @@ function copyToClipboard(value: string): Promise<void> {
   return Promise.reject(new Error("clipboard unavailable"));
 }
 
+function attachmentLabel(attachment: NonNullable<Message["attachments"]>[number]): string {
+  const kind = attachment.kind === "path-ref" || attachment.kind === "file" ? "file" : attachment.kind;
+  if (!attachment.size) return kind;
+  if (attachment.size < 1024) return `${kind} · ${attachment.size} B`;
+  if (attachment.size < 1024 * 1024) return `${kind} · ${(attachment.size / 1024).toFixed(1)} KB`;
+  return `${kind} · ${(attachment.size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export const TypingIndicator = memo(function TypingIndicator({
   detail,
 }: {
@@ -173,9 +181,10 @@ export const MessageRow = memo(function MessageRow({
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-attachments">
             {message.attachments.map((attachment) => (
-              <span key={attachment.id} title={attachment.path}>
+              <span key={attachment.id} title={attachment.path || attachment.mime || attachment.kind}>
                 <Paperclip size={13} />
                 {attachment.name}
+                <small>{attachmentLabel(attachment)}</small>
               </span>
             ))}
           </div>

@@ -918,6 +918,14 @@ button {
   font-size: 12px;
 }
 
+.message-attachments small,
+.draft-attachments small {
+  color: #647067;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .message.user .message-attachments span {
   color: #17201c;
   background: #f9faf7;

@@ -9,8 +9,13 @@ export interface RuntimeMessage {
 }
 
 export interface RuntimeAttachment {
-  path: string;
+  path?: string;
   name?: string;
+  kind?: string;
+  mime?: string;
+  size?: number;
+  text?: string;
+  dataUrl?: string;
 }
 
 export interface SelectedPathInfo {
@@ -645,6 +650,15 @@ export async function selectAttachmentFiles(): Promise<SelectedPathInfo[]> {
   return invoke<SelectedPathInfo[]>("select_attachment_files");
 }
 
+export async function stageAttachmentFile(input: {
+  sessionId?: string;
+  filename: string;
+  base64Bytes: string;
+}): Promise<SelectedPathInfo> {
+  ensureTauriRuntime();
+  return invoke<SelectedPathInfo>("stage_attachment_file", { input });
+}
+
 export async function selectContextFolder(): Promise<SelectedPathInfo | null> {
   ensureTauriRuntime();
   return invoke<SelectedPathInfo | null>("select_context_folder");
@@ -803,6 +817,11 @@ function attachmentsForTask(messages: Message[], triggerMessageId: string): Runt
     ?.attachments?.map((attachment) => ({
       path: attachment.path,
       name: attachment.name,
+      kind: attachment.kind,
+      mime: attachment.mime,
+      size: attachment.size,
+      text: attachment.text,
+      dataUrl: attachment.dataUrl,
     })) ?? [];
 }
 
@@ -813,6 +832,8 @@ function buildInstructionWithAttachments(instruction: string, messages: Message[
     instruction,
     "",
     "用户随消息附加了以下本地文件。请只基于 Hermes Runtime 实际读取到的附件内容回答；如果附件不可读，请说明具体缺口。",
-    ...attachments.map((attachment) => `- ${attachment.name ?? "attachment"}: ${attachment.path}`),
+    ...attachments.map((attachment) =>
+      `- ${attachment.name ?? "attachment"} (${attachment.kind ?? "path-ref"}): ${attachment.path ?? attachment.mime ?? "inline"}`,
+    ),
   ].join("\n");
 }

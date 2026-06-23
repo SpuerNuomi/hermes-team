@@ -37,6 +37,7 @@ import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
 import type { MessageAttachment, WorkspaceMode } from "../core/types";
+import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { ChatView } from "./ChatView";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
@@ -1499,7 +1500,7 @@ export function App() {
           id: `att-${Date.now()}-${Math.random().toString(16).slice(2)}`,
           path,
           name,
-          kind: "file",
+          kind: "path-ref",
           createdAt: Date.now(),
         },
       ];
@@ -1520,7 +1521,8 @@ export function App() {
             id: `att-${Date.now()}-${Math.random().toString(16).slice(2)}`,
             path: item.path,
             name: item.name,
-            kind: "file",
+            kind: "path-ref",
+            size: item.sizeBytes,
             createdAt: Date.now(),
           });
           existing.add(item.path);
@@ -1535,6 +1537,37 @@ export function App() {
 
   const removeDraftAttachment = (id: string) => {
     setDraftAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  };
+
+  const attachDroppedOrPastedFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+    try {
+      const result = await processDroppedOrPastedFiles({
+        files,
+        existingCount: draftAttachments.length,
+        sessionId: state.workspace.id,
+      });
+      if (result.attachments.length > 0) {
+        setDraftAttachments((current) => {
+          const existing = new Set(current.map((attachment) => attachment.path || attachment.name));
+          const next = [...current];
+          for (const attachment of result.attachments) {
+            const key = attachment.path || `${attachment.kind}:${attachment.name}:${attachment.size ?? 0}`;
+            if (existing.has(key)) continue;
+            next.push(attachment);
+            existing.add(key);
+          }
+          return next;
+        });
+      }
+      const detail = [
+        result.attachments.length > 0 ? `已添加 ${result.attachments.length} 个附件。` : "",
+        ...result.errors,
+      ].filter(Boolean);
+      if (detail.length > 0) setNotice(detail.join(" "));
+    } catch (error) {
+      setNotice(`处理附件失败：${runtimeErrorMessage(error)}`);
+    }
   };
 
   const setChatContextFolder = (path: string | null) => {
@@ -2854,6 +2887,7 @@ export function App() {
           onDraftChange={setDraft}
           onAttachmentPathChange={setAttachmentPathDraft}
           onAddAttachment={addDraftAttachment}
+          onAttachFiles={(files) => void attachDroppedOrPastedFiles(files)}
           onPickAttachments={() => void pickDraftAttachments()}
           onRemoveAttachment={removeDraftAttachment}
           onNewChat={() => void createNewSession()}
