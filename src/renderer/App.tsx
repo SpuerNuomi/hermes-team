@@ -41,6 +41,7 @@ import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { ChatView } from "./ChatView";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
+import { useReasoningEffort } from "./useReasoningEffort";
 import {
   addCredentialPoolEntry,
   activateHermesModel,
@@ -1876,6 +1877,11 @@ export function App() {
     ? state.bindings.find((binding) => binding.agentId === chatAgent.id)
     : undefined;
   const currentChatProfile = chatBinding?.hermesProfile ?? "default";
+  const { reasoningEffort, setReasoningEffort } = useReasoningEffort(currentChatProfile);
+  const selectReasoningEffort = async (value: typeof reasoningEffort) => {
+    await setReasoningEffort(value);
+    setNotice(`Reasoning effort 已保存到聊天 Profile「${currentChatProfile}」：${value}。`);
+  };
   const activeRuntimeEvent = activeTask
     ? runtimeEvents.find((event) => event.taskId === activeTask.id)
     : undefined;
@@ -2882,6 +2888,7 @@ export function App() {
           contextFolder={chatBinding?.workDir ?? null}
           worktreeVisible={worktreeVisible}
           activeModel={activeModel}
+          reasoningEffort={reasoningEffort}
           modelBusy={modelBusy}
           formatTime={formatTime}
           onDraftChange={setDraft}
@@ -2897,6 +2904,7 @@ export function App() {
           onToggleWorktree={() => setWorktreeVisible((value) => !value)}
           onSelectProfile={selectChatProfile}
           onSelectModel={(model) => void activateChatModel(model)}
+          onSelectReasoningEffort={selectReasoningEffort}
           onOpenModels={() => {
             setActiveView("settings");
             setActiveSettingsPanel("models");

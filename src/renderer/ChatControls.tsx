@@ -1,24 +1,30 @@
 import { Check, ChevronDown, Settings } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import type { ReasoningEffort } from "../core/reasoning";
 import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtime/hermes-runtime";
+import { ReasoningEffortPicker } from "./ReasoningEffortPicker";
 
 export const ChatControls = memo(function ChatControls({
   profiles,
   models,
   currentProfile,
   activeModel,
+  reasoningEffort,
   busy,
   onSelectProfile,
   onSelectModel,
+  onSelectReasoningEffort,
   onOpenModels,
 }: {
   profiles: HermesProfileInfo[];
   models: SavedModel[];
   currentProfile: string;
   activeModel: ActiveModelConfig | null;
+  reasoningEffort: ReasoningEffort;
   busy: boolean;
   onSelectProfile: (profile: string) => void;
   onSelectModel: (model: SavedModel) => void;
+  onSelectReasoningEffort: (value: ReasoningEffort) => void | Promise<void>;
   onOpenModels: () => void;
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -179,6 +185,12 @@ export const ChatControls = memo(function ChatControls({
           </div>
         )}
       </div>
+
+      <ReasoningEffortPicker
+        disabled={busy}
+        value={reasoningEffort}
+        onChange={onSelectReasoningEffort}
+      />
     </div>
   );
 });

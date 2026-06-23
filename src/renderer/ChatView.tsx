@@ -11,6 +11,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import type { Message, MessageAttachment } from "../core/types";
+import type { ReasoningEffort } from "../core/reasoning";
 import { filesFromClipboard } from "./attachmentProcessing";
 import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
@@ -50,6 +51,7 @@ export function ChatView({
   contextFolder,
   worktreeVisible,
   activeModel,
+  reasoningEffort,
   modelBusy,
   formatTime,
   onDraftChange,
@@ -65,6 +67,7 @@ export function ChatView({
   onToggleWorktree,
   onSelectProfile,
   onSelectModel,
+  onSelectReasoningEffort,
   onOpenModels,
   onSend,
   onStop,
@@ -85,6 +88,7 @@ export function ChatView({
   contextFolder: string | null;
   worktreeVisible: boolean;
   activeModel: ActiveModelConfig | null;
+  reasoningEffort: ReasoningEffort;
   modelBusy: boolean;
   formatTime: (timestamp: number) => string;
   onDraftChange: (value: string) => void;
@@ -100,6 +104,7 @@ export function ChatView({
   onToggleWorktree: () => void;
   onSelectProfile: (profile: string) => void;
   onSelectModel: (model: SavedModel) => void;
+  onSelectReasoningEffort: (value: ReasoningEffort) => void | Promise<void>;
   onOpenModels: () => void;
   onSend: (contentOverride?: string) => void;
   onStop: () => void;
@@ -462,9 +467,11 @@ export function ChatView({
               models={models}
               currentProfile={currentProfile}
               activeModel={activeModel}
+              reasoningEffort={reasoningEffort}
               busy={modelBusy}
               onSelectProfile={onSelectProfile}
               onSelectModel={onSelectModel}
+              onSelectReasoningEffort={onSelectReasoningEffort}
               onOpenModels={onOpenModels}
             />
             <div className="chat-input-toolbar-spacer" />

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { OrchestrationState } from "../core/orchestrator";
+import type { ReasoningEffort } from "../core/reasoning";
 import type { Agent, CapabilityBinding, DispatchTask, Message, MessageAttachment } from "../core/types";
 
 export interface RuntimeMessage {
@@ -405,6 +406,23 @@ export async function getHermesModelConfig(params: {
   return invoke<ActiveModelConfig>("get_hermes_model_config", {
     profile: params.profile,
   });
+}
+
+export async function getHermesReasoningEffort(params: {
+  profile?: string;
+} = {}): Promise<ReasoningEffort> {
+  ensureTauriRuntime();
+  return invoke<ReasoningEffort>("get_hermes_reasoning_effort", {
+    profile: params.profile,
+  });
+}
+
+export async function setHermesReasoningEffort(input: {
+  profile?: string;
+  value: ReasoningEffort;
+}): Promise<ReasoningEffort> {
+  ensureTauriRuntime();
+  return invoke<ReasoningEffort>("set_hermes_reasoning_effort", { input });
 }
 
 export async function listHermesModels(): Promise<SavedModel[]> {

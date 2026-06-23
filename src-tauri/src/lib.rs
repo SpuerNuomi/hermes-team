@@ -244,6 +244,13 @@ struct ActivateModelInput {
     context_length: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetReasoningEffortInput {
+    profile: Option<String>,
+    value: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderKeyInfo {
@@ -909,6 +916,20 @@ async fn write_hermes_memory_content(input: WriteMemoryInput) -> Result<MemoryCo
 async fn get_hermes_model_config(profile: Option<String>) -> Result<ActiveModelConfig, String> {
     let profile = normalize_profile(profile.as_deref());
     read_model_config(profile.as_deref())
+}
+
+#[tauri::command]
+async fn get_hermes_reasoning_effort(profile: Option<String>) -> Result<String, String> {
+    let profile = normalize_profile(profile.as_deref());
+    read_reasoning_effort_config(profile.as_deref())
+}
+
+#[tauri::command]
+async fn set_hermes_reasoning_effort(input: SetReasoningEffortInput) -> Result<String, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let value = normalize_reasoning_effort(&input.value);
+    write_reasoning_effort_config(profile.as_deref(), &value)?;
+    read_reasoning_effort_config(profile.as_deref())
 }
 
 #[tauri::command]
@@ -2196,11 +2217,16 @@ async fn run_hermes_agent_stream(
         "content": user_content,
     }));
 
-    let body = json!({
+    let mut body = json!({
         "model": input.model.unwrap_or_else(|| "hermes-agent".to_string()),
         "messages": messages,
         "stream": true,
     });
+    if let Some(reasoning_effort) = reasoning_effort_for_profile(input.profile.as_deref())? {
+        if let Some(body_obj) = body.as_object_mut() {
+            body_obj.insert("reasoning_effort".to_string(), json!(reasoning_effort));
+        }
+    }
 
     emit_stream_event(
         &app,
@@ -3880,6 +3906,50 @@ fn read_model_config(profile: Option<&str>) -> Result<ActiveModelConfig, String>
     })
 }
 
+fn normalize_reasoning_effort(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "minimal" => "minimal".to_string(),
+        "low" => "low".to_string(),
+        "medium" => "medium".to_string(),
+        "high" => "high".to_string(),
+        "xhigh" => "xhigh".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn read_reasoning_effort_config(profile: Option<&str>) -> Result<String, String> {
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    Ok(
+        read_nested_yaml_scalar(&config, &["agent", "reasoning_effort"])
+            .map(|value| normalize_reasoning_effort(&value))
+            .unwrap_or_else(|| "auto".to_string()),
+    )
+}
+
+fn write_reasoning_effort_config(profile: Option<&str>, value: &str) -> Result<(), String> {
+    let home = profile_home(profile)?;
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("config.yaml");
+    let mut content = fs::read_to_string(&path).unwrap_or_default();
+    content = upsert_block_child(
+        &content,
+        "agent",
+        "reasoning_effort",
+        &quote_yaml(&normalize_reasoning_effort(value)),
+    );
+    fs::write(&path, ensure_trailing_newline(&content))
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
+fn reasoning_effort_for_profile(profile: Option<&str>) -> Result<Option<String>, String> {
+    let value = read_reasoning_effort_config(profile)?;
+    Ok(match value.as_str() {
+        "minimal" | "low" | "medium" | "high" | "xhigh" => Some(value),
+        _ => None,
+    })
+}
+
 fn write_model_config(
     profile: Option<&str>,
     provider: &str,
@@ -5043,6 +5113,8 @@ pub fn run() {
             read_hermes_memory_content,
             write_hermes_memory_content,
             get_hermes_model_config,
+            get_hermes_reasoning_effort,
+            set_hermes_reasoning_effort,
             list_hermes_models,
             save_hermes_model,
             remove_hermes_model,
