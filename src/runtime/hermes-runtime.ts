@@ -225,6 +225,7 @@ export interface HermesTeamSessionSummary {
   messageCount: number;
   taskCount: number;
   updatedAt: number;
+  contextFolder?: string | null;
   state: OrchestrationState;
 }
 
@@ -724,6 +725,9 @@ export async function runHermesTaskStream(params: {
 
 export function buildSessionSummary(state: OrchestrationState): HermesTeamSessionSummary {
   const firstUserMessage = state.messages.find((message) => message.authorKind === "user");
+  const defaultAgentId = state.workspace.defaultAgentId ?? state.agents[0]?.id;
+  const contextFolder =
+    state.bindings.find((binding) => binding.agentId === defaultAgentId)?.workDir?.trim() || null;
   return {
     id: state.workspace.id,
     workspaceId: state.workspace.id,
@@ -731,6 +735,7 @@ export function buildSessionSummary(state: OrchestrationState): HermesTeamSessio
     messageCount: state.messages.length,
     taskCount: state.tasks.length,
     updatedAt: Date.now(),
+    contextFolder,
     state,
   };
 }

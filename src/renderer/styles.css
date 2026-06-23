@@ -180,6 +180,36 @@ button {
   gap: 6px;
 }
 
+.recent-project-group {
+  display: grid;
+  gap: 4px;
+}
+
+.recent-project-group + .recent-project-group {
+  margin-top: 6px;
+}
+
+.recent-project-head,
+.recent-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 10px;
+  color: #647067;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.recent-project-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
 .recent-session {
   display: grid;
   gap: 3px;
@@ -212,6 +242,29 @@ button {
 .recent-session span {
   color: #647067;
   font-size: 12px;
+}
+
+.session-context-folder {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  color: #4a554d;
+  background: #eef2ef;
+  border: 1px solid #d9ded6;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-context-folder svg {
+  flex: 0 0 auto;
 }
 
 .panel-label {

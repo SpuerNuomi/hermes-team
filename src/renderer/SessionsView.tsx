@@ -1,5 +1,9 @@
-import { History, Plus } from "lucide-react";
+import { FolderOpen, History, Plus } from "lucide-react";
 import type { HermesTeamSessionSummary } from "../runtime/hermes-runtime";
+
+function folderName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
+}
 
 export function SessionsView({
   sessions,
@@ -46,6 +50,12 @@ export function SessionsView({
                     <span>
                       {formatTime(session.updatedAt)} · {session.messageCount} messages
                     </span>
+                    {session.contextFolder && (
+                      <span className="session-context-folder" title={session.contextFolder}>
+                        <FolderOpen size={12} />
+                        {folderName(session.contextFolder)}
+                      </span>
+                    )}
                   </div>
                   <div className="mini-actions">
                     <button type="button" onClick={() => onRestore(session)}>

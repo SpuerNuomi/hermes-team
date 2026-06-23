@@ -2932,6 +2932,12 @@ export function App() {
                 <article className="log-card" key={session.id}>
                   <strong>{session.title}</strong>
                   <span>{formatTime(session.updatedAt)} · {session.messageCount} messages · {session.taskCount} tasks</span>
+                  {session.contextFolder && (
+                    <span className="session-context-folder" title={session.contextFolder}>
+                      <FolderPlus size={12} />
+                      {basename(session.contextFolder)}
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="log-card-action"
@@ -2998,6 +3004,10 @@ function StatusRow({ label, value, ok }: { label: string; value: string; ok: boo
       <em className={ok ? "ok" : "warning"}>{ok ? "OK" : "需要处理"}</em>
     </div>
   );
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
 }
 
 function decisionLabel(type: string): string {
@@ -3074,6 +3084,11 @@ function normalizeLoadedState(saved: OrchestrationState): OrchestrationState {
 function normalizeLoadedSessions(sessions: HermesTeamSessionSummary[]): HermesTeamSessionSummary[] {
   return sessions.map((session) => {
     const state = normalizeLoadedState(session.state);
+    const defaultAgentId = state.workspace.defaultAgentId ?? state.agents[0]?.id;
+    const contextFolder =
+      session.contextFolder ??
+      state.bindings.find((binding) => binding.agentId === defaultAgentId)?.workDir?.trim() ??
+      null;
     return {
       ...session,
       title:
@@ -3081,6 +3096,7 @@ function normalizeLoadedSessions(sessions: HermesTeamSessionSummary[]): HermesTe
         session.title === LEGACY_AGENT_WORKSPACE_NAME
           ? DEFAULT_WORKSPACE_NAME
           : session.title,
+      contextFolder,
       state,
       messageCount: state.messages.length,
       taskCount: state.tasks.length,

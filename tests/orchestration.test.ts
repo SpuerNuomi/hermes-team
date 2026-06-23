@@ -6,6 +6,7 @@ import { ParallelBatchTracker } from "../src/core/parallel-batch-tracker";
 import { SerialChainTracker } from "../src/core/serial-chain-tracker";
 import { handleUserMessage, type OrchestrationState } from "../src/core/orchestrator";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../src/core/seed";
+import { buildSessionSummary } from "../src/runtime/hermes-runtime";
 
 describe("mention parser", () => {
   it("parses known agent mentions and ignores inline text matches", () => {
@@ -192,5 +193,36 @@ describe("orchestration engine", () => {
     if (result.state.logs[0].decision.type === "dispatch") {
       expect(result.state.logs[0].decision.assignments).toHaveLength(2);
     }
+  });
+});
+
+describe("session summary", () => {
+  it("persists the default agent context folder", () => {
+    const state: OrchestrationState = {
+      workspace: { ...seedWorkspace, defaultAgentId: "agent-hermes" },
+      agents: seedAgents,
+      bindings: seedBindings.map((binding) =>
+        binding.agentId === "agent-hermes"
+          ? { ...binding, workDir: "/Users/admin/project" }
+          : binding,
+      ),
+      messages: [
+        {
+          id: "msg-1",
+          workspaceId: seedWorkspace.id,
+          authorKind: "user",
+          authorName: "User",
+          content: "hello",
+          createdAt: 1,
+        },
+      ],
+      tasks: [],
+      logs: [],
+    };
+
+    expect(buildSessionSummary(state)).toMatchObject({
+      contextFolder: "/Users/admin/project",
+      title: "hello",
+    });
   });
 });
