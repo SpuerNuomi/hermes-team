@@ -1,4 +1,4 @@
-import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio } from "lucide-react";
+import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio, Wrench } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import type { Message } from "../core/types";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -136,8 +136,9 @@ export const MessageRow = memo(function MessageRow({
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
   const isReasoning = message.kind === "reasoning";
+  const isTool = message.kind === "tool";
   const showApprovalBar =
-    isAgent && !isReasoning && !isLoading && isLast && APPROVAL_RE.test(message.content);
+    isAgent && !isReasoning && !isTool && !isLoading && isLast && APPROVAL_RE.test(message.content);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -152,6 +153,8 @@ export const MessageRow = memo(function MessageRow({
   return (
     <article
       className={`message ${message.authorKind} ${isReasoning ? "message-reasoning" : ""} ${
+        isTool ? "message-tool" : ""
+      } ${
         showMeta ? "" : "message-grouped"
       }`.trim()}
       key={message.id}
@@ -164,12 +167,12 @@ export const MessageRow = memo(function MessageRow({
       <div className="message-body">
         {showMeta && (
           <div className="message-meta">
-            <span>{isReasoning ? "思考过程" : message.authorName}</span>
+            <span>{isReasoning ? "思考过程" : isTool ? "工具调用" : message.authorName}</span>
             <time>{formatTime(message.createdAt)}</time>
           </div>
         )}
-        {isReasoning ? (
-          <div className="message-content reasoning-content">
+        {isReasoning || isTool ? (
+          <div className={`message-content reasoning-content ${isTool ? "tool-content" : ""}`}>
             <button
               className="reasoning-summary"
               type="button"
@@ -180,8 +183,8 @@ export const MessageRow = memo(function MessageRow({
                 size={14}
                 className={`reasoning-chevron ${reasoningOpen ? "reasoning-chevron-open" : ""}`}
               />
-              <Brain size={14} />
-              <span>{isLoading ? "正在思考..." : "思考过程"}</span>
+              {isTool ? <Wrench size={14} /> : <Brain size={14} />}
+              <span>{isTool ? "工具调用" : isLoading ? "正在思考..." : "思考过程"}</span>
               <small>{message.content.split("\n").length} lines</small>
             </button>
             {reasoningOpen && <pre className="reasoning-pre">{message.content}</pre>}
@@ -191,8 +194,8 @@ export const MessageRow = memo(function MessageRow({
                   className="message-copy"
                   type="button"
                   onClick={handleCopy}
-                  title={copied ? "Copied" : "Copy reasoning"}
-                  aria-label={copied ? "Copied" : "Copy reasoning"}
+                  title={copied ? "Copied" : isTool ? "Copy tool event" : "Copy reasoning"}
+                  aria-label={copied ? "Copied" : isTool ? "Copy tool event" : "Copy reasoning"}
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>

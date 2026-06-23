@@ -577,6 +577,16 @@ struct RuntimeStreamEvent {
 struct ParsedStreamDelta {
     message_delta: String,
     reasoning_delta: String,
+    tool_event: Option<ParsedToolEvent>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedToolEvent {
+    call_id: String,
+    name: String,
+    status: String,
+    preview: String,
+    result: String,
 }
 
 struct RuntimeEndpoint {
@@ -3409,7 +3419,13 @@ fn process_sse_text(
         if data == "[DONE]" {
             return Ok(true);
         }
-        let delta = parse_stream_delta(&data)?;
+        let event_type = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("event:").map(str::trim))
+            .last()
+            .unwrap_or("")
+            .to_string();
+        let delta = parse_stream_delta(&event_type, &data)?;
         if !delta.reasoning_delta.is_empty() {
             full_reasoning.push_str(&delta.reasoning_delta);
             emit_stream_event(
@@ -3420,6 +3436,18 @@ fn process_sse_text(
                     delta: delta.reasoning_delta,
                     content: full_reasoning.clone(),
                     message: String::new(),
+                },
+            )?;
+        }
+        if let Some(tool_event) = delta.tool_event {
+            emit_stream_event(
+                app,
+                RuntimeStreamEvent {
+                    task_id: task_id.to_string(),
+                    kind: "tool".to_string(),
+                    delta: tool_event.status.clone(),
+                    content: format_tool_event_content(&tool_event),
+                    message: tool_event.call_id,
                 },
             )?;
         }
@@ -3440,7 +3468,7 @@ fn process_sse_text(
     Ok(false)
 }
 
-fn parse_stream_delta(data: &str) -> Result<ParsedStreamDelta, String> {
+fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta, String> {
     let value = serde_json::from_str::<serde_json::Value>(data)
         .map_err(|error| format!("Hermes Runtime 流式事件不是 JSON：{error}"))?;
     let message_delta = value
@@ -3494,7 +3522,137 @@ fn parse_stream_delta(data: &str) -> Result<ParsedStreamDelta, String> {
             message_delta
         },
         reasoning_delta,
+        tool_event: parse_tool_stream_event(event_type, &value),
     })
+}
+
+fn parse_tool_stream_event(event_type: &str, value: &serde_json::Value) -> Option<ParsedToolEvent> {
+    if event_type == "hermes.tool.progress" {
+        return Some(tool_event_from_payload(event_type, value, "running"));
+    }
+
+    if let Some(tool_call) = first_tool_call(value) {
+        let name = stream_json_string(tool_call.pointer("/function/name"))
+            .or_else(|| stream_json_string(tool_call.get("name")))
+            .unwrap_or_else(|| "tool".to_string());
+        let preview = stream_json_string(tool_call.pointer("/function/arguments"))
+            .or_else(|| stream_json_string(tool_call.get("arguments")))
+            .unwrap_or_default();
+        let call_id = stream_json_string(tool_call.get("id"))
+            .unwrap_or_else(|| format!("openai:{name}:{preview}"));
+        return Some(ParsedToolEvent {
+            call_id,
+            name,
+            status: "running".to_string(),
+            preview,
+            result: String::new(),
+        });
+    }
+
+    let event_name = stream_json_string(value.get("type"))
+        .or_else(|| stream_json_string(value.get("event")))
+        .unwrap_or_else(|| event_type.to_string());
+    if !is_tool_event_name(&event_name) {
+        return None;
+    }
+    let payload = value.get("payload").unwrap_or(value);
+    let status = tool_event_status(&event_name);
+    Some(tool_event_from_payload(&event_name, payload, &status))
+}
+
+fn first_tool_call(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    value
+        .pointer("/choices/0/delta/tool_calls/0")
+        .or_else(|| value.pointer("/choices/0/message/tool_calls/0"))
+        .or_else(|| value.pointer("/tool_calls/0"))
+}
+
+fn is_tool_event_name(value: &str) -> bool {
+    let name = value.to_ascii_lowercase();
+    name.starts_with("tool.")
+        || name.starts_with("tool_")
+        || name.contains(".tool.")
+        || name.contains("_tool_")
+}
+
+fn tool_event_status(event_name: &str) -> String {
+    let name = event_name.to_ascii_lowercase();
+    if name.contains("fail") || name.contains("error") {
+        "failed".to_string()
+    } else if name.contains("complete") || name.contains("done") || name.contains("result") {
+        "completed".to_string()
+    } else {
+        "running".to_string()
+    }
+}
+
+fn tool_event_from_payload(
+    event_name: &str,
+    payload: &serde_json::Value,
+    fallback_status: &str,
+) -> ParsedToolEvent {
+    let name = stream_json_string(payload.get("tool"))
+        .or_else(|| stream_json_string(payload.get("tool_name")))
+        .or_else(|| stream_json_string(payload.get("name")))
+        .or_else(|| stream_json_string(payload.pointer("/function/name")))
+        .or_else(|| stream_json_string(payload.get("label")))
+        .unwrap_or_else(|| "tool".to_string());
+    let preview = stream_json_string(payload.get("preview"))
+        .or_else(|| stream_json_string(payload.get("label")))
+        .or_else(|| stream_json_string(payload.get("input")))
+        .or_else(|| stream_json_string(payload.get("arguments")))
+        .or_else(|| stream_json_string(payload.get("args")))
+        .unwrap_or_default();
+    let result = stream_json_string(payload.get("result_text"))
+        .or_else(|| stream_json_string(payload.get("output")))
+        .or_else(|| stream_json_string(payload.get("result")))
+        .or_else(|| stream_json_string(payload.get("content")))
+        .or_else(|| stream_json_string(payload.get("text")))
+        .unwrap_or_default();
+    let explicit_call_id = stream_json_string(payload.get("toolCallId"))
+        .or_else(|| stream_json_string(payload.get("tool_call_id")))
+        .or_else(|| stream_json_string(payload.get("tool_id")))
+        .or_else(|| stream_json_string(payload.get("callId")))
+        .or_else(|| stream_json_string(payload.get("id")));
+    ParsedToolEvent {
+        call_id: explicit_call_id.unwrap_or_else(|| format!("{event_name}:{name}:{preview}")),
+        name,
+        status: stream_json_string(payload.get("status"))
+            .unwrap_or_else(|| fallback_status.to_string()),
+        preview,
+        result,
+    }
+}
+
+fn stream_json_string(value: Option<&serde_json::Value>) -> Option<String> {
+    let item = value?;
+    if let Some(text) = item.as_str() {
+        let trimmed = text.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    if item.is_null() {
+        return None;
+    }
+    if item.is_number() || item.is_boolean() {
+        return Some(item.to_string());
+    }
+    Some(truncate(&item.to_string(), 2000))
+}
+
+fn format_tool_event_content(event: &ParsedToolEvent) -> String {
+    let status = match event.status.as_str() {
+        "completed" => "completed",
+        "failed" => "failed",
+        _ => "running",
+    };
+    let mut lines = vec![format!("{status} · {}", event.name)];
+    if !event.preview.trim().is_empty() && event.preview.trim() != event.name {
+        lines.push(event.preview.trim().to_string());
+    }
+    if !event.result.trim().is_empty() {
+        lines.push(event.result.trim().to_string());
+    }
+    lines.join("\n")
 }
 
 fn parse_completion_content(body: &str) -> Result<String, String> {

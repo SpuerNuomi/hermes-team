@@ -309,7 +309,7 @@ export interface RunHermesAgentOutput {
 
 export interface RuntimeStreamEvent {
   taskId: string;
-  kind: "start" | "delta" | "reasoning" | "done" | "error";
+  kind: "start" | "delta" | "reasoning" | "tool" | "done" | "error";
   delta: string;
   content: string;
   message: string;

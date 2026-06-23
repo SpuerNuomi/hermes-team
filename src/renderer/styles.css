@@ -475,9 +475,19 @@ button {
   border-color: #dce3df;
 }
 
+.message-tool {
+  background: #fbfcfb;
+  border-color: #d7e0dc;
+}
+
 .message-reasoning .message-avatar {
   color: #4a554d;
   background: #e9efeb;
+}
+
+.message-tool .message-avatar {
+  color: #335044;
+  background: #dcece5;
 }
 
 .message.system {
@@ -575,6 +585,10 @@ button {
   color: #8a948d;
   font-size: 11px;
   font-weight: 700;
+}
+
+.tool-content .reasoning-summary {
+  color: #335044;
 }
 
 .reasoning-chevron {
