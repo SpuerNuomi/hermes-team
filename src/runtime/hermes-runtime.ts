@@ -327,6 +327,27 @@ export interface HermesTeamSessionSummary {
   state: OrchestrationState;
 }
 
+export interface HermesStateSessionSummary {
+  id: string;
+  title: string;
+  startedAt: number;
+  endedAt?: number | null;
+  messageCount: number;
+  model: string;
+  preview: string;
+  profile: string;
+}
+
+export interface HermesStateMessage {
+  id: number;
+  kind: "user" | "assistant" | "reasoning" | "tool" | string;
+  role: string;
+  content: string;
+  timestamp: number;
+  callId?: string | null;
+  name?: string | null;
+}
+
 export interface HermesLogInfo {
   name: string;
   path: string;
@@ -780,6 +801,28 @@ export async function deleteHermesTeamSession(sessionId: string): Promise<Hermes
   return invoke<HermesTeamSessionSummary[]>("delete_hermes_team_session", { sessionId });
 }
 
+export async function openExternalUrl(url: string): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("open_external_url", { url });
+}
+
+export async function listHermesStateSessions(params: {
+  profile?: string;
+} = {}): Promise<HermesStateSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesStateSessionSummary[]>("list_hermes_state_sessions", {
+    profile: params.profile,
+  });
+}
+
+export async function loadHermesStateSession(params: {
+  profile?: string;
+  sessionId: string;
+}): Promise<HermesStateMessage[]> {
+  ensureTauriRuntime();
+  return invoke<HermesStateMessage[]>("load_hermes_state_session", params);
+}
+
 export async function listHermesLogs(): Promise<HermesLogInfo[]> {
   ensureTauriRuntime();
   return invoke<HermesLogInfo[]>("list_hermes_logs");
@@ -1021,7 +1064,11 @@ function buildSystemPrompt(agent: Agent, binding?: CapabilityBinding): string {
 
 function historyForMessages(messages: Message[]): RuntimeMessage[] {
   return messages
-    .filter((message) => message.authorKind === "user" || message.authorKind === "agent")
+    .filter((message) => {
+      if (message.authorKind !== "user" && message.authorKind !== "agent") return false;
+      if (message.authorKind === "user" && message.content.trim().startsWith("💭")) return false;
+      return true;
+    })
     .slice(-12)
     .map((message) => ({
       role: message.authorKind === "agent" ? "assistant" : "user",

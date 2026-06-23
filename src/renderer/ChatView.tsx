@@ -49,6 +49,7 @@ export function ChatView({
   messages,
   draft,
   draftAttachments,
+  queuedMessages,
   attachmentPathDraft,
   isLoading,
   activityText,
@@ -68,6 +69,7 @@ export function ChatView({
   onAttachFiles,
   onPickAttachments,
   onRemoveAttachment,
+  onRemoveQueuedMessage,
   onNewChat,
   onClearChat,
   onPickContextFolder,
@@ -86,6 +88,7 @@ export function ChatView({
   messages: Message[];
   draft: string;
   draftAttachments: MessageAttachment[];
+  queuedMessages: Array<{ id: string; text: string; attachments: MessageAttachment[] }>;
   attachmentPathDraft: string;
   isLoading: boolean;
   activityText?: string;
@@ -105,6 +108,7 @@ export function ChatView({
   onAttachFiles: (files: File[]) => void;
   onPickAttachments: () => void;
   onRemoveAttachment: (id: string) => void;
+  onRemoveQueuedMessage: (id: string) => void;
   onNewChat: () => void;
   onClearChat: () => void;
   onPickContextFolder: () => void;
@@ -399,6 +403,25 @@ export function ChatView({
         {attachmentError && (
           <div className="chat-attachment-error" role="alert">
             {attachmentError}
+          </div>
+        )}
+        {queuedMessages.length > 0 && (
+          <div className="chat-queue-indicator">
+            <span>{queuedMessages.length} 条消息排队中</span>
+            <div className="chat-queue-list">
+              {queuedMessages.map((item) => (
+                <button
+                  key={item.id}
+                  className="chat-queue-item"
+                  type="button"
+                  title="点击移除队列消息"
+                  onClick={() => onRemoveQueuedMessage(item.id)}
+                >
+                  <span>{item.text.trim() || `${item.attachments.length} 个附件`}</span>
+                  <X size={12} />
+                </button>
+              ))}
+            </div>
           </div>
         )}
         <div className="chat-input-wrapper">

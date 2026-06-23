@@ -20,6 +20,19 @@ fn app_ready() -> &'static str {
     "hermes-team-ready"
 }
 
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<bool, String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("只允许打开 http:// 或 https:// URL。".to_string());
+    }
+    Command::new("open")
+        .arg(trimmed)
+        .spawn()
+        .map_err(|error| format!("打开外部浏览器失败：{error}"))?;
+    Ok(true)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GatewayProbeResult {
@@ -514,6 +527,31 @@ struct StageAttachmentInput {
     session_id: Option<String>,
     filename: String,
     base64_bytes: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HermesStateSessionSummary {
+    id: String,
+    title: String,
+    started_at: u64,
+    ended_at: Option<u64>,
+    message_count: u64,
+    model: String,
+    preview: String,
+    profile: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HermesStateMessage {
+    id: i64,
+    kind: String,
+    role: String,
+    content: String,
+    timestamp: u64,
+    call_id: Option<String>,
+    name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1843,6 +1881,285 @@ async fn delete_hermes_team_session(session_id: String) -> Result<Vec<serde_json
     }
     write_hermes_team_sessions(&sessions)?;
     Ok(sessions)
+}
+
+#[tauri::command]
+async fn list_hermes_state_sessions(
+    profile: Option<String>,
+) -> Result<Vec<HermesStateSessionSummary>, String> {
+    let profile_name = profile.unwrap_or_else(|| active_profile_name());
+    let db_path = state_db_path_for_profile(&profile_name)?;
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let sql = "SELECT s.id, COALESCE(s.title, '') AS title, COALESCE(s.started_at, 0) AS started_at, s.ended_at, COALESCE(s.message_count, 0) AS message_count, COALESCE(s.model, '') AS model, COALESCE((SELECT content FROM messages m WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL ORDER BY m.timestamp, m.id LIMIT 1), '') AS preview FROM sessions s ORDER BY s.started_at DESC LIMIT 100";
+    let rows = sqlite_json_rows(&db_path, sql)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let id = json_field_string(&row, "id")?;
+            let preview = json_field_string(&row, "preview").unwrap_or_default();
+            let title = json_field_string(&row, "title")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| title_from_preview(&preview, &id));
+            Some(HermesStateSessionSummary {
+                id,
+                title,
+                started_at: json_field_u64(&row, "started_at").unwrap_or(0),
+                ended_at: json_field_u64(&row, "ended_at"),
+                message_count: json_field_u64(&row, "message_count").unwrap_or(0),
+                model: json_field_string(&row, "model").unwrap_or_default(),
+                preview: truncate(&preview, 240),
+                profile: profile_name.clone(),
+            })
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn load_hermes_state_session(
+    profile: Option<String>,
+    session_id: String,
+) -> Result<Vec<HermesStateMessage>, String> {
+    let profile_name = profile.unwrap_or_else(|| active_profile_name());
+    let db_path = state_db_path_for_profile(&profile_name)?;
+    if !db_path.exists() {
+        return Err(format!(
+            "未找到 Hermes state.db：{}",
+            db_path.to_string_lossy()
+        ));
+    }
+    let escaped_session_id = sql_quote(&session_id);
+    let sql = format!(
+        "SELECT id, role, COALESCE(content, '') AS content, COALESCE(timestamp, 0) AS timestamp, tool_call_id, tool_calls, tool_name, reasoning, reasoning_content, reasoning_details FROM messages WHERE session_id = {escaped_session_id} AND role IN ('user','assistant','tool') ORDER BY timestamp, id"
+    );
+    let rows = sqlite_json_rows(&db_path, &sql)?;
+    let mut messages = Vec::new();
+    for row in rows {
+        let id = json_field_i64(&row, "id").unwrap_or(0);
+        let role = json_field_string(&row, "role").unwrap_or_default();
+        let content = json_field_string(&row, "content").unwrap_or_default();
+        let timestamp = json_field_u64(&row, "timestamp").unwrap_or(0);
+        if role == "user" {
+            if !content.trim().is_empty() {
+                messages.push(HermesStateMessage {
+                    id,
+                    kind: "user".to_string(),
+                    role,
+                    content,
+                    timestamp,
+                    call_id: None,
+                    name: None,
+                });
+            }
+            continue;
+        }
+        if role == "assistant" {
+            if let Some(reasoning) = pick_state_reasoning(&row) {
+                messages.push(HermesStateMessage {
+                    id,
+                    kind: "reasoning".to_string(),
+                    role: "assistant".to_string(),
+                    content: reasoning,
+                    timestamp,
+                    call_id: None,
+                    name: None,
+                });
+            }
+            if !content.trim().is_empty() {
+                messages.push(HermesStateMessage {
+                    id,
+                    kind: "assistant".to_string(),
+                    role: "assistant".to_string(),
+                    content,
+                    timestamp,
+                    call_id: None,
+                    name: None,
+                });
+            }
+            for tool in parse_state_tool_calls(json_field_string(&row, "tool_calls").as_deref()) {
+                messages.push(HermesStateMessage {
+                    id,
+                    kind: "tool".to_string(),
+                    role: "assistant".to_string(),
+                    content: format_tool_call_history(&tool.0, &tool.1),
+                    timestamp,
+                    call_id: Some(tool.2),
+                    name: Some(tool.0),
+                });
+            }
+            continue;
+        }
+        if role == "tool" {
+            let name = json_field_string(&row, "tool_name").unwrap_or_else(|| "tool".to_string());
+            messages.push(HermesStateMessage {
+                id,
+                kind: "tool".to_string(),
+                role,
+                content: format_tool_result_history(&name, &content),
+                timestamp,
+                call_id: json_field_string(&row, "tool_call_id"),
+                name: Some(name),
+            });
+        }
+    }
+    Ok(messages)
+}
+
+fn sqlite_json_rows(db_path: &Path, sql: &str) -> Result<Vec<serde_json::Value>, String> {
+    let output = Command::new("sqlite3")
+        .arg("-json")
+        .arg(db_path)
+        .arg(sql)
+        .output()
+        .map_err(|error| format!("调用 sqlite3 失败：{error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "读取 Hermes state.db 失败：{}",
+            truncate(&stderr, 500)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str::<Vec<serde_json::Value>>(&stdout)
+        .map_err(|error| format!("解析 sqlite3 JSON 输出失败：{error}"))
+}
+
+fn sql_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn json_field_string(row: &serde_json::Value, key: &str) -> Option<String> {
+    row.get(key).and_then(|value| {
+        if let Some(text) = value.as_str() {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        } else if value.is_number() || value.is_boolean() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn json_field_u64(row: &serde_json::Value, key: &str) -> Option<u64> {
+    row.get(key).and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| {
+                value
+                    .as_i64()
+                    .and_then(|number| (number >= 0).then_some(number as u64))
+            })
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .and_then(|number| (number >= 0.0).then_some(number as u64))
+            })
+            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+    })
+}
+
+fn json_field_i64(row: &serde_json::Value, key: &str) -> Option<i64> {
+    row.get(key).and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+            .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+    })
+}
+
+fn title_from_preview(preview: &str, session_id: &str) -> String {
+    let visible = preview
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("");
+    if visible.is_empty() {
+        format!(
+            "Hermes Session {}",
+            session_id.chars().rev().take(6).collect::<String>()
+        )
+    } else {
+        truncate(visible, 80)
+    }
+}
+
+fn pick_state_reasoning(row: &serde_json::Value) -> Option<String> {
+    for key in ["reasoning", "reasoning_content", "reasoning_details"] {
+        if let Some(value) = json_field_string(row, key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn parse_state_tool_calls(raw: Option<&str>) -> Vec<(String, String, String)> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item
+                .pointer("/function/name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("tool")
+                .to_string();
+            let args = item
+                .pointer("/function/arguments")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            let call_id = item
+                .get("call_id")
+                .and_then(|value| value.as_str())
+                .or_else(|| item.get("id").and_then(|value| value.as_str()))
+                .unwrap_or("")
+                .to_string();
+            if name.trim().is_empty() {
+                None
+            } else {
+                Some((name, pretty_json_or_raw(&args), call_id))
+            }
+        })
+        .collect()
+}
+
+fn pretty_json_or_raw(raw: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+fn format_tool_call_history(name: &str, args: &str) -> String {
+    if args.trim().is_empty() {
+        format!("running · {name}")
+    } else {
+        format!("running · {name}\n{args}")
+    }
+}
+
+fn format_tool_result_history(name: &str, content: &str) -> String {
+    if content.trim().is_empty() {
+        format!("completed · {name}")
+    } else {
+        format!("completed · {name}\n{}", content.trim())
+    }
 }
 
 #[tauri::command]
@@ -4206,6 +4523,15 @@ fn profile_home(profile: Option<&str>) -> Result<PathBuf, String> {
         Some(name) => root.join("profiles").join(name),
         None => root,
     })
+}
+
+fn state_db_path_for_profile(profile: &str) -> Result<PathBuf, String> {
+    let trimmed = profile.trim();
+    if trimmed.is_empty() || trimmed == "default" {
+        Ok(hermes_home()?.join("state.db"))
+    } else {
+        Ok(profile_home(Some(trimmed))?.join("state.db"))
+    }
 }
 
 fn resolve_gateway_url(profile: Option<&str>) -> Result<String, String> {
@@ -6918,6 +7244,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             app_ready,
+            open_external_url,
             inspect_hermes_install,
             list_hermes_profiles,
             create_hermes_profile,
@@ -6963,6 +7290,8 @@ pub fn run() {
             save_hermes_team_session,
             update_hermes_team_session_title,
             delete_hermes_team_session,
+            list_hermes_state_sessions,
+            load_hermes_state_session,
             create_hermes_debug_dump,
             create_hermes_backup_file,
             restore_hermes_backup_file,

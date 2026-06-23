@@ -1,6 +1,6 @@
-import { Check, FolderOpen, History, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { Check, Database, FolderOpen, History, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { HermesTeamSessionSummary } from "../runtime/hermes-runtime";
+import type { HermesStateSessionSummary, HermesTeamSessionSummary } from "../runtime/hermes-runtime";
 
 function folderName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
@@ -13,6 +13,10 @@ export function SessionsView({
   onRestore,
   onRename,
   onDelete,
+  desktopSessions,
+  desktopBusy,
+  onRefreshDesktopSessions,
+  onImportDesktopSession,
 }: {
   sessions: HermesTeamSessionSummary[];
   formatTime: (timestamp: number) => string;
@@ -20,6 +24,10 @@ export function SessionsView({
   onRestore: (session: HermesTeamSessionSummary) => void;
   onRename: (sessionId: string, title: string) => void;
   onDelete: (sessionId: string) => void;
+  desktopSessions: HermesStateSessionSummary[];
+  desktopBusy: boolean;
+  onRefreshDesktopSessions: () => void;
+  onImportDesktopSession: (session: HermesStateSessionSummary) => void;
 }) {
   const [query, setQuery] = useState("");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -187,9 +195,47 @@ export function SessionsView({
             )}
           </div>
         </section>
+        <section className="settings-card settings-card-wide">
+          <div className="settings-card-head">
+            <div>
+              <p className="panel-label">Desktop state.db</p>
+              <h2>Hermes Desktop 历史</h2>
+            </div>
+            <button className="refresh-runtime" type="button" onClick={onRefreshDesktopSessions} disabled={desktopBusy}>
+              <Database size={14} />
+              <span>{desktopBusy ? "读取中" : "刷新 state.db"}</span>
+            </button>
+          </div>
+          <div className="mini-list">
+            {desktopSessions.length === 0 ? (
+              <p className="empty-note">没有读取到 Hermes Desktop state.db 会话。</p>
+            ) : (
+              desktopSessions.slice(0, 30).map((session) => (
+                <article key={`${session.profile}-${session.id}`}>
+                  <div>
+                    <strong>{session.title}</strong>
+                    <span>
+                      {formatTime(normalizeSessionTime(session.startedAt))} · {session.messageCount} messages · {session.profile}
+                    </span>
+                    {session.preview && <span>{session.preview}</span>}
+                  </div>
+                  <div className="mini-actions">
+                    <button type="button" onClick={() => onImportDesktopSession(session)}>
+                      导入
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </section>
       </div>
     </>
   );
+}
+
+function normalizeSessionTime(value: number): number {
+  return value > 0 && value < 10_000_000_000 ? value * 1000 : value;
 }
 
 function sessionMatchesQuery(session: HermesTeamSessionSummary, query: string): boolean {

@@ -36,11 +36,12 @@ import {
 import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
-import type { MessageAttachment, WorkspaceMode } from "../core/types";
+import type { Message, MessageAttachment, WorkspaceMode } from "../core/types";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { ChatView } from "./ChatView";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
+import { WebPreviewPanel } from "./WebPreviewPanel";
 import { useReasoningEffort } from "./useReasoningEffort";
 import {
   addCredentialPoolEntry,
@@ -66,6 +67,7 @@ import {
   listCredentialPool,
   listHermesCronJobs,
   listHermesLogs,
+  listHermesStateSessions,
   listHermesMcpServers,
   listHermesModels,
   listHermesProfiles,
@@ -75,6 +77,8 @@ import {
   listProviderKeys,
   listenHermesAgentStream,
   loadHermesTeamSessions,
+  loadHermesStateSession,
+  openExternalUrl,
   loadHermesTeamState,
   probeHermesGateway,
   readHermesMemorySummary,
@@ -120,6 +124,8 @@ import {
   type HermesRestoreResult,
   type RestoreHermesBackupInput,
   type HermesTeamSessionSummary,
+  type HermesStateMessage,
+  type HermesStateSessionSummary,
   type InstalledSkillInfo,
   type McpServerInfo,
   type MemoryContent,
@@ -185,6 +191,11 @@ type RuntimeEvent = {
   detail: string;
   createdAt: number;
   level: "info" | "ok" | "warning";
+};
+type QueuedChatMessage = {
+  id: string;
+  text: string;
+  attachments: MessageAttachment[];
 };
 
 const LEGACY_PRODUCT_RD_WORKSPACE_NAME = "产品研发协作室";
@@ -351,9 +362,13 @@ export function App() {
   const [draft, setDraft] = useState("");
   const [attachmentPathDraft, setAttachmentPathDraft] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
   const [worktreeVisible, setWorktreeVisible] = useState(false);
+  const [webPreviewUrl, setWebPreviewUrl] = useState<string | null>(null);
   const [notice, setNotice] = useState("编排核心已就绪。");
   const [sessions, setSessions] = useState<HermesTeamSessionSummary[]>([]);
+  const [desktopSessions, setDesktopSessions] = useState<HermesStateSessionSummary[]>([]);
+  const [desktopSessionsBusy, setDesktopSessionsBusy] = useState(false);
   const [hermesLogs, setHermesLogs] = useState<HermesLogInfo[]>([]);
   const [selectedLogPath, setSelectedLogPath] = useState("");
   const [logContent, setLogContent] = useState<HermesLogContent | null>(null);
@@ -1098,6 +1113,7 @@ export function App() {
         void loadHermesTeamSessions()
           .then((items) => setSessions(normalizeLoadedSessions(items)))
           .catch(() => undefined);
+        void refreshDesktopSessions();
         void refreshRuntime();
       });
     return () => {
@@ -1215,6 +1231,57 @@ export function App() {
     setRuntimeEvents([]);
     setActiveView("team");
     setNotice(`已恢复会话：${session.title}`);
+  };
+
+  const refreshDesktopSessions = async () => {
+    if (!isTauriRuntimeAvailable()) return;
+    setDesktopSessionsBusy(true);
+    try {
+      const targetProfile = currentChatProfile || installStatus?.activeProfile || "default";
+      const items = await listHermesStateSessions({ profile: targetProfile });
+      setDesktopSessions(items);
+    } catch (error) {
+      setNotice(`读取 Hermes Desktop state.db 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setDesktopSessionsBusy(false);
+    }
+  };
+
+  const importDesktopSession = async (session: HermesStateSessionSummary) => {
+    if (hasActiveSessionTasks(state)) {
+      setNotice("当前会话仍有运行中的 Agent，请先停止任务后再导入历史会话。");
+      return;
+    }
+    setDesktopSessionsBusy(true);
+    try {
+      const rows = await loadHermesStateSession({
+        profile: session.profile,
+        sessionId: session.id,
+      });
+      const imported = buildStateFromHermesStateSession(session, rows, mode);
+      const previousWorkspaceId = state.workspace.id;
+      parallelTrackerRef.current.clear(previousWorkspaceId);
+      serialTrackerRef.current.clear(previousWorkspaceId);
+      cancelledTaskIdsRef.current.clear();
+      setModeState(imported.workspace.mode);
+      setState(imported);
+      setDraft("");
+      setDraftAttachments([]);
+      setAttachmentPathDraft("");
+      setRuntimeEvents([]);
+      setActiveView("team");
+      setNotice(`已导入 Hermes Desktop 会话：${session.title}`);
+      if (isTauriRuntimeAvailable()) {
+        void saveHermesTeamState(imported).catch(() => undefined);
+        void saveHermesTeamSession(buildSessionSummary(imported))
+          .then((items) => setSessions(normalizeLoadedSessions(items)))
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      setNotice(`导入 Hermes Desktop 会话失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setDesktopSessionsBusy(false);
+    }
   };
 
   const renameSession = async (sessionId: string, title: string) => {
@@ -2109,11 +2176,41 @@ export function App() {
   const sendMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? draft).trim();
     if (!content && draftAttachments.length === 0) return;
+    const browseUrl = parseBrowseCommand(content);
+    if (browseUrl) {
+      setWebPreviewUrl(browseUrl);
+      setDraft("");
+      setDraftAttachments([]);
+      setAttachmentPathDraft("");
+      setNotice(`已打开 Web preview：${browseUrl}`);
+      return;
+    }
+    const attachments = contentOverride ? [] : draftAttachments;
+    const backgroundQuestion = parseBackgroundCommand(content);
+    if (hasActiveSessionTasks(state) && backgroundQuestion === null) {
+      setQueuedMessages((current) => [
+        ...current,
+        {
+          id: `queued-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          text: content || "请查看附件并处理。",
+          attachments,
+        },
+      ]);
+      setDraft("");
+      setDraftAttachments([]);
+      setAttachmentPathDraft("");
+      setNotice("当前 Agent 正在执行，消息已加入队列。");
+      return;
+    }
     parallelTrackerRef.current.markUserIntervention(state.workspace.id);
     serialTrackerRef.current.markUserIntervention(state.workspace.id);
-    const result = handleUserMessage(state, content || "请查看附件并处理。", draftAttachments);
+    const result = handleUserMessage(
+      state,
+      backgroundQuestion !== null ? `💭 ${backgroundQuestion || content}` : content || "请查看附件并处理。",
+      attachments,
+    );
     setState(result.state);
-    setNotice(result.notice);
+    setNotice(backgroundQuestion !== null ? "旁支问题已启动，不会阻塞主对话。" : result.notice);
     setDraft("");
     setDraftAttachments([]);
     setAttachmentPathDraft("");
@@ -2135,6 +2232,10 @@ export function App() {
     for (const taskId of result.createdTaskIds) {
       void runDispatchedTask(result.state, taskId);
     }
+  };
+
+  const removeQueuedMessage = (id: string) => {
+    setQueuedMessages((current) => current.filter((item) => item.id !== id));
   };
 
   const runDispatchedTask = async (baseState: OrchestrationState, taskId: string) => {
@@ -2252,6 +2353,19 @@ export function App() {
       setNotice("Hermes Runtime 调用失败。");
     }
   };
+
+  useEffect(() => {
+    if (queuedMessages.length === 0 || hasActiveSessionTasks(state)) return;
+    const [next] = queuedMessages;
+    if (!next) return;
+    setQueuedMessages((current) => current.slice(1));
+    const result = handleUserMessage(state, next.text, next.attachments);
+    setState(result.state);
+    setNotice("正在发送队列中的下一条消息。");
+    for (const taskId of result.createdTaskIds) {
+      void runDispatchedTask(result.state, taskId);
+    }
+  }, [queuedMessages, state]);
 
   const lastAgentMessage = [...messages].reverse().find((message) => message.authorKind === "agent");
   const handoff = lastAgentMessage
@@ -3551,6 +3665,10 @@ export function App() {
             onRestore={(session) => void restoreSession(session)}
             onRename={(sessionId, title) => void renameSession(sessionId, title)}
             onDelete={(sessionId) => void deleteSession(sessionId)}
+            desktopSessions={desktopSessions}
+            desktopBusy={desktopSessionsBusy}
+            onRefreshDesktopSessions={() => void refreshDesktopSessions()}
+            onImportDesktopSession={(session) => void importDesktopSession(session)}
           />
         ) : (
           <>
@@ -3561,6 +3679,7 @@ export function App() {
           messages={messages}
           draft={draft}
           draftAttachments={draftAttachments}
+          queuedMessages={queuedMessages}
           attachmentPathDraft={attachmentPathDraft}
           isLoading={Boolean(activeTask)}
           activityText={activeRuntimeEvent?.detail}
@@ -3580,6 +3699,7 @@ export function App() {
           onAttachFiles={(files) => void attachDroppedOrPastedFiles(files)}
           onPickAttachments={() => void pickDraftAttachments()}
           onRemoveAttachment={removeDraftAttachment}
+          onRemoveQueuedMessage={removeQueuedMessage}
           onNewChat={() => void createNewSession()}
           onClearChat={clearChat}
           onPickContextFolder={() => void pickChatContextFolder()}
@@ -3597,6 +3717,15 @@ export function App() {
             if (activeTask) void cancelTask(activeTask.id);
           }}
         />
+        {webPreviewUrl && (
+          <WebPreviewPanel
+            url={webPreviewUrl}
+            onClose={() => setWebPreviewUrl(null)}
+            onOpenExternal={(url) => {
+              void openExternalUrl(url).catch((error) => setNotice(`打开外部浏览器失败：${runtimeErrorMessage(error)}`));
+            }}
+          />
+        )}
           </>
         )}
       </section>
@@ -3828,6 +3957,84 @@ function taskSummary(state: OrchestrationState): string {
   if (pending > 0) return `${pending} 个任务等待执行`;
   if (failed > 0) return `${failed} 个任务失败`;
   return `已完成 ${completed} 个任务`;
+}
+
+function buildStateFromHermesStateSession(
+  session: HermesStateSessionSummary,
+  rows: HermesStateMessage[],
+  workspaceMode: WorkspaceMode,
+): OrchestrationState {
+  const base = buildFreshOrchestrationState(workspaceMode);
+  const importedWorkspaceId = `desktop-${session.id}`;
+  const agentId = base.agents[0]?.id ?? "agent-hermes";
+  return {
+    ...base,
+    workspace: {
+      ...base.workspace,
+      id: importedWorkspaceId,
+      name: "Hermes Chat",
+      description: `从 Hermes Desktop state.db 导入：${session.title}`,
+    },
+    agents: base.agents.map((agent) => ({ ...agent, workspaceId: importedWorkspaceId })),
+    messages: rows.map((row, index) => {
+      const kind = row.kind === "reasoning" ? "reasoning" : row.kind === "tool" ? "tool" : "message";
+      return {
+        id: `desktop-${session.id}-${row.kind}-${row.id}-${index}`,
+        workspaceId: importedWorkspaceId,
+        kind,
+        authorKind: row.kind === "user" ? "user" : "agent",
+        authorId: row.kind === "user" ? undefined : agentId,
+        authorName: row.kind === "user" ? "You" : row.kind === "tool" ? row.name || "工具调用" : "Hermes",
+        content: decodeHermesStateContent(row.content),
+        createdAt: normalizeHermesStateTimestamp(row.timestamp),
+      } satisfies Message;
+    }),
+    tasks: [],
+    logs: [],
+  };
+}
+
+function normalizeHermesStateTimestamp(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return Date.now();
+  return value < 10_000_000_000 ? value * 1000 : value;
+}
+
+function decodeHermesStateContent(raw: string): string {
+  const prefix = "\u0000json:";
+  if (!raw.startsWith(prefix)) return raw;
+  try {
+    const parsed = JSON.parse(raw.slice(prefix.length));
+    if (!Array.isArray(parsed)) return typeof parsed === "string" ? parsed : raw;
+    const texts = parsed
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "";
+        const record = item as Record<string, unknown>;
+        const type = String(record.type || "").toLowerCase();
+        if (type === "text" || type === "input_text" || type === "output_text") {
+          return typeof record.text === "string" ? record.text : "";
+        }
+        if (type === "image_url" || type === "input_image") return "[image]";
+        return "";
+      })
+      .filter(Boolean);
+    return texts.join("\n\n") || raw;
+  } catch {
+    return raw;
+  }
+}
+
+function parseBackgroundCommand(text: string): string | null {
+  const match = /^\/(?:btw|bg|background)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!match) return null;
+  return (match[1] ?? "").trim();
+}
+
+function parseBrowseCommand(text: string): string | null {
+  const match = /^\/browse(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!match) return null;
+  const value = (match[1] ?? "").trim();
+  return value || null;
 }
 
 function normalizeLoadedState(saved: OrchestrationState): OrchestrationState {
