@@ -350,6 +350,56 @@ struct ProviderDiscoveryResult {
     models: Vec<DiscoveredModel>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CronRepeat {
+    times: Option<u64>,
+    completed: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CronJobInfo {
+    id: String,
+    name: String,
+    schedule: String,
+    prompt: String,
+    state: String,
+    enabled: bool,
+    next_run_at: Option<String>,
+    last_run_at: Option<String>,
+    last_status: Option<String>,
+    last_error: Option<String>,
+    repeat: Option<CronRepeat>,
+    deliver: Vec<String>,
+    skills: Vec<String>,
+    script: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateCronJobInput {
+    profile: Option<String>,
+    schedule: String,
+    prompt: Option<String>,
+    name: Option<String>,
+    deliver: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CronJobActionInput {
+    profile: Option<String>,
+    job_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CronJobActionResult {
+    success: bool,
+    error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeMessage {
@@ -1260,6 +1310,117 @@ async fn discover_provider_models(
             Vec::new(),
         )),
     }
+}
+
+#[tauri::command]
+async fn list_hermes_cron_jobs(
+    include_disabled: Option<bool>,
+    profile: Option<String>,
+) -> Result<Vec<CronJobInfo>, String> {
+    let include_disabled = include_disabled.unwrap_or(true);
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        return list_remote_cron_jobs(include_disabled, profile.as_deref());
+    }
+
+    let profile = normalize_profile(profile.as_deref());
+    let path = profile_home(profile.as_deref())?
+        .join("cron")
+        .join("jobs.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("读取 {} 失败：{error}", path.to_string_lossy()))?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|error| format!("解析 {} 失败：{error}", path.to_string_lossy()))?;
+    let raw_jobs = if let Some(items) = parsed.as_array() {
+        items.clone()
+    } else {
+        parsed
+            .get("jobs")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut jobs = raw_jobs
+        .iter()
+        .filter_map(normalize_cron_job)
+        .filter(|job| include_disabled || job.enabled)
+        .collect::<Vec<_>>();
+    jobs.sort_by(|left, right| {
+        left.next_run_at
+            .cmp(&right.next_run_at)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(jobs)
+}
+
+#[tauri::command]
+async fn create_hermes_cron_job(input: CreateCronJobInput) -> Result<CronJobActionResult, String> {
+    let schedule = input.schedule.trim();
+    if schedule.is_empty() {
+        return Ok(cron_action_error("schedule 不能为空。"));
+    }
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        let body = json!({
+            "name": input.name.unwrap_or_default(),
+            "schedule": schedule,
+            "prompt": input.prompt.unwrap_or_default(),
+            "deliver": input.deliver.unwrap_or_else(|| "local".to_string()),
+        });
+        return remote_cron_request("POST", "/api/jobs", Some(body), input.profile.as_deref());
+    }
+
+    let mut args = vec!["create".to_string(), schedule.to_string()];
+    if let Some(prompt) = input
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push(prompt.to_string());
+    }
+    if let Some(name) = input
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--name".to_string());
+        args.push(name.to_string());
+    }
+    if let Some(deliver) = input
+        .deliver
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push("--deliver".to_string());
+        args.push(deliver.to_string());
+    }
+    run_cron_command(&args, input.profile.as_deref())
+}
+
+#[tauri::command]
+async fn remove_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActionResult, String> {
+    run_cron_action(input, "remove", "DELETE", None).await
+}
+
+#[tauri::command]
+async fn pause_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActionResult, String> {
+    run_cron_action(input, "pause", "POST", Some("pause")).await
+}
+
+#[tauri::command]
+async fn resume_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActionResult, String> {
+    run_cron_action(input, "resume", "POST", Some("resume")).await
+}
+
+#[tauri::command]
+async fn trigger_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActionResult, String> {
+    run_cron_action(input, "run", "POST", Some("run")).await
 }
 
 #[tauri::command]
@@ -4237,6 +4398,247 @@ fn provider_discovery_result(
     }
 }
 
+fn list_remote_cron_jobs(
+    include_disabled: bool,
+    profile: Option<&str>,
+) -> Result<Vec<CronJobInfo>, String> {
+    let query = if include_disabled {
+        "?include_disabled=true"
+    } else {
+        ""
+    };
+    let endpoint = resolve_connection_endpoint(profile, None)?;
+    let response = http_request(
+        &endpoint.base_url,
+        "GET",
+        &format!("/api/jobs{query}"),
+        None,
+        endpoint.auth.as_deref(),
+    )?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "读取远程 Cron Jobs 失败：HTTP {}：{}",
+            response.status,
+            truncate(&response.body, 240)
+        ));
+    }
+    let parsed = serde_json::from_str::<serde_json::Value>(&response.body)
+        .map_err(|error| format!("解析远程 Cron Jobs 响应失败：{error}"))?;
+    let jobs = parsed
+        .get("jobs")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(jobs
+        .iter()
+        .filter_map(normalize_cron_job)
+        .filter(|job| include_disabled || job.enabled)
+        .collect())
+}
+
+fn normalize_cron_job(job: &serde_json::Value) -> Option<CronJobInfo> {
+    let id = json_string(job.get("id"))?;
+    let enabled = job
+        .get("enabled")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let raw_state = json_string(job.get("state")).unwrap_or_default();
+    let state = if raw_state == "completed" {
+        "completed"
+    } else if raw_state == "paused" || !enabled {
+        "paused"
+    } else {
+        "active"
+    };
+    Some(CronJobInfo {
+        id,
+        name: json_string(job.get("name")).unwrap_or_else(|| "(unnamed)".to_string()),
+        schedule: json_string(job.get("schedule_display"))
+            .or_else(|| schedule_value(job.get("schedule")))
+            .unwrap_or_else(|| "?".to_string()),
+        prompt: json_string(job.get("prompt")).unwrap_or_default(),
+        state: state.to_string(),
+        enabled,
+        next_run_at: json_string(job.get("next_run_at")),
+        last_run_at: json_string(job.get("last_run_at")),
+        last_status: json_string(job.get("last_status")),
+        last_error: json_string(job.get("last_error")),
+        repeat: normalize_cron_repeat(job.get("repeat")),
+        deliver: json_string_array(job.get("deliver"))
+            .or_else(|| json_string(job.get("deliver")).map(|value| vec![value]))
+            .unwrap_or_else(|| vec!["local".to_string()]),
+        skills: json_string_array(job.get("skills"))
+            .or_else(|| json_string(job.get("skill")).map(|value| vec![value]))
+            .unwrap_or_default(),
+        script: json_string(job.get("script")),
+    })
+}
+
+fn normalize_cron_repeat(value: Option<&serde_json::Value>) -> Option<CronRepeat> {
+    let value = value?;
+    if !value.is_object() {
+        return None;
+    }
+    Some(CronRepeat {
+        times: value.get("times").and_then(|item| item.as_u64()),
+        completed: value
+            .get("completed")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(0),
+    })
+}
+
+fn schedule_value(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    value
+        .get("value")
+        .and_then(|item| item.as_str())
+        .map(str::to_string)
+}
+
+fn json_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn json_string_array(value: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    value.and_then(|item| {
+        item.as_array().map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| entry.as_str())
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+    })
+}
+
+async fn run_cron_action(
+    input: CronJobActionInput,
+    local_action: &str,
+    remote_method: &str,
+    remote_action: Option<&str>,
+) -> Result<CronJobActionResult, String> {
+    let job_id = input.job_id.trim();
+    if job_id.is_empty() {
+        return Ok(cron_action_error("job id 不能为空。"));
+    }
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        let encoded = encode_path_segment(job_id);
+        let path = match remote_action {
+            Some(action) => format!("/api/jobs/{encoded}/{action}"),
+            None => format!("/api/jobs/{encoded}"),
+        };
+        return remote_cron_request(remote_method, &path, None, input.profile.as_deref());
+    }
+    run_cron_command(
+        &[local_action.to_string(), job_id.to_string()],
+        input.profile.as_deref(),
+    )
+}
+
+fn remote_cron_request(
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+    profile: Option<&str>,
+) -> Result<CronJobActionResult, String> {
+    let endpoint = resolve_connection_endpoint(profile, None)?;
+    let body_text = body
+        .map(|value| serde_json::to_string(&value))
+        .transpose()
+        .map_err(|error| format!("序列化 Cron 请求失败：{error}"))?;
+    let response = http_request(
+        &endpoint.base_url,
+        method,
+        path,
+        body_text.as_deref(),
+        endpoint.auth.as_deref(),
+    )?;
+    if (200..300).contains(&response.status) {
+        Ok(CronJobActionResult {
+            success: true,
+            error: None,
+        })
+    } else {
+        Ok(cron_action_error(&format!(
+            "HTTP {}：{}",
+            response.status,
+            truncate(&response.body, 240)
+        )))
+    }
+}
+
+fn run_cron_command(args: &[String], profile: Option<&str>) -> Result<CronJobActionResult, String> {
+    let command = find_hermes_command()?;
+    let mut process = Command::new(command);
+    if let Some(profile_name) = normalize_profile(profile) {
+        process.arg("-p").arg(profile_name);
+    }
+    process
+        .arg("cron")
+        .args(args)
+        .env("HOME", home_dir()?)
+        .env("PATH", enhanced_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let repo_dir = hermes_home()?.join("hermes-agent");
+    if repo_dir.exists() {
+        process.current_dir(repo_dir);
+    }
+    let output = process
+        .output()
+        .map_err(|error| format!("执行 hermes cron 失败：{error}"))?;
+    if output.status.success() {
+        Ok(CronJobActionResult {
+            success: true,
+            error: None,
+        })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(cron_action_error(if stderr.is_empty() {
+            &stdout
+        } else {
+            &stderr
+        }))
+    }
+}
+
+fn cron_action_error(message: &str) -> CronJobActionResult {
+    CronJobActionResult {
+        success: false,
+        error: Some(if message.trim().is_empty() {
+            "Cron 命令执行失败。".to_string()
+        } else {
+            message.trim().to_string()
+        }),
+    }
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
+}
+
 fn provider_discovery_unsupported(provider: &str) -> bool {
     matches!(
         provider,
@@ -5225,6 +5627,12 @@ pub fn run() {
             add_credential_pool_entry,
             remove_credential_pool_entry,
             discover_provider_models,
+            list_hermes_cron_jobs,
+            create_hermes_cron_job,
+            remove_hermes_cron_job,
+            pause_hermes_cron_job,
+            resume_hermes_cron_job,
+            trigger_hermes_cron_job,
             load_hermes_team_state,
             save_hermes_team_state,
             load_hermes_team_sessions,

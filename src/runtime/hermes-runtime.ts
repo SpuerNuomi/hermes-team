@@ -200,6 +200,33 @@ export interface ProviderDiscoveryResult {
   models: DiscoveredModel[];
 }
 
+export interface CronRepeat {
+  times?: number | null;
+  completed: number;
+}
+
+export interface CronJobInfo {
+  id: string;
+  name: string;
+  schedule: string;
+  prompt: string;
+  state: "active" | "paused" | "completed";
+  enabled: boolean;
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
+  lastStatus?: string | null;
+  lastError?: string | null;
+  repeat?: CronRepeat | null;
+  deliver: string[];
+  skills: string[];
+  script?: string | null;
+}
+
+export interface CronJobActionResult {
+  success: boolean;
+  error?: string | null;
+}
+
 export interface RunHermesAgentInput {
   taskId?: string;
   baseUrl?: string;
@@ -506,6 +533,60 @@ export async function discoverProviderModels(input: {
 }): Promise<ProviderDiscoveryResult> {
   ensureTauriRuntime();
   return invoke<ProviderDiscoveryResult>("discover_provider_models", { input });
+}
+
+export async function listHermesCronJobs(params: {
+  includeDisabled?: boolean;
+  profile?: string;
+} = {}): Promise<CronJobInfo[]> {
+  ensureTauriRuntime();
+  return invoke<CronJobInfo[]>("list_hermes_cron_jobs", {
+    includeDisabled: params.includeDisabled,
+    profile: params.profile,
+  });
+}
+
+export async function createHermesCronJob(input: {
+  profile?: string;
+  schedule: string;
+  prompt?: string;
+  name?: string;
+  deliver?: string;
+}): Promise<CronJobActionResult> {
+  ensureTauriRuntime();
+  return invoke<CronJobActionResult>("create_hermes_cron_job", { input });
+}
+
+export async function removeHermesCronJob(input: {
+  profile?: string;
+  jobId: string;
+}): Promise<CronJobActionResult> {
+  ensureTauriRuntime();
+  return invoke<CronJobActionResult>("remove_hermes_cron_job", { input });
+}
+
+export async function pauseHermesCronJob(input: {
+  profile?: string;
+  jobId: string;
+}): Promise<CronJobActionResult> {
+  ensureTauriRuntime();
+  return invoke<CronJobActionResult>("pause_hermes_cron_job", { input });
+}
+
+export async function resumeHermesCronJob(input: {
+  profile?: string;
+  jobId: string;
+}): Promise<CronJobActionResult> {
+  ensureTauriRuntime();
+  return invoke<CronJobActionResult>("resume_hermes_cron_job", { input });
+}
+
+export async function triggerHermesCronJob(input: {
+  profile?: string;
+  jobId: string;
+}): Promise<CronJobActionResult> {
+  ensureTauriRuntime();
+  return invoke<CronJobActionResult>("trigger_hermes_cron_job", { input });
 }
 
 export async function probeHermesGateway(params: {

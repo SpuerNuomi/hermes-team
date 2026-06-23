@@ -47,6 +47,7 @@ import {
   activateHermesModel,
   buildSessionSummary,
   cancelHermesTask,
+  createHermesCronJob,
   deleteHermesTeamSession,
   discoverProviderModels,
   ensureHermesGateway,
@@ -61,6 +62,7 @@ import {
   installHermesSkill,
   isTauriRuntimeAvailable,
   listCredentialPool,
+  listHermesCronJobs,
   listHermesLogs,
   listHermesMcpServers,
   listHermesModels,
@@ -76,8 +78,10 @@ import {
   readHermesLog,
   readHermesMemoryContent,
   removeCredentialPoolEntry,
+  removeHermesCronJob,
   removeHermesMcpServer,
   removeHermesSkill,
+  pauseHermesCronJob,
   runHermesTaskStream,
   saveHermesMcpServer,
   saveHermesTeamSession,
@@ -90,14 +94,18 @@ import {
   removeHermesModel,
   searchHermesSkills,
   setHermesToolsetEnabled,
+  resumeHermesCronJob,
   startSshTunnel,
   stopHermesGateway,
   stopSshTunnel,
   testRemoteConnection,
+  triggerHermesCronJob,
   updateHermesTeamSessionTitle,
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
+  type CronJobActionResult,
+  type CronJobInfo,
   type CredentialPoolGroup,
   type HermesInstallStatus,
   type HermesLogContent,
@@ -120,7 +128,7 @@ import {
 } from "../runtime/hermes-runtime";
 
 type ActiveView = "team" | "sessions" | "settings";
-type SettingsPanel = "overview" | "providers" | "models" | "gateway" | "capabilities" | "skills" | "memory" | "logs";
+type SettingsPanel = "overview" | "providers" | "models" | "gateway" | "schedules" | "capabilities" | "skills" | "memory" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
   id?: string;
@@ -150,6 +158,12 @@ type SkillInstallForm = {
   sourcePath: string;
   category: string;
   name: string;
+};
+type CronJobForm = {
+  name: string;
+  schedule: string;
+  prompt: string;
+  deliver: string;
 };
 type RuntimeEvent = {
   id: string;
@@ -202,6 +216,13 @@ const emptySkillInstallForm: SkillInstallForm = {
   name: "",
 };
 
+const emptyCronJobForm: CronJobForm = {
+  name: "",
+  schedule: "daily 09:00",
+  prompt: "",
+  deliver: "local",
+};
+
 const defaultRemoteConnectionConfig: RemoteConnectionConfig = {
   mode: "local",
   remoteUrl: "http://127.0.0.1:8642",
@@ -231,6 +252,18 @@ function formatDateTime(timestamp: number): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(timestamp);
+}
+
+function formatCronDate(value?: string | null): string {
+  if (!value) return "未排定";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function formatFileSize(bytes: number): string {
@@ -336,11 +369,14 @@ export function App() {
   const [credentialPool, setCredentialPool] = useState<CredentialPoolGroup[]>([]);
   const [poolForm, setPoolForm] = useState<PoolForm>(emptyPoolForm);
   const [mcpForm, setMcpForm] = useState<McpForm>(emptyMcpForm);
+  const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([]);
+  const [cronForm, setCronForm] = useState<CronJobForm>(emptyCronJobForm);
   const [providerDiscovery, setProviderDiscovery] = useState<ProviderDiscoveryResult | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
   const [providerBusy, setProviderBusy] = useState(false);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
   const [skillBusy, setSkillBusy] = useState(false);
+  const [cronBusy, setCronBusy] = useState(false);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
@@ -372,6 +408,7 @@ export function App() {
     { id: "providers", label: "Provider" },
     { id: "models", label: "Models" },
     { id: "gateway", label: "Gateway" },
+    { id: "schedules", label: "Schedules" },
     { id: "capabilities", label: "Capabilities" },
     { id: "skills", label: "Skills" },
     { id: "memory", label: "Memory" },
@@ -569,6 +606,98 @@ export function App() {
     } catch (error) {
       setNotice(`读取 Hermes 能力失败：${runtimeErrorMessage(error)}`);
     }
+  };
+
+  const refreshCronJobs = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setCronJobs([]);
+      return;
+    }
+    const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
+    setCronBusy(true);
+    try {
+      const jobs = await listHermesCronJobs({
+        includeDisabled: true,
+        profile: targetProfile,
+      });
+      setCronJobs(jobs);
+    } catch (error) {
+      setNotice(`读取 Schedules 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCronBusy(false);
+    }
+  };
+
+  const createCronJobFromForm = async () => {
+    const schedule = cronForm.schedule.trim();
+    const prompt = cronForm.prompt.trim();
+    if (!schedule) {
+      setNotice("Schedule 不能为空。");
+      return;
+    }
+    if (!prompt) {
+      setNotice("Prompt 不能为空。");
+      return;
+    }
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setCronBusy(true);
+    try {
+      const result = await createHermesCronJob({
+        profile: targetProfile,
+        schedule,
+        prompt,
+        name: cronForm.name.trim() || undefined,
+        deliver: cronForm.deliver.trim() || "local",
+      });
+      handleCronActionResult(result, "Schedule 已创建。");
+      if (result.success) {
+        setCronForm(emptyCronJobForm);
+        await refreshCronJobs(targetProfile);
+      }
+    } catch (error) {
+      setNotice(`创建 Schedule 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCronBusy(false);
+    }
+  };
+
+  const runCronJobOperation = async (
+    job: CronJobInfo,
+    operation: "pause" | "resume" | "remove" | "trigger",
+  ) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    const confirmed = operation === "remove" ? window.confirm(`删除 Schedule「${job.name}」？`) : true;
+    if (!confirmed) return;
+    setCronBusy(true);
+    try {
+      const input = { profile: targetProfile, jobId: job.id };
+      const result =
+        operation === "pause"
+          ? await pauseHermesCronJob(input)
+          : operation === "resume"
+            ? await resumeHermesCronJob(input)
+            : operation === "trigger"
+              ? await triggerHermesCronJob(input)
+              : await removeHermesCronJob(input);
+      const successMessage =
+        operation === "pause"
+          ? "Schedule 已暂停。"
+          : operation === "resume"
+            ? "Schedule 已恢复。"
+            : operation === "trigger"
+              ? "Schedule 已触发。"
+              : "Schedule 已删除。";
+      handleCronActionResult(result, successMessage);
+      if (result.success) await refreshCronJobs(targetProfile);
+    } catch (error) {
+      setNotice(`Schedule 操作失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCronBusy(false);
+    }
+  };
+
+  const handleCronActionResult = (result: CronJobActionResult, successMessage: string) => {
+    setNotice(result.success ? successMessage : `Schedule 操作失败：${result.error ?? "未知错误"}`);
   };
 
   const refreshHermesLogs = async (preferredPath?: string) => {
@@ -1962,6 +2091,7 @@ export function App() {
               setActiveView("settings");
               void refreshInstallStatus();
               void refreshHermesCapabilities();
+              void refreshCronJobs();
               void refreshHermesLogs();
             }}
           >
@@ -2541,6 +2671,109 @@ export function App() {
                       <Power size={14} />
                       <span>停止 SSH 隧道</span>
                     </button>
+                  </div>
+                </div>
+              </section>
+
+              <section className={settingsCardClass("schedules", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Schedules</p>
+                    <h2>定时任务排程</h2>
+                  </div>
+                  <div className="settings-actions">
+                    <span className="count-pill">{cronJobs.length}</span>
+                    <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => void refreshCronJobs(installStatus?.activeProfile)}>
+                      <RefreshCw size={14} />
+                      <span>{cronBusy ? "读取中..." : "刷新"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="model-panel">
+                  <div className="model-form">
+                    <label>
+                      <span>名称</span>
+                      <input
+                        value={cronForm.name}
+                        onChange={(event) => setCronForm((current) => ({ ...current, name: event.target.value }))}
+                        placeholder="每日摘要"
+                      />
+                    </label>
+                    <label>
+                      <span>Schedule</span>
+                      <input
+                        value={cronForm.schedule}
+                        onChange={(event) => setCronForm((current) => ({ ...current, schedule: event.target.value }))}
+                        placeholder="daily 09:00 / hourly / */30 * * * *"
+                      />
+                    </label>
+                    <label>
+                      <span>Deliver</span>
+                      <input
+                        value={cronForm.deliver}
+                        onChange={(event) => setCronForm((current) => ({ ...current, deliver: event.target.value }))}
+                        placeholder="local / telegram / slack"
+                      />
+                    </label>
+                    <label className="model-form-wide">
+                      <span>Prompt</span>
+                      <textarea
+                        value={cronForm.prompt}
+                        onChange={(event) => setCronForm((current) => ({ ...current, prompt: event.target.value }))}
+                        placeholder="定时执行的真实 Hermes prompt"
+                      />
+                    </label>
+                    <div className="model-form-actions">
+                      <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => void createCronJobFromForm()}>
+                        <Save size={14} />
+                        <span>创建</span>
+                      </button>
+                      <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => setCronForm(emptyCronJobForm)}>
+                        <Plus size={14} />
+                        <span>重置</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="model-list">
+                    {cronJobs.length > 0 ? (
+                      cronJobs.map((job) => (
+                        <article className={`model-card ${job.state === "active" ? "active" : ""}`} key={job.id}>
+                          <div>
+                            <strong>{job.name}</strong>
+                            <span>{job.schedule} · {job.state}</span>
+                            <small>
+                              next {formatCronDate(job.nextRunAt)} · deliver {job.deliver.join(", ") || "local"}
+                            </small>
+                            {job.lastError && <small className="warning-text">{job.lastError}</small>}
+                          </div>
+                          <div className="model-card-actions">
+                            <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "trigger")}>
+                              <Plug size={14} />
+                              <span>运行</span>
+                            </button>
+                            {job.state === "paused" ? (
+                              <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "resume")}>
+                                <Power size={14} />
+                                <span>恢复</span>
+                              </button>
+                            ) : (
+                              <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "pause")}>
+                                <StopCircle size={14} />
+                                <span>暂停</span>
+                              </button>
+                            )}
+                            <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "remove")}>
+                              <Trash2 size={14} />
+                              <span>删除</span>
+                            </button>
+                          </div>
+                        </article>
+                      ))
+                    ) : (
+                      <p className="empty-note">当前 profile 还没有 cron jobs；这里读取真实 `cron/jobs.json` 或远程 `/api/jobs`。</p>
+                    )}
                   </div>
                 </div>
               </section>

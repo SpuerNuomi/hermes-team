@@ -2760,15 +2760,19 @@ textarea:focus {
   min-width: 0;
 }
 
+.model-form .model-form-wide {
+  grid-column: 1 / -1;
+}
+
 .model-form label span {
   color: #647067;
   font-size: 12px;
   font-weight: 700;
 }
 
-.model-form input {
+.model-form input,
+.model-form textarea {
   min-width: 0;
-  height: 34px;
   padding: 7px 9px;
   color: #17201c;
   background: #f9faf7;
@@ -2777,7 +2781,17 @@ textarea:focus {
   outline: none;
 }
 
-.model-form input:focus {
+.model-form input {
+  height: 34px;
+}
+
+.model-form textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.model-form input:focus,
+.model-form textarea:focus {
   border-color: #17201c;
   box-shadow: 0 0 0 3px rgba(23, 32, 28, 0.1);
 }
@@ -2833,6 +2847,11 @@ textarea:focus {
 
 .model-card small {
   margin-top: 3px;
+}
+
+.model-card .warning-text {
+  color: #a15c1b;
+  white-space: normal;
 }
 
 .model-card-actions {
