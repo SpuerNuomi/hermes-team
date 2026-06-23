@@ -470,6 +470,16 @@ button {
   justify-self: start;
 }
 
+.message-reasoning {
+  background: #ffffff;
+  border-color: #dce3df;
+}
+
+.message-reasoning .message-avatar {
+  color: #4a554d;
+  background: #e9efeb;
+}
+
 .message.system {
   display: block;
   justify-self: center;
@@ -540,6 +550,54 @@ button {
 .message-content {
   position: relative;
   min-width: 0;
+}
+
+.reasoning-content {
+  padding-right: 26px;
+}
+
+.reasoning-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 30px;
+  color: #4a554d;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.reasoning-summary small {
+  margin-left: auto;
+  color: #8a948d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.reasoning-chevron {
+  transition: transform 0.14s ease;
+}
+
+.reasoning-chevron-open {
+  transform: rotate(90deg);
+}
+
+.reasoning-pre {
+  max-height: 360px;
+  margin: 8px 0 0;
+  overflow: auto;
+  padding: 12px;
+  color: #37413b;
+  background: #f6f8f5;
+  border: 1px solid #e2e7e3;
+  border-radius: 8px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .message p {

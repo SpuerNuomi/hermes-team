@@ -429,6 +429,35 @@ export function App() {
       });
       return;
     }
+    if (event.kind === "reasoning") {
+      setState((current) => {
+        const task = current.tasks.find((item) => item.id === event.taskId);
+        if (!task || task.status === "cancelled") return current;
+        const agent = current.agents.find((item) => item.id === task.agentId);
+        const messageId = `reasoning-${event.taskId}`;
+        const existing = current.messages.find((message) => message.id === messageId);
+        const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
+        if (!nextContent.trim()) return current;
+        const nextMessage = {
+          id: messageId,
+          workspaceId: task.workspaceId,
+          kind: "reasoning" as const,
+          authorKind: "agent" as const,
+          authorId: agent?.id,
+          authorName: agent?.name ?? "Hermes",
+          content: nextContent,
+          createdAt: existing?.createdAt ?? Date.now(),
+          replyToMessageId: task.triggerMessageId,
+        };
+        return {
+          ...current,
+          messages: existing
+            ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+            : [...current.messages, nextMessage],
+        };
+      });
+      return;
+    }
     setState((current) => {
       const task = current.tasks.find((item) => item.id === event.taskId);
       if (!task || task.status === "cancelled") return current;

@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio } from "lucide-react";
+import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import type { Message } from "../core/types";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -132,10 +132,12 @@ export const MessageRow = memo(function MessageRow({
   onDeny: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
+  const isReasoning = message.kind === "reasoning";
   const showApprovalBar =
-    isAgent && !isLoading && isLast && APPROVAL_RE.test(message.content);
+    isAgent && !isReasoning && !isLoading && isLast && APPROVAL_RE.test(message.content);
 
   const handleCopy = useCallback(async () => {
     try {
@@ -149,7 +151,9 @@ export const MessageRow = memo(function MessageRow({
 
   return (
     <article
-      className={`message ${message.authorKind} ${showMeta ? "" : "message-grouped"}`.trim()}
+      className={`message ${message.authorKind} ${isReasoning ? "message-reasoning" : ""} ${
+        showMeta ? "" : "message-grouped"
+      }`.trim()}
       key={message.id}
     >
       {isAgent && (
@@ -160,19 +164,51 @@ export const MessageRow = memo(function MessageRow({
       <div className="message-body">
         {showMeta && (
           <div className="message-meta">
-            <span>{message.authorName}</span>
+            <span>{isReasoning ? "思考过程" : message.authorName}</span>
             <time>{formatTime(message.createdAt)}</time>
           </div>
         )}
-        <div className="message-content">
-          {isUser ? (
+        {isReasoning ? (
+          <div className="message-content reasoning-content">
+            <button
+              className="reasoning-summary"
+              type="button"
+              aria-expanded={reasoningOpen}
+              onClick={() => setReasoningOpen((value) => !value)}
+            >
+              <ChevronRight
+                size={14}
+                className={`reasoning-chevron ${reasoningOpen ? "reasoning-chevron-open" : ""}`}
+              />
+              <Brain size={14} />
+              <span>{isLoading ? "正在思考..." : "思考过程"}</span>
+              <small>{message.content.split("\n").length} lines</small>
+            </button>
+            {reasoningOpen && <pre className="reasoning-pre">{message.content}</pre>}
+            {message.content && (
+              <div className="message-actions">
+                <button
+                  className="message-copy"
+                  type="button"
+                  onClick={handleCopy}
+                  title={copied ? "Copied" : "Copy reasoning"}
+                  aria-label={copied ? "Copied" : "Copy reasoning"}
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="message-content">
+            {isUser ? (
             <p>{message.content}</p>
-          ) : (
+            ) : (
             <div className="message-markdown">
               <AgentMarkdown>{message.content}</AgentMarkdown>
             </div>
-          )}
-          {message.content && (
+            )}
+            {message.content && (
             <div className="message-actions">
               <button
                 className="message-copy"
@@ -184,8 +220,9 @@ export const MessageRow = memo(function MessageRow({
                 {copied ? <Check size={14} /> : <Copy size={14} />}
               </button>
             </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-attachments">
             {message.attachments.map((attachment) => (

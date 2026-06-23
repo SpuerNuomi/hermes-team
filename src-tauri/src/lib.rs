@@ -435,6 +435,12 @@ struct RuntimeStreamEvent {
     message: String,
 }
 
+#[derive(Debug, Default)]
+struct ParsedStreamDelta {
+    message_delta: String,
+    reasoning_delta: String,
+}
+
 struct RuntimeEndpoint {
     base_url: String,
     auth: Option<String>,
@@ -2778,6 +2784,7 @@ fn http_stream_chat_completion(
     let mut plain_body = Vec::new();
     let mut sse_buffer = String::new();
     let mut full_content = String::new();
+    let mut full_reasoning = String::new();
     let mut buffer = [0_u8; 8192];
 
     loop {
@@ -2811,6 +2818,7 @@ fn http_stream_chat_completion(
                             &mut pending_body,
                             &mut sse_buffer,
                             &mut full_content,
+                            &mut full_reasoning,
                         )?;
                         if done {
                             return Ok(full_content);
@@ -2849,6 +2857,7 @@ fn http_stream_chat_completion(
             &mut pending_body,
             &mut sse_buffer,
             &mut full_content,
+            &mut full_reasoning,
         )?;
         return Ok(full_content);
     }
@@ -2861,6 +2870,7 @@ fn http_stream_chat_completion(
             &(body + "\n\n"),
             &mut sse_buffer,
             &mut full_content,
+            &mut full_reasoning,
         )?;
         return Ok(full_content);
     }
@@ -2899,6 +2909,7 @@ fn drain_chunked_sse(
     pending: &mut Vec<u8>,
     sse_buffer: &mut String,
     full_content: &mut String,
+    full_reasoning: &mut String,
 ) -> Result<bool, String> {
     loop {
         let Some(line_end) = pending.windows(2).position(|window| window == b"\r\n") else {
@@ -2919,7 +2930,14 @@ fn drain_chunked_sse(
         let chunk = pending[data_start..data_start + size].to_vec();
         pending.drain(..data_start + size + 2);
         let text = String::from_utf8_lossy(&chunk).to_string();
-        if process_sse_text(app, task_id, &text, sse_buffer, full_content)? {
+        if process_sse_text(
+            app,
+            task_id,
+            &text,
+            sse_buffer,
+            full_content,
+            full_reasoning,
+        )? {
             return Ok(true);
         }
     }
@@ -2931,6 +2949,7 @@ fn process_sse_text(
     text: &str,
     sse_buffer: &mut String,
     full_content: &mut String,
+    full_reasoning: &mut String,
 ) -> Result<bool, String> {
     sse_buffer.push_str(&text.replace("\r\n", "\n"));
     while let Some(index) = sse_buffer.find("\n\n") {
@@ -2948,28 +2967,40 @@ fn process_sse_text(
             return Ok(true);
         }
         let delta = parse_stream_delta(&data)?;
-        if delta.is_empty() {
-            continue;
+        if !delta.reasoning_delta.is_empty() {
+            full_reasoning.push_str(&delta.reasoning_delta);
+            emit_stream_event(
+                app,
+                RuntimeStreamEvent {
+                    task_id: task_id.to_string(),
+                    kind: "reasoning".to_string(),
+                    delta: delta.reasoning_delta,
+                    content: full_reasoning.clone(),
+                    message: String::new(),
+                },
+            )?;
         }
-        full_content.push_str(&delta);
-        emit_stream_event(
-            app,
-            RuntimeStreamEvent {
-                task_id: task_id.to_string(),
-                kind: "delta".to_string(),
-                delta,
-                content: full_content.clone(),
-                message: String::new(),
-            },
-        )?;
+        if !delta.message_delta.is_empty() {
+            full_content.push_str(&delta.message_delta);
+            emit_stream_event(
+                app,
+                RuntimeStreamEvent {
+                    task_id: task_id.to_string(),
+                    kind: "delta".to_string(),
+                    delta: delta.message_delta,
+                    content: full_content.clone(),
+                    message: String::new(),
+                },
+            )?;
+        }
     }
     Ok(false)
 }
 
-fn parse_stream_delta(data: &str) -> Result<String, String> {
+fn parse_stream_delta(data: &str) -> Result<ParsedStreamDelta, String> {
     let value = serde_json::from_str::<serde_json::Value>(data)
         .map_err(|error| format!("Hermes Runtime 流式事件不是 JSON：{error}"))?;
-    Ok(value
+    let message_delta = value
         .pointer("/choices/0/delta/content")
         .and_then(|item| item.as_str())
         .or_else(|| {
@@ -2983,7 +3014,44 @@ fn parse_stream_delta(data: &str) -> Result<String, String> {
                 .and_then(|item| item.as_str())
         })
         .unwrap_or("")
-        .to_string())
+        .to_string();
+    let reasoning_delta = value
+        .pointer("/choices/0/delta/reasoning_content")
+        .and_then(|item| item.as_str())
+        .or_else(|| {
+            value
+                .pointer("/choices/0/delta/reasoning")
+                .and_then(|item| item.as_str())
+        })
+        .or_else(|| {
+            if value.get("type").and_then(|item| item.as_str()) == Some("reasoning.delta") {
+                value
+                    .pointer("/payload/text")
+                    .and_then(|item| item.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("")
+        .to_string();
+    let gateway_message_delta =
+        if value.get("type").and_then(|item| item.as_str()) == Some("message.delta") {
+            value
+                .pointer("/payload/text")
+                .and_then(|item| item.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            String::new()
+        };
+    Ok(ParsedStreamDelta {
+        message_delta: if message_delta.is_empty() {
+            gateway_message_delta
+        } else {
+            message_delta
+        },
+        reasoning_delta,
+    })
 }
 
 fn parse_completion_content(body: &str) -> Result<String, String> {

@@ -324,7 +324,11 @@ export function ChatView({
                   message={message}
                   isLast={isLast}
                   isLoading={isLoading && isLast && message.authorKind === "agent"}
-                  showMeta={!previous || previous.authorKind !== message.authorKind}
+                  showMeta={
+                    !previous ||
+                    previous.authorKind !== message.authorKind ||
+                    previous.kind !== message.kind
+                  }
                   formatTime={formatTime}
                   onApprove={() => onSend("/approve")}
                   onDeny={() => onSend("/deny")}

@@ -45,6 +45,7 @@ export interface MessageAttachment {
 export interface Message {
   id: string;
   workspaceId: string;
+  kind?: "message" | "reasoning";
   authorKind: "user" | "agent" | "system";
   authorId?: string;
   authorName: string;
