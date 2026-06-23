@@ -69,6 +69,7 @@ import {
   listHermesProfiles,
   listHermesSkills,
   listHermesToolsets,
+  listMessagingPlatforms,
   listProviderKeys,
   listenHermesAgentStream,
   loadHermesTeamSessions,
@@ -99,7 +100,9 @@ import {
   stopHermesGateway,
   stopSshTunnel,
   testRemoteConnection,
+  testMessagingPlatform,
   triggerHermesCronJob,
+  updateMessagingPlatform,
   updateHermesTeamSessionTitle,
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
@@ -118,6 +121,8 @@ import {
   type McpServerInfo,
   type MemoryContent,
   type MemorySummary,
+  type MessagingPlatformInfo,
+  type MessagingPlatformsResponse,
   type ProviderDiscoveryResult,
   type ProviderKeyInfo,
   type RemoteConnectionConfig,
@@ -128,7 +133,7 @@ import {
 } from "../runtime/hermes-runtime";
 
 type ActiveView = "team" | "sessions" | "settings";
-type SettingsPanel = "overview" | "providers" | "models" | "gateway" | "schedules" | "capabilities" | "skills" | "memory" | "logs";
+type SettingsPanel = "overview" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
   id?: string;
@@ -165,6 +170,7 @@ type CronJobForm = {
   prompt: string;
   deliver: string;
 };
+type MessagingEnvDrafts = Record<string, Record<string, string>>;
 type RuntimeEvent = {
   id: string;
   taskId: string;
@@ -371,12 +377,15 @@ export function App() {
   const [mcpForm, setMcpForm] = useState<McpForm>(emptyMcpForm);
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([]);
   const [cronForm, setCronForm] = useState<CronJobForm>(emptyCronJobForm);
+  const [messagingResponse, setMessagingResponse] = useState<MessagingPlatformsResponse | null>(null);
+  const [messagingEnvDrafts, setMessagingEnvDrafts] = useState<MessagingEnvDrafts>({});
   const [providerDiscovery, setProviderDiscovery] = useState<ProviderDiscoveryResult | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
   const [providerBusy, setProviderBusy] = useState(false);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
   const [skillBusy, setSkillBusy] = useState(false);
   const [cronBusy, setCronBusy] = useState(false);
+  const [messagingBusy, setMessagingBusy] = useState(false);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
@@ -408,6 +417,7 @@ export function App() {
     { id: "providers", label: "Provider" },
     { id: "models", label: "Models" },
     { id: "gateway", label: "Gateway" },
+    { id: "messaging", label: "Messaging" },
     { id: "schedules", label: "Schedules" },
     { id: "capabilities", label: "Capabilities" },
     { id: "skills", label: "Skills" },
@@ -698,6 +708,108 @@ export function App() {
 
   const handleCronActionResult = (result: CronJobActionResult, successMessage: string) => {
     setNotice(result.success ? successMessage : `Schedule 操作失败：${result.error ?? "未知错误"}`);
+  };
+
+  const refreshMessagingPlatforms = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setMessagingResponse(null);
+      setMessagingEnvDrafts({});
+      return;
+    }
+    const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
+    setMessagingBusy(true);
+    try {
+      const response = await listMessagingPlatforms({ profile: targetProfile });
+      setMessagingResponse(response);
+      setMessagingEnvDrafts((current) => {
+        const next = { ...current };
+        for (const platform of response.platforms) {
+          next[platform.id] = next[platform.id] ?? {};
+        }
+        return next;
+      });
+    } catch (error) {
+      setNotice(`读取 Messaging Platforms 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMessagingBusy(false);
+    }
+  };
+
+  const saveMessagingPlatformEnv = async (platform: MessagingPlatformInfo) => {
+    const draft = messagingEnvDrafts[platform.id] ?? {};
+    const env = Object.fromEntries(
+      Object.entries(draft)
+        .map(([key, value]) => [key, value.trim()])
+        .filter(([, value]) => value.length > 0),
+    );
+    if (Object.keys(env).length === 0) {
+      setNotice("没有新的 Messaging env 值需要保存。");
+      return;
+    }
+    await applyMessagingPlatformUpdate(platform.id, { env }, `${platform.name} 配置已保存。`, () => {
+      setMessagingEnvDrafts((current) => ({ ...current, [platform.id]: {} }));
+    });
+  };
+
+  const clearMessagingEnv = async (platform: MessagingPlatformInfo, key: string) => {
+    await applyMessagingPlatformUpdate(
+      platform.id,
+      { clearEnv: [key] },
+      `${platform.name} 的 ${key} 已清空。`,
+    );
+  };
+
+  const toggleMessagingPlatform = async (platform: MessagingPlatformInfo) => {
+    await applyMessagingPlatformUpdate(
+      platform.id,
+      { enabled: !platform.enabled },
+      `${platform.name} 已${platform.enabled ? "禁用" : "启用"}。`,
+    );
+  };
+
+  const toggleMessagingToolset = async (platform: MessagingPlatformInfo, toolsetKey: string, enabled: boolean) => {
+    await applyMessagingPlatformUpdate(
+      platform.id,
+      { toolsets: { [toolsetKey]: enabled } },
+      `${platform.name} toolset 已更新。`,
+    );
+  };
+
+  const applyMessagingPlatformUpdate = async (
+    platform: string,
+    update: Parameters<typeof updateMessagingPlatform>[0]["update"],
+    successMessage: string,
+    afterSuccess?: () => void,
+  ) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMessagingBusy(true);
+    try {
+      const response = await updateMessagingPlatform({
+        profile: targetProfile,
+        platform,
+        update,
+      });
+      setMessagingResponse(response);
+      afterSuccess?.();
+      setNotice(successMessage);
+    } catch (error) {
+      setNotice(`更新 Messaging Platform 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMessagingBusy(false);
+    }
+  };
+
+  const runMessagingPlatformTest = async (platform: MessagingPlatformInfo) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMessagingBusy(true);
+    try {
+      const result = await testMessagingPlatform({ profile: targetProfile, platform: platform.id });
+      setNotice(result.message);
+    } catch (error) {
+      setNotice(`测试 ${platform.name} 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMessagingBusy(false);
+    }
   };
 
   const refreshHermesLogs = async (preferredPath?: string) => {
@@ -2091,6 +2203,7 @@ export function App() {
               setActiveView("settings");
               void refreshInstallStatus();
               void refreshHermesCapabilities();
+              void refreshMessagingPlatforms();
               void refreshCronJobs();
               void refreshHermesLogs();
             }}
@@ -2673,6 +2786,100 @@ export function App() {
                     </button>
                   </div>
                 </div>
+              </section>
+
+              <section className={settingsCardClass("messaging", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Messaging</p>
+                    <h2>消息平台</h2>
+                  </div>
+                  <div className="settings-actions">
+                    <span className="count-pill">{messagingResponse?.platforms.length ?? 0}</span>
+                    <button className="refresh-runtime" disabled={messagingBusy} type="button" onClick={() => void refreshMessagingPlatforms(installStatus?.activeProfile)}>
+                      <RefreshCw size={14} />
+                      <span>{messagingBusy ? "读取中..." : "刷新"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {messagingResponse ? (
+                  <div className="messaging-platform-list">
+                    {messagingResponse.platforms.map((platform) => (
+                      <article className={`messaging-platform-card ${platform.enabled ? "enabled" : ""}`} key={platform.id}>
+                        <div className="messaging-platform-head">
+                          <div>
+                            <strong>{platform.name}</strong>
+                            <span>{platform.description}</span>
+                            <small>{platform.state ?? "unknown"} · {platform.configured ? "configured" : "not configured"} · {messagingResponse.source}</small>
+                          </div>
+                          <div className="model-card-actions">
+                            <button disabled={messagingBusy} type="button" onClick={() => void toggleMessagingPlatform(platform)}>
+                              <Power size={14} />
+                              <span>{platform.enabled ? "禁用" : "启用"}</span>
+                            </button>
+                            <button disabled={messagingBusy} type="button" onClick={() => void runMessagingPlatformTest(platform)}>
+                              <Plug size={14} />
+                              <span>测试</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="messaging-env-grid">
+                          {platform.envVars.map((field) => (
+                            <label className={field.required ? "required" : ""} key={field.key}>
+                              <span>{field.prompt || field.key}</span>
+                              <input
+                                type={field.isPassword ? "password" : "text"}
+                                value={messagingEnvDrafts[platform.id]?.[field.key] ?? ""}
+                                onChange={(event) =>
+                                  setMessagingEnvDrafts((current) => ({
+                                    ...current,
+                                    [platform.id]: {
+                                      ...(current[platform.id] ?? {}),
+                                      [field.key]: event.target.value,
+                                    },
+                                  }))
+                                }
+                                placeholder={field.redactedValue ?? field.key}
+                              />
+                              <small>{field.key}{field.isSet ? ` · ${field.redactedValue}` : ""}</small>
+                              {field.isSet && (
+                                <button disabled={messagingBusy} type="button" onClick={() => void clearMessagingEnv(platform, field.key)}>
+                                  清空
+                                </button>
+                              )}
+                            </label>
+                          ))}
+                        </div>
+
+                        <div className="settings-actions messaging-actions">
+                          <button className="refresh-runtime" disabled={messagingBusy} type="button" onClick={() => void saveMessagingPlatformEnv(platform)}>
+                            <Save size={14} />
+                            <span>保存 env</span>
+                          </button>
+                        </div>
+
+                        <div className="messaging-toolset-grid">
+                          {platform.toolsets.map((toolset) => (
+                            <button
+                              className={`${toolset.enabled ? "selected" : ""} ${toolset.risk === "high" ? "high-risk" : ""}`}
+                              disabled={messagingBusy}
+                              key={toolset.key}
+                              type="button"
+                              title={toolset.description}
+                              onClick={() => void toggleMessagingToolset(platform, toolset.key, !toolset.enabled)}
+                            >
+                              {toolset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-note">尚未读取 Messaging Platforms；这里会绑定真实 Hermes config、env 与 Gateway API。</p>
+                )}
               </section>
 
               <section className={settingsCardClass("schedules", "settings-card-wide")}>

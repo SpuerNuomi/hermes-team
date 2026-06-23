@@ -2879,6 +2879,126 @@ textarea:focus {
   opacity: 0.58;
 }
 
+.messaging-platform-list {
+  display: grid;
+  gap: 12px;
+}
+
+.messaging-platform-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.messaging-platform-card.enabled {
+  border-color: #9fc8b8;
+  background: #f7fbf9;
+}
+
+.messaging-platform-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.messaging-platform-head strong,
+.messaging-platform-head span,
+.messaging-platform-head small {
+  display: block;
+}
+
+.messaging-platform-head span,
+.messaging-platform-head small,
+.messaging-env-grid small {
+  color: #647067;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.messaging-env-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.messaging-env-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.messaging-env-grid label > span {
+  color: #647067;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.messaging-env-grid label.required > span::after {
+  content: " *";
+  color: #a15c1b;
+}
+
+.messaging-env-grid input {
+  min-width: 0;
+  height: 34px;
+  padding: 7px 9px;
+  color: #17201c;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  outline: none;
+}
+
+.messaging-env-grid input:focus {
+  border-color: #17201c;
+  box-shadow: 0 0 0 3px rgba(23, 32, 28, 0.1);
+}
+
+.messaging-env-grid label > button {
+  justify-self: start;
+  padding: 4px 8px;
+  color: #303a34;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.messaging-actions {
+  margin-top: -4px;
+}
+
+.messaging-toolset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.messaging-toolset-grid button {
+  min-height: 28px;
+  padding: 5px 8px;
+  color: #303a34;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.messaging-toolset-grid button.selected {
+  color: #ffffff;
+  background: #17201c;
+  border-color: #17201c;
+}
+
+.messaging-toolset-grid button.high-risk.selected {
+  background: #714015;
+  border-color: #714015;
+}
+
 .provider-key-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

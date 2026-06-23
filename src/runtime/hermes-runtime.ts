@@ -227,6 +227,62 @@ export interface CronJobActionResult {
   error?: string | null;
 }
 
+export interface MessagingEnvVarInfo {
+  advanced: boolean;
+  description: string;
+  isPassword: boolean;
+  isSet: boolean;
+  key: string;
+  prompt: string;
+  redactedValue?: string | null;
+  required: boolean;
+  url?: string | null;
+}
+
+export interface MessagingToolsetInfo {
+  description: string;
+  enabled: boolean;
+  key: string;
+  label: string;
+  risk: "normal" | "high" | string;
+}
+
+export interface MessagingPlatformInfo {
+  configured: boolean;
+  description: string;
+  docsUrl: string;
+  enabled: boolean;
+  envVars: MessagingEnvVarInfo[];
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  gatewayRunning: boolean;
+  id: string;
+  name: string;
+  state?: string | null;
+  toolsets: MessagingToolsetInfo[];
+  updatedAt?: string | null;
+}
+
+export interface MessagingPlatformsResponse {
+  editable: boolean;
+  message?: string | null;
+  platforms: MessagingPlatformInfo[];
+  source: "desktop" | "remote-api" | string;
+}
+
+export interface MessagingPlatformUpdate {
+  clearEnv?: string[];
+  enabled?: boolean;
+  env?: Record<string, string>;
+  toolsets?: Record<string, boolean>;
+}
+
+export interface MessagingPlatformTestResponse {
+  message: string;
+  ok: boolean;
+  state?: string | null;
+}
+
 export interface RunHermesAgentInput {
   taskId?: string;
   baseUrl?: string;
@@ -587,6 +643,39 @@ export async function triggerHermesCronJob(input: {
 }): Promise<CronJobActionResult> {
   ensureTauriRuntime();
   return invoke<CronJobActionResult>("trigger_hermes_cron_job", { input });
+}
+
+export async function listMessagingPlatforms(params: {
+  profile?: string;
+} = {}): Promise<MessagingPlatformsResponse> {
+  ensureTauriRuntime();
+  return invoke<MessagingPlatformsResponse>("list_messaging_platforms", {
+    profile: params.profile,
+  });
+}
+
+export async function updateMessagingPlatform(input: {
+  profile?: string;
+  platform: string;
+  update: MessagingPlatformUpdate;
+}): Promise<MessagingPlatformsResponse> {
+  ensureTauriRuntime();
+  return invoke<MessagingPlatformsResponse>("update_messaging_platform", {
+    platform: input.platform,
+    update: input.update,
+    profile: input.profile,
+  });
+}
+
+export async function testMessagingPlatform(input: {
+  profile?: string;
+  platform: string;
+}): Promise<MessagingPlatformTestResponse> {
+  ensureTauriRuntime();
+  return invoke<MessagingPlatformTestResponse>("test_messaging_platform", {
+    platform: input.platform,
+    profile: input.profile,
+  });
 }
 
 export async function probeHermesGateway(params: {

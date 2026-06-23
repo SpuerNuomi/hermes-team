@@ -400,6 +400,74 @@ struct CronJobActionResult {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MessagingEnvVarInfo {
+    advanced: bool,
+    description: String,
+    is_password: bool,
+    is_set: bool,
+    key: String,
+    prompt: String,
+    redacted_value: Option<String>,
+    required: bool,
+    url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MessagingToolsetInfo {
+    description: String,
+    enabled: bool,
+    key: String,
+    label: String,
+    risk: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MessagingPlatformInfo {
+    configured: bool,
+    description: String,
+    docs_url: String,
+    enabled: bool,
+    env_vars: Vec<MessagingEnvVarInfo>,
+    error_code: Option<String>,
+    error_message: Option<String>,
+    gateway_running: bool,
+    id: String,
+    name: String,
+    state: Option<String>,
+    toolsets: Vec<MessagingToolsetInfo>,
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MessagingPlatformsResponse {
+    editable: bool,
+    message: Option<String>,
+    platforms: Vec<MessagingPlatformInfo>,
+    source: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessagingPlatformUpdate {
+    clear_env: Option<Vec<String>>,
+    enabled: Option<bool>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+    toolsets: Option<std::collections::BTreeMap<String, bool>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MessagingPlatformTestResponse {
+    message: String,
+    ok: bool,
+    state: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeMessage {
@@ -1421,6 +1489,127 @@ async fn resume_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActi
 #[tauri::command]
 async fn trigger_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActionResult, String> {
     run_cron_action(input, "run", "POST", Some("run")).await
+}
+
+#[tauri::command]
+async fn list_messaging_platforms(
+    profile: Option<String>,
+) -> Result<MessagingPlatformsResponse, String> {
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        return remote_messaging_platforms(
+            "GET",
+            "/api/messaging/platforms",
+            None,
+            profile.as_deref(),
+        )
+        .map(|mut response| {
+            response.editable = true;
+            response.source = "remote-api".to_string();
+            response
+        });
+    }
+
+    let profile = normalize_profile(profile.as_deref());
+    let env = read_env_map(profile.as_deref())?;
+    let config_text = read_profile_file(profile.as_deref(), "config.yaml")?.unwrap_or_default();
+    let gateway_running = resolve_gateway_url(profile.as_deref())
+        .ok()
+        .and_then(|base| {
+            let auth = read_api_server_key(profile.as_deref()).ok().flatten();
+            Some(gateway_is_ready(&base, auth.as_deref()))
+        })
+        .unwrap_or(false);
+    Ok(MessagingPlatformsResponse {
+        editable: true,
+        message: None,
+        platforms: messaging_platform_defs()
+            .into_iter()
+            .map(|platform| build_messaging_platform(platform, &env, &config_text, gateway_running))
+            .collect(),
+        source: "desktop".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn update_messaging_platform(
+    platform: String,
+    update: MessagingPlatformUpdate,
+    profile: Option<String>,
+) -> Result<MessagingPlatformsResponse, String> {
+    let platform_id = platform.trim();
+    validate_messaging_platform_update(platform_id, &update)?;
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        let path = format!(
+            "/api/messaging/platforms/{}",
+            encode_path_segment(platform_id)
+        );
+        let body = serde_json::to_value(&update)
+            .map_err(|error| format!("序列化 Messaging Platform 更新失败：{error}"))?;
+        let _ = remote_messaging_action("PUT", &path, Some(body), profile.as_deref())?;
+        return list_messaging_platforms(profile).await;
+    }
+
+    let profile_name = normalize_profile(profile.as_deref());
+    for key in update.clear_env.unwrap_or_default() {
+        remove_env_value(profile_name.as_deref(), &key)?;
+    }
+    for (key, value) in update.env.unwrap_or_default() {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            upsert_env_value(profile_name.as_deref(), &key, trimmed)?;
+        }
+    }
+    let config_path = profile_home(profile_name.as_deref())?.join("config.yaml");
+    let mut config_text = fs::read_to_string(&config_path).unwrap_or_default();
+    let mut config_changed = false;
+    if let Some(enabled) = update.enabled {
+        config_text = set_platform_enabled(&config_text, platform_id, enabled);
+        config_changed = true;
+    }
+    for (toolset, enabled) in update.toolsets.unwrap_or_default() {
+        config_text = set_platform_toolset_enabled(&config_text, platform_id, &toolset, enabled);
+        config_changed = true;
+    }
+    if config_changed {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+        }
+        fs::write(&config_path, ensure_trailing_newline(&config_text))
+            .map_err(|error| format!("写入 {} 失败：{error}", config_path.to_string_lossy()))?;
+    }
+    list_messaging_platforms(profile).await
+}
+
+#[tauri::command]
+async fn test_messaging_platform(
+    platform: String,
+    profile: Option<String>,
+) -> Result<MessagingPlatformTestResponse, String> {
+    let platform_id = platform.trim();
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        let path = format!(
+            "/api/messaging/platforms/{}/test",
+            encode_path_segment(platform_id)
+        );
+        return remote_messaging_test("POST", &path, profile.as_deref());
+    }
+    let response = list_messaging_platforms(profile).await?;
+    let Some(platform) = response
+        .platforms
+        .into_iter()
+        .find(|item| item.id == platform_id)
+    else {
+        return Ok(MessagingPlatformTestResponse {
+            ok: false,
+            state: Some("unknown".to_string()),
+            message: format!("未知 Messaging Platform：{platform_id}"),
+        });
+    };
+    Ok(test_local_messaging_platform_status(&platform))
 }
 
 #[tauri::command]
@@ -4639,6 +4828,804 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
+struct MessagingPlatformDef {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    docs_slug: &'static str,
+    env_vars: &'static [&'static str],
+    required_env: &'static [&'static str],
+}
+
+struct MessagingEnvDef {
+    prompt: String,
+    description: String,
+    is_password: bool,
+    advanced: bool,
+    url: Option<&'static str>,
+}
+
+fn messaging_platform_defs() -> Vec<MessagingPlatformDef> {
+    vec![
+        MessagingPlatformDef {
+            id: "telegram",
+            name: "Telegram",
+            description: "Run Hermes from Telegram DMs, groups, and topics.",
+            docs_slug: "telegram",
+            env_vars: &[
+                "TELEGRAM_BOT_TOKEN",
+                "TELEGRAM_ALLOWED_USERS",
+                "TELEGRAM_PROXY",
+            ],
+            required_env: &["TELEGRAM_BOT_TOKEN"],
+        },
+        MessagingPlatformDef {
+            id: "discord",
+            name: "Discord",
+            description: "Connect Hermes to Discord DMs, channels, and threads.",
+            docs_slug: "discord",
+            env_vars: &[
+                "DISCORD_BOT_TOKEN",
+                "DISCORD_ALLOWED_USERS",
+                "DISCORD_ALLOWED_CHANNELS",
+            ],
+            required_env: &["DISCORD_BOT_TOKEN"],
+        },
+        MessagingPlatformDef {
+            id: "slack",
+            name: "Slack",
+            description: "Use Hermes from Slack via Socket Mode.",
+            docs_slug: "slack",
+            env_vars: &["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+            required_env: &["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
+        },
+        MessagingPlatformDef {
+            id: "whatsapp",
+            name: "WhatsApp",
+            description: "Use Hermes through the bundled WhatsApp bridge.",
+            docs_slug: "whatsapp",
+            env_vars: &[
+                "WHATSAPP_ENABLED",
+                "WHATSAPP_MODE",
+                "WHATSAPP_ALLOWED_USERS",
+            ],
+            required_env: &[],
+        },
+        MessagingPlatformDef {
+            id: "signal",
+            name: "Signal",
+            description: "Connect through a signal-cli REST bridge.",
+            docs_slug: "signal",
+            env_vars: &["SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS"],
+            required_env: &["SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"],
+        },
+        MessagingPlatformDef {
+            id: "matrix",
+            name: "Matrix",
+            description: "Use Hermes in Matrix rooms and direct messages.",
+            docs_slug: "matrix",
+            env_vars: &[
+                "MATRIX_HOMESERVER",
+                "MATRIX_ACCESS_TOKEN",
+                "MATRIX_USER_ID",
+                "MATRIX_ALLOWED_USERS",
+            ],
+            required_env: &["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID"],
+        },
+        MessagingPlatformDef {
+            id: "mattermost",
+            name: "Mattermost",
+            description: "Connect Hermes to Mattermost channels and direct messages.",
+            docs_slug: "mattermost",
+            env_vars: &[
+                "MATTERMOST_URL",
+                "MATTERMOST_TOKEN",
+                "MATTERMOST_ALLOWED_USERS",
+            ],
+            required_env: &["MATTERMOST_URL", "MATTERMOST_TOKEN"],
+        },
+        MessagingPlatformDef {
+            id: "email",
+            name: "Email",
+            description: "Talk to Hermes through an IMAP/SMTP mailbox.",
+            docs_slug: "email",
+            env_vars: &[
+                "EMAIL_ADDRESS",
+                "EMAIL_PASSWORD",
+                "EMAIL_IMAP_HOST",
+                "EMAIL_SMTP_HOST",
+            ],
+            required_env: &[
+                "EMAIL_ADDRESS",
+                "EMAIL_PASSWORD",
+                "EMAIL_IMAP_HOST",
+                "EMAIL_SMTP_HOST",
+            ],
+        },
+        MessagingPlatformDef {
+            id: "sms",
+            name: "SMS (Twilio)",
+            description: "Send and receive text messages via Twilio.",
+            docs_slug: "sms",
+            env_vars: &[
+                "TWILIO_ACCOUNT_SID",
+                "TWILIO_AUTH_TOKEN",
+                "TWILIO_PHONE_NUMBER",
+            ],
+            required_env: &["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
+        },
+        MessagingPlatformDef {
+            id: "bluebubbles",
+            name: "BlueBubbles (iMessage)",
+            description: "Use Hermes through iMessage via a BlueBubbles server.",
+            docs_slug: "bluebubbles",
+            env_vars: &[
+                "BLUEBUBBLES_SERVER_URL",
+                "BLUEBUBBLES_PASSWORD",
+                "BLUEBUBBLES_ALLOWED_USERS",
+            ],
+            required_env: &["BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"],
+        },
+        MessagingPlatformDef {
+            id: "dingtalk",
+            name: "DingTalk",
+            description: "Connect Hermes to DingTalk groups.",
+            docs_slug: "dingtalk",
+            env_vars: &["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],
+            required_env: &["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],
+        },
+        MessagingPlatformDef {
+            id: "feishu",
+            name: "Feishu / Lark",
+            description: "Use Hermes inside Feishu / Lark.",
+            docs_slug: "feishu",
+            env_vars: &[
+                "FEISHU_APP_ID",
+                "FEISHU_APP_SECRET",
+                "FEISHU_ENCRYPT_KEY",
+                "FEISHU_VERIFICATION_TOKEN",
+            ],
+            required_env: &["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
+        },
+        MessagingPlatformDef {
+            id: "wecom",
+            name: "WeCom",
+            description: "Send-only WeCom group bot via webhook.",
+            docs_slug: "wecom",
+            env_vars: &["WECOM_BOT_ID", "WECOM_SECRET"],
+            required_env: &["WECOM_BOT_ID"],
+        },
+        MessagingPlatformDef {
+            id: "weixin",
+            name: "WeChat",
+            description: "Connect a WeChat Official Account.",
+            docs_slug: "weixin",
+            env_vars: &["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"],
+            required_env: &["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"],
+        },
+        MessagingPlatformDef {
+            id: "webhook",
+            name: "Webhooks",
+            description: "Receive events from GitHub, GitLab, and other webhook sources.",
+            docs_slug: "webhooks",
+            env_vars: &["WEBHOOK_ENABLED", "WEBHOOK_PORT", "WEBHOOK_SECRET"],
+            required_env: &[],
+        },
+        MessagingPlatformDef {
+            id: "homeassistant",
+            name: "Home Assistant",
+            description: "Control your smart home from Hermes via Home Assistant.",
+            docs_slug: "homeassistant",
+            env_vars: &["HASS_URL", "HASS_TOKEN"],
+            required_env: &["HASS_URL", "HASS_TOKEN"],
+        },
+    ]
+}
+
+fn messaging_toolset_defs() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+    vec![
+        (
+            "web",
+            "Web search",
+            "Use the configured Hermes web/search backend.",
+            "normal",
+        ),
+        (
+            "browser",
+            "Browser",
+            "Use a local browser session for live web pages.",
+            "normal",
+        ),
+        (
+            "terminal",
+            "Terminal",
+            "Run shell commands from the messaging platform.",
+            "high",
+        ),
+        (
+            "file",
+            "Files",
+            "Read and write files reachable by Hermes.",
+            "high",
+        ),
+        (
+            "code_execution",
+            "Code execution",
+            "Run local code execution tools.",
+            "high",
+        ),
+        (
+            "vision",
+            "Vision",
+            "Analyze images sent through the messaging platform.",
+            "normal",
+        ),
+        (
+            "image_gen",
+            "Image generation",
+            "Generate images from the messaging platform.",
+            "normal",
+        ),
+        (
+            "tts",
+            "Text to speech",
+            "Create speech/audio responses from messages.",
+            "normal",
+        ),
+        (
+            "skills",
+            "Skills",
+            "List, inspect, and manage Hermes skills.",
+            "normal",
+        ),
+        (
+            "memory",
+            "Memory",
+            "Read and update Hermes memory.",
+            "normal",
+        ),
+        (
+            "session_search",
+            "Session search",
+            "Search previous Hermes sessions.",
+            "normal",
+        ),
+        (
+            "clarify",
+            "Clarify",
+            "Ask clarification questions before acting.",
+            "normal",
+        ),
+        (
+            "cronjob",
+            "Schedules",
+            "Create and manage scheduled jobs.",
+            "normal",
+        ),
+        (
+            "todo",
+            "Todos",
+            "Manage task lists and temporary todos.",
+            "normal",
+        ),
+        (
+            "messaging",
+            "Messaging",
+            "Send messages through configured platforms.",
+            "normal",
+        ),
+        (
+            "kanban",
+            "Kanban",
+            "Read and manage Hermes kanban tasks.",
+            "normal",
+        ),
+        (
+            "delegation",
+            "Delegation",
+            "Delegate work to other agents.",
+            "normal",
+        ),
+        (
+            "moa",
+            "Mixture of agents",
+            "Use multiple agents for consensus.",
+            "normal",
+        ),
+    ]
+}
+
+fn default_messaging_toolsets() -> Vec<String> {
+    [
+        "clarify",
+        "cronjob",
+        "kanban",
+        "memory",
+        "messaging",
+        "session_search",
+        "skills",
+        "todo",
+        "tts",
+        "vision",
+        "web",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn build_messaging_platform(
+    platform: MessagingPlatformDef,
+    env: &std::collections::BTreeMap<String, String>,
+    config: &str,
+    gateway_running: bool,
+) -> MessagingPlatformInfo {
+    let configured = messaging_platform_configured(&platform, env);
+    let enabled = read_platform_enabled(config, platform.id).unwrap_or(configured);
+    let state = if !enabled {
+        "disabled"
+    } else if !configured {
+        "not_configured"
+    } else if gateway_running {
+        "configured"
+    } else {
+        "gateway_stopped"
+    };
+    let toolsets =
+        parse_platform_toolsets(config, platform.id).unwrap_or_else(default_messaging_toolsets);
+    MessagingPlatformInfo {
+        configured,
+        description: platform.description.to_string(),
+        docs_url: format!(
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/{}/",
+            platform.docs_slug
+        ),
+        enabled,
+        env_vars: platform
+            .env_vars
+            .iter()
+            .map(|key| {
+                let value = env.get(*key).map(String::as_str).unwrap_or("");
+                build_messaging_env_var(key, value, platform.required_env.contains(key))
+            })
+            .collect(),
+        error_code: None,
+        error_message: None,
+        gateway_running,
+        id: platform.id.to_string(),
+        name: platform.name.to_string(),
+        state: Some(state.to_string()),
+        toolsets: messaging_toolset_defs()
+            .into_iter()
+            .map(|(key, label, description, risk)| MessagingToolsetInfo {
+                description: description.to_string(),
+                enabled: toolsets.iter().any(|item| item == key),
+                key: key.to_string(),
+                label: label.to_string(),
+                risk: risk.to_string(),
+            })
+            .collect(),
+        updated_at: None,
+    }
+}
+
+fn build_messaging_env_var(key: &str, value: &str, required: bool) -> MessagingEnvVarInfo {
+    let meta = messaging_env_def(key);
+    let trimmed = value.trim();
+    MessagingEnvVarInfo {
+        advanced: meta.advanced,
+        description: meta.description.to_string(),
+        is_password: meta.is_password,
+        is_set: !trimmed.is_empty(),
+        key: key.to_string(),
+        prompt: meta.prompt.to_string(),
+        redacted_value: if trimmed.is_empty() {
+            None
+        } else {
+            Some(mask_secret(trimmed))
+        },
+        required,
+        url: meta.url.map(str::to_string),
+    }
+}
+
+fn messaging_env_def(key: &str) -> MessagingEnvDef {
+    let is_password = key.contains("TOKEN")
+        || key.contains("SECRET")
+        || key.contains("PASSWORD")
+        || key.contains("KEY");
+    let prompt = key
+        .strip_suffix("_TOKEN")
+        .or_else(|| key.strip_suffix("_SECRET"))
+        .or_else(|| key.strip_suffix("_PASSWORD"))
+        .unwrap_or(key);
+    MessagingEnvDef {
+        prompt: prompt.to_string(),
+        description: key.to_string(),
+        is_password,
+        advanced: key.contains("PROXY")
+            || key.contains("PORT")
+            || key.contains("MODE")
+            || key.contains("ALLOWED"),
+        url: None,
+    }
+}
+
+fn messaging_platform_configured(
+    platform: &MessagingPlatformDef,
+    env: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    let has = |key: &str| env.get(key).is_some_and(|value| !value.trim().is_empty());
+    match platform.id {
+        "bluebubbles" => has("BLUEBUBBLES_SERVER_URL") && has("BLUEBUBBLES_PASSWORD"),
+        "email" => {
+            has("EMAIL_ADDRESS")
+                && has("EMAIL_PASSWORD")
+                && has("EMAIL_IMAP_HOST")
+                && has("EMAIL_SMTP_HOST")
+        }
+        "signal" => has("SIGNAL_HTTP_URL") && has("SIGNAL_ACCOUNT"),
+        "wecom" => has("WECOM_BOT_ID"),
+        "weixin" => has("WEIXIN_ACCOUNT_ID") && has("WEIXIN_TOKEN"),
+        _ => platform.required_env.iter().all(|key| has(key)),
+    }
+}
+
+fn validate_messaging_platform_update(
+    platform_id: &str,
+    update: &MessagingPlatformUpdate,
+) -> Result<(), String> {
+    let Some(platform) = messaging_platform_defs()
+        .into_iter()
+        .find(|item| item.id == platform_id)
+    else {
+        return Err(format!("未知 Messaging Platform：{platform_id}"));
+    };
+    for key in update
+        .env
+        .as_ref()
+        .map(|items| items.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(update.clear_env.clone().unwrap_or_default())
+    {
+        if !platform.env_vars.contains(&key.as_str()) {
+            return Err(format!(
+                "{key} 不属于 {name} 的配置项。",
+                name = platform.name
+            ));
+        }
+    }
+    for key in update
+        .toolsets
+        .as_ref()
+        .map(|items| items.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        if !messaging_toolset_defs()
+            .iter()
+            .any(|(toolset, _, _, _)| *toolset == key)
+        {
+            return Err(format!("未知 Messaging toolset：{key}"));
+        }
+    }
+    Ok(())
+}
+
+fn read_env_map(
+    profile: Option<&str>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let content = read_profile_file(profile, ".env")?.unwrap_or_default();
+    let mut env = std::collections::BTreeMap::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once('=') {
+            env.insert(key.trim().to_string(), unquote(value.trim()).to_string());
+        }
+    }
+    Ok(env)
+}
+
+fn remove_env_value(profile: Option<&str>, key: &str) -> Result<(), String> {
+    let existing = read_profile_file(profile, ".env")?.unwrap_or_default();
+    let mut lines = Vec::new();
+    for line in existing.lines() {
+        let trimmed = line.trim_start();
+        let matches_key = !trimmed.starts_with('#')
+            && trimmed
+                .split_once('=')
+                .map(|(line_key, _)| line_key.trim() == key)
+                .unwrap_or(false);
+        if !matches_key {
+            lines.push(line.to_string());
+        }
+    }
+    let mut content = lines.join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    write_profile_file(profile, ".env", &content)
+}
+
+fn read_platform_enabled(config: &str, platform_id: &str) -> Option<bool> {
+    read_nested_yaml_scalar(config, &["platforms", platform_id, "enabled"])
+        .map(|value| value != "false")
+}
+
+fn set_platform_enabled(config: &str, platform_id: &str, enabled: bool) -> String {
+    set_nested_platform_bool(config, "platforms", platform_id, "enabled", enabled)
+}
+
+fn set_nested_platform_bool(
+    config: &str,
+    root: &str,
+    platform_id: &str,
+    key: &str,
+    value: bool,
+) -> String {
+    let lines: Vec<&str> = config.lines().collect();
+    let root_header = format!("{root}:");
+    let rendered_value = format!("    {key}: {}", if value { "true" } else { "false" });
+    let Some(root_start) = lines
+        .iter()
+        .position(|line| line.trim_end() == root_header && !line.starts_with(' '))
+    else {
+        let sep = if config.is_empty() || config.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        return format!("{config}{sep}{root}:\n  {platform_id}:\n{rendered_value}\n");
+    };
+    let mut root_end = lines.len();
+    for (index, line) in lines.iter().enumerate().skip(root_start + 1) {
+        if !line.trim().is_empty() && !line.starts_with(' ') {
+            root_end = index;
+            break;
+        }
+    }
+    let platform_header = format!("  {platform_id}:");
+    let platform_start = lines[root_start + 1..root_end]
+        .iter()
+        .position(|line| line.trim_end() == platform_header)
+        .map(|index| root_start + 1 + index);
+    let Some(platform_start) = platform_start else {
+        let mut output = Vec::new();
+        output.extend(lines[..root_end].iter().map(|line| (*line).to_string()));
+        output.push(format!("  {platform_id}:"));
+        output.push(rendered_value);
+        output.extend(lines[root_end..].iter().map(|line| (*line).to_string()));
+        return output.join("\n");
+    };
+    let mut platform_end = root_end;
+    for (index, line) in lines
+        .iter()
+        .enumerate()
+        .take(root_end)
+        .skip(platform_start + 1)
+    {
+        if line.starts_with("  ") && !line.starts_with("    ") && !line.trim().is_empty() {
+            platform_end = index;
+            break;
+        }
+    }
+    let field_prefix = format!("    {key}:");
+    let field_index = lines[platform_start + 1..platform_end]
+        .iter()
+        .position(|line| line.trim_start().starts_with(&field_prefix))
+        .map(|index| platform_start + 1 + index);
+    let mut output = Vec::new();
+    if let Some(field_index) = field_index {
+        output.extend(lines[..field_index].iter().map(|line| (*line).to_string()));
+        output.push(rendered_value);
+        output.extend(
+            lines[field_index + 1..]
+                .iter()
+                .map(|line| (*line).to_string()),
+        );
+    } else {
+        output.extend(
+            lines[..platform_start + 1]
+                .iter()
+                .map(|line| (*line).to_string()),
+        );
+        output.push(rendered_value);
+        output.extend(
+            lines[platform_start + 1..]
+                .iter()
+                .map(|line| (*line).to_string()),
+        );
+    }
+    output.join("\n")
+}
+
+fn parse_platform_toolsets(config: &str, platform_id: &str) -> Option<Vec<String>> {
+    parse_platform_toolsets_map(config).remove(platform_id)
+}
+
+fn parse_platform_toolsets_map(config: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut map = std::collections::BTreeMap::new();
+    let mut in_root = false;
+    let mut current_platform: Option<String> = None;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed == "platform_toolsets:" && !line.starts_with(' ') {
+            in_root = true;
+            current_platform = None;
+            continue;
+        }
+        if in_root && !line.starts_with(' ') {
+            break;
+        }
+        if !in_root {
+            continue;
+        }
+        if line.starts_with("  ") && !line.starts_with("    ") && trimmed.ends_with(':') {
+            let name = trimmed.trim_end_matches(':').to_string();
+            map.entry(name.clone()).or_insert_with(Vec::new);
+            current_platform = Some(name);
+            continue;
+        }
+        if line.starts_with("    ") {
+            if let (Some(platform), Some(value)) =
+                (current_platform.as_ref(), trimmed.strip_prefix("- "))
+            {
+                map.entry(platform.clone())
+                    .or_insert_with(Vec::new)
+                    .push(unquote(value.trim()).to_string());
+            }
+        }
+    }
+    map
+}
+
+fn set_platform_toolset_enabled(
+    config: &str,
+    platform_id: &str,
+    toolset: &str,
+    enabled: bool,
+) -> String {
+    let mut map = parse_platform_toolsets_map(config);
+    let values = map
+        .entry(platform_id.to_string())
+        .or_insert_with(default_messaging_toolsets);
+    if enabled && !values.iter().any(|item| item == toolset) {
+        values.push(toolset.to_string());
+    }
+    if !enabled {
+        values.retain(|item| item != toolset);
+    }
+    values.sort();
+    values.dedup();
+    replace_top_level_block(config, "platform_toolsets", &render_platform_toolsets(&map))
+}
+
+fn render_platform_toolsets(map: &std::collections::BTreeMap<String, Vec<String>>) -> String {
+    let mut lines = vec!["platform_toolsets:".to_string()];
+    for (platform, values) in map {
+        lines.push(format!("  {platform}:"));
+        for value in values {
+            lines.push(format!("    - {value}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn test_local_messaging_platform_status(
+    platform: &MessagingPlatformInfo,
+) -> MessagingPlatformTestResponse {
+    if !platform.enabled {
+        return MessagingPlatformTestResponse {
+            ok: false,
+            state: platform.state.clone(),
+            message: format!("{} 已禁用。启用后需要重启 Gateway。", platform.name),
+        };
+    }
+    if !platform.configured {
+        let missing = platform
+            .env_vars
+            .iter()
+            .filter(|field| field.required && !field.is_set)
+            .map(|field| field.key.clone())
+            .collect::<Vec<_>>();
+        return MessagingPlatformTestResponse {
+            ok: false,
+            state: platform.state.clone(),
+            message: if missing.is_empty() {
+                "平台配置未完成。".to_string()
+            } else {
+                format!("缺少必要配置：{}", missing.join(", "))
+            },
+        };
+    }
+    if !platform.gateway_running {
+        return MessagingPlatformTestResponse {
+            ok: false,
+            state: platform.state.clone(),
+            message: "Gateway 未运行。启动 Gateway 后平台配置才会被加载。".to_string(),
+        };
+    }
+    MessagingPlatformTestResponse {
+        ok: true,
+        state: platform.state.clone(),
+        message: format!("{} 配置完整，Gateway 已运行。", platform.name),
+    }
+}
+
+fn remote_messaging_platforms(
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+    profile: Option<&str>,
+) -> Result<MessagingPlatformsResponse, String> {
+    let endpoint = resolve_connection_endpoint(profile, None)?;
+    let body_text = body
+        .map(|value| serde_json::to_string(&value))
+        .transpose()
+        .map_err(|error| format!("序列化 Messaging 请求失败：{error}"))?;
+    let response = http_request(
+        &endpoint.base_url,
+        method,
+        path,
+        body_text.as_deref(),
+        endpoint.auth.as_deref(),
+    )?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "Messaging Platform API 返回 HTTP {}：{}",
+            response.status,
+            truncate(&response.body, 240)
+        ));
+    }
+    serde_json::from_str::<MessagingPlatformsResponse>(&response.body)
+        .map_err(|error| format!("解析 Messaging Platform API 响应失败：{error}"))
+}
+
+fn remote_messaging_action(
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+    profile: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let endpoint = resolve_connection_endpoint(profile, None)?;
+    let body_text = body
+        .map(|value| serde_json::to_string(&value))
+        .transpose()
+        .map_err(|error| format!("序列化 Messaging 请求失败：{error}"))?;
+    let response = http_request(
+        &endpoint.base_url,
+        method,
+        path,
+        body_text.as_deref(),
+        endpoint.auth.as_deref(),
+    )?;
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "Messaging Platform API 返回 HTTP {}：{}",
+            response.status,
+            truncate(&response.body, 240)
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(&response.body)
+        .map_err(|error| format!("解析 Messaging Platform API 响应失败：{error}"))
+}
+
+fn remote_messaging_test(
+    method: &str,
+    path: &str,
+    profile: Option<&str>,
+) -> Result<MessagingPlatformTestResponse, String> {
+    let value = remote_messaging_action(method, path, None, profile)?;
+    serde_json::from_value::<MessagingPlatformTestResponse>(value)
+        .map_err(|error| format!("解析 Messaging Platform 测试响应失败：{error}"))
+}
+
 fn provider_discovery_unsupported(provider: &str) -> bool {
     matches!(
         provider,
@@ -5633,6 +6620,9 @@ pub fn run() {
             pause_hermes_cron_job,
             resume_hermes_cron_job,
             trigger_hermes_cron_job,
+            list_messaging_platforms,
+            update_messaging_platform,
+            test_messaging_platform,
             load_hermes_team_state,
             save_hermes_team_state,
             load_hermes_team_sessions,
