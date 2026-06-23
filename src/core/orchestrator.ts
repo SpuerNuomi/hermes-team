@@ -376,7 +376,7 @@ function decideForUserMessage(
 
   return {
     type: "ask_user",
-    question: "请 @ 一个或多个 Agent；多个 @ 默认并行，输入 /serial 可串行。",
+    question: "当前没有可用的 Hermes Agent。请在设置中确认默认 profile 和 Agent 配置。",
     reason: "smart_mode_without_route",
   };
 }
@@ -475,11 +475,11 @@ function createId(prefix: string): string {
 
 function describeDecision(decision: CoordinatorDecision): string {
   if (decision.type === "dispatch") {
-    if (decision.mode === "parallel") return `已并行派发 ${decision.assignments.length} 个 Agent。`;
-    if (decision.mode === "serial") return `已创建 ${decision.assignments.length} 步串行链。`;
-    return "已派发给目标 Agent。";
+    if (decision.mode === "parallel") return `已启动 ${decision.assignments.length} 个 Hermes 任务。`;
+    if (decision.mode === "serial") return `已创建 ${decision.assignments.length} 步 Hermes 任务。`;
+    return "Hermes 正在处理。";
   }
-  if (decision.type === "ask_user") return "需要用户补充目标。";
-  if (decision.type === "blocked") return `调度被阻断：${decision.reason}`;
-  return "没有触发调度。";
+  if (decision.type === "ask_user") return "需要先完成 Hermes Agent 配置。";
+  if (decision.type === "blocked") return `任务被阻断：${decision.reason}`;
+  return "未启动 Hermes 任务。";
 }

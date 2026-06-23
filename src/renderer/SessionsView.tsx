@@ -1,4 +1,4 @@
-import { Check, Database, FolderOpen, History, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { Check, Database, FolderOpen, History, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { HermesStateSessionSummary, HermesTeamSessionSummary } from "../runtime/hermes-runtime";
 
@@ -11,6 +11,7 @@ export function SessionsView({
   formatTime,
   onNewChat,
   onRestore,
+  onRefresh,
   onRename,
   onDelete,
   desktopSessions,
@@ -22,6 +23,7 @@ export function SessionsView({
   formatTime: (timestamp: number) => string;
   onNewChat: () => void;
   onRestore: (session: HermesTeamSessionSummary) => void;
+  onRefresh: () => void;
   onRename: (sessionId: string, title: string) => void;
   onDelete: (sessionId: string) => void;
   desktopSessions: HermesStateSessionSummary[];
@@ -83,6 +85,10 @@ export function SessionsView({
             <button className="refresh-runtime" type="button" onClick={onNewChat}>
               <Plus size={14} />
               <span>新建聊天</span>
+            </button>
+            <button className="refresh-runtime" type="button" onClick={onRefresh}>
+              <RefreshCw size={14} />
+              <span>刷新</span>
             </button>
           </div>
           <label className="session-search">

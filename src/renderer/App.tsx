@@ -365,7 +365,7 @@ export function App() {
   const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
   const [worktreeVisible, setWorktreeVisible] = useState(false);
   const [webPreviewUrl, setWebPreviewUrl] = useState<string | null>(null);
-  const [notice, setNotice] = useState("编排核心已就绪。");
+  const [notice, setNotice] = useState("Hermes Chat 已就绪。");
   const [sessions, setSessions] = useState<HermesTeamSessionSummary[]>([]);
   const [desktopSessions, setDesktopSessions] = useState<HermesStateSessionSummary[]>([]);
   const [desktopSessionsBusy, setDesktopSessionsBusy] = useState(false);
@@ -1100,11 +1100,11 @@ export function App() {
         if (!cancelled && saved) {
           setState(normalizeLoadedState(saved));
           setModeState(saved.workspace.mode);
-          setNotice("已恢复上次工作台状态。");
+          setNotice("已恢复上次聊天状态。");
         }
       })
       .catch(() => {
-        setNotice("编排核心已就绪。");
+        setNotice("Hermes Chat 已就绪。");
       })
       .finally(() => {
         if (cancelled) return;
@@ -1231,6 +1231,17 @@ export function App() {
     setRuntimeEvents([]);
     setActiveView("team");
     setNotice(`已恢复会话：${session.title}`);
+  };
+
+  const refreshLocalSessions = async () => {
+    if (!isTauriRuntimeAvailable()) return;
+    try {
+      const items = await loadHermesTeamSessions();
+      setSessions(normalizeLoadedSessions(items));
+      setNotice("本地会话列表已刷新。");
+    } catch (error) {
+      setNotice(`刷新本地会话失败：${runtimeErrorMessage(error)}`);
+    }
   };
 
   const refreshDesktopSessions = async () => {
@@ -2460,28 +2471,6 @@ export function App() {
           onShowAll={() => setActiveView("sessions")}
         />
 
-        {false && (
-        <section className="sidebar-panel">
-          <p className="panel-label">当前模式</p>
-          <div className="mode-toggle">
-            <button
-              className={mode === "smart" ? "selected" : ""}
-              type="button"
-              onClick={() => setMode("smart")}
-            >
-              智能协作
-            </button>
-            <button
-              className={mode === "manual" ? "selected" : ""}
-              type="button"
-              onClick={() => setMode("manual")}
-            >
-              手动
-            </button>
-          </div>
-        </section>
-        )}
-
         <section className="sidebar-panel">
           <p className="panel-label">Hermes Runtime</p>
           <div className={`runtime-badge ${runtimeStatus.state}`}>
@@ -3663,6 +3652,7 @@ export function App() {
             formatTime={formatTime}
             onNewChat={() => void createNewSession()}
             onRestore={(session) => void restoreSession(session)}
+            onRefresh={() => void refreshLocalSessions()}
             onRename={(sessionId, title) => void renameSession(sessionId, title)}
             onDelete={(sessionId) => void deleteSession(sessionId)}
             desktopSessions={desktopSessions}
@@ -3803,7 +3793,7 @@ export function App() {
                   ? decisionLabel(state.logs[0].decision.type)
                   : handoff.kind === "single"
                   ? `下一棒：${handoff.targetNames[0]}`
-                  : "多 Agent 编排核心处于待命状态"}
+                  : "Hermes Chat 处于待命状态"}
               </span>
             </div>
           </div>
