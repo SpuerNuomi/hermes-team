@@ -551,7 +551,8 @@ async fn inspect_hermes_install() -> Result<HermesInstallStatus, String> {
     let command = find_hermes_command().ok();
     let profile = normalize_profile(Some(&active_profile_name()));
     let home = hermes_home()?;
-    let base = resolve_gateway_url(profile.as_deref()).unwrap_or_else(|_| "http://127.0.0.1:8642".to_string());
+    let base = resolve_gateway_url(profile.as_deref())
+        .unwrap_or_else(|_| "http://127.0.0.1:8642".to_string());
     let auth = read_api_server_key(profile.as_deref()).unwrap_or(None);
     let health = match http_request(&base, "GET", "/health", None, auth.as_deref()) {
         Ok(response) if (200..300).contains(&response.status) => "healthy".to_string(),
@@ -560,11 +561,15 @@ async fn inspect_hermes_install() -> Result<HermesInstallStatus, String> {
     };
     Ok(HermesInstallStatus {
         installed: command.is_some(),
-        command: command.as_ref().map(|path| path.to_string_lossy().to_string()),
+        command: command
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
         version: command.as_ref().and_then(|path| hermes_version(path).ok()),
         hermes_home: home.to_string_lossy().to_string(),
         active_profile: active_profile_name(),
-        config_exists: profile_home(profile.as_deref())?.join("config.yaml").exists(),
+        config_exists: profile_home(profile.as_deref())?
+            .join("config.yaml")
+            .exists(),
         env_exists: profile_home(profile.as_deref())?.join(".env").exists(),
         api_server_key_present: auth.is_some(),
         api_server_configured: read_nested_yaml_scalar(
@@ -598,7 +603,10 @@ async fn set_hermes_toolset_enabled(
 ) -> Result<Vec<ToolsetInfo>, String> {
     let profile = normalize_profile(input.profile.as_deref());
     let key = input.key.trim();
-    if !toolset_defs().iter().any(|(item_key, _, _)| *item_key == key) {
+    if !toolset_defs()
+        .iter()
+        .any(|(item_key, _, _)| *item_key == key)
+    {
         return Err(format!("未知 toolset：{key}"));
     }
     let path = profile_home(profile.as_deref())?.join("config.yaml");
@@ -673,10 +681,7 @@ async fn list_hermes_skills(profile: Option<String>) -> Result<Vec<InstalledSkil
         if !category_path.is_dir() {
             continue;
         }
-        let category_name = category
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let category_name = category.file_name().to_string_lossy().to_string();
         for entry in fs::read_dir(&category_path)
             .map_err(|error| format!("读取 {} 失败：{error}", category_path.to_string_lossy()))?
             .flatten()
@@ -834,8 +839,12 @@ async fn remove_hermes_skill(input: RemoveSkillInput) -> Result<Vec<InstalledSki
 #[tauri::command]
 async fn read_hermes_memory_summary(profile: Option<String>) -> Result<MemorySummary, String> {
     let profile = normalize_profile(profile.as_deref());
-    let memory_path = profile_home(profile.as_deref())?.join("memories").join("MEMORY.md");
-    let user_path = profile_home(profile.as_deref())?.join("memories").join("USER.md");
+    let memory_path = profile_home(profile.as_deref())?
+        .join("memories")
+        .join("MEMORY.md");
+    let user_path = profile_home(profile.as_deref())?
+        .join("memories")
+        .join("USER.md");
     let memory = fs::read_to_string(&memory_path).unwrap_or_default();
     let user = fs::read_to_string(&user_path).unwrap_or_default();
     Ok(MemorySummary {
@@ -852,8 +861,12 @@ async fn read_hermes_memory_summary(profile: Option<String>) -> Result<MemorySum
 #[tauri::command]
 async fn read_hermes_memory_content(profile: Option<String>) -> Result<MemoryContent, String> {
     let profile = normalize_profile(profile.as_deref());
-    let memory_path = profile_home(profile.as_deref())?.join("memories").join("MEMORY.md");
-    let user_path = profile_home(profile.as_deref())?.join("memories").join("USER.md");
+    let memory_path = profile_home(profile.as_deref())?
+        .join("memories")
+        .join("MEMORY.md");
+    let user_path = profile_home(profile.as_deref())?
+        .join("memories")
+        .join("USER.md");
     Ok(MemoryContent {
         memory: fs::read_to_string(&memory_path).unwrap_or_default(),
         user: fs::read_to_string(&user_path).unwrap_or_default(),
@@ -895,7 +908,12 @@ async fn save_hermes_model(input: SaveModelInput) -> Result<SavedModel, String> 
     validate_model_input(&input)?;
     let mut models = read_models()?;
     let now = unix_millis();
-    if let Some(id) = input.id.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(id) = input
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let index = models
             .iter()
             .position(|model| model.id == id)
@@ -906,7 +924,10 @@ async fn save_hermes_model(input: SaveModelInput) -> Result<SavedModel, String> 
             provider: input.provider.trim().to_string(),
             model: input.model.trim().to_string(),
             base_url: input.base_url.unwrap_or_default().trim().to_string(),
-            api_mode: input.api_mode.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            api_mode: input
+                .api_mode
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             context_length: input.context_length.filter(|value| *value > 0),
             created_at: models[index].created_at,
         };
@@ -928,7 +949,10 @@ async fn save_hermes_model(input: SaveModelInput) -> Result<SavedModel, String> 
         provider: input.provider.trim().to_string(),
         model: input.model.trim().to_string(),
         base_url: input.base_url.unwrap_or_default().trim().to_string(),
-        api_mode: input.api_mode.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+        api_mode: input
+            .api_mode
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
         context_length: input.context_length.filter(|value| *value > 0),
         created_at: now,
     };
@@ -1030,10 +1054,7 @@ async fn list_credential_pool(profile: Option<String>) -> Result<Vec<CredentialP
         .into_iter()
         .map(|(provider, entries)| CredentialPoolGroup {
             provider,
-            entries: entries
-                .into_iter()
-                .map(display_credential_entry)
-                .collect(),
+            entries: entries.into_iter().map(display_credential_entry).collect(),
         })
         .collect::<Vec<_>>();
     groups.sort_by(|left, right| left.provider.cmp(&right.provider));
@@ -1239,9 +1260,21 @@ async fn load_hermes_team_sessions() -> Result<Vec<serde_json::Value>, String> {
         .map_err(|error| format!("解析 {} 失败：{error}", path.to_string_lossy()))
 }
 
-#[tauri::command]
-async fn save_hermes_team_session(session: serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+fn write_hermes_team_sessions(sessions: &[serde_json::Value]) -> Result<(), String> {
     let path = app_sessions_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    }
+    let body = serde_json::to_string_pretty(sessions)
+        .map_err(|error| format!("序列化 Hermes Team session 失败：{error}"))?;
+    fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
+#[tauri::command]
+async fn save_hermes_team_session(
+    session: serde_json::Value,
+) -> Result<Vec<serde_json::Value>, String> {
     let mut sessions = load_hermes_team_sessions().await?;
     let id = session
         .get("id")
@@ -1251,19 +1284,70 @@ async fn save_hermes_team_session(session: serde_json::Value) -> Result<Vec<serd
     sessions.retain(|item| item.get("id").and_then(|value| value.as_str()) != Some(id.as_str()));
     sessions.insert(0, session);
     sessions.sort_by(|left, right| {
-        let left_time = left.get("updatedAt").and_then(|value| value.as_u64()).unwrap_or(0);
-        let right_time = right.get("updatedAt").and_then(|value| value.as_u64()).unwrap_or(0);
+        let left_time = left
+            .get("updatedAt")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let right_time = right
+            .get("updatedAt")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
         right_time.cmp(&left_time)
     });
     sessions.truncate(50);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    write_hermes_team_sessions(&sessions)?;
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn update_hermes_team_session_title(
+    session_id: String,
+    title: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Err("Session id 不能为空。".to_string());
     }
-    let body = serde_json::to_string_pretty(&sessions)
-        .map_err(|error| format!("序列化 Hermes Team session 失败：{error}"))?;
-    fs::write(&path, body)
-        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
+    let trimmed_title = title.trim();
+    if trimmed_title.is_empty() {
+        return Err("Session 标题不能为空。".to_string());
+    }
+
+    let mut sessions = load_hermes_team_sessions().await?;
+    let mut found = false;
+    for session in sessions.iter_mut() {
+        if session.get("id").and_then(|value| value.as_str()) == Some(id) {
+            if let Some(object) = session.as_object_mut() {
+                object.insert(
+                    "title".to_string(),
+                    serde_json::Value::String(trimmed_title.to_string()),
+                );
+                object.insert("titleEdited".to_string(), serde_json::Value::Bool(true));
+            }
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(format!("未找到 session：{id}"));
+    }
+    write_hermes_team_sessions(&sessions)?;
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn delete_hermes_team_session(session_id: String) -> Result<Vec<serde_json::Value>, String> {
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Err("Session id 不能为空。".to_string());
+    }
+    let mut sessions = load_hermes_team_sessions().await?;
+    let before = sessions.len();
+    sessions.retain(|item| item.get("id").and_then(|value| value.as_str()) != Some(id));
+    if sessions.len() == before {
+        return Err(format!("未找到 session：{id}"));
+    }
+    write_hermes_team_sessions(&sessions)?;
     Ok(sessions)
 }
 
@@ -1301,7 +1385,10 @@ async fn list_hermes_logs() -> Result<Vec<HermesLogInfo>, String> {
 }
 
 #[tauri::command]
-async fn read_hermes_log(path: String, max_bytes: Option<usize>) -> Result<HermesLogContent, String> {
+async fn read_hermes_log(
+    path: String,
+    max_bytes: Option<usize>,
+) -> Result<HermesLogContent, String> {
     let path = PathBuf::from(path);
     ensure_allowed_log_path(&path)?;
     let max_bytes = max_bytes.unwrap_or(96 * 1024).max(4096);
@@ -1353,16 +1440,14 @@ async fn restore_hermes_backup_file(
     } else {
         return Err("未提供备份文件路径或内容".to_string());
     };
-    let payload: HermesDumpArtifact = serde_json::from_str(&raw)
-        .map_err(|error| format!("解析备份文件失败：{error}"))?;
+    let payload: HermesDumpArtifact =
+        serde_json::from_str(&raw).map_err(|error| format!("解析备份文件失败：{error}"))?;
     if payload.kind != "backup" && payload.kind != "debug" {
         return Err("当前文件不是可识别的 Hermes 备份文件。".to_string());
     }
     let overwrite = input.overwrite.unwrap_or(true);
-    let allowed_profiles: std::collections::HashSet<String> = payload
-        .profiles
-        .into_iter()
-        .collect();
+    let allowed_profiles: std::collections::HashSet<String> =
+        payload.profiles.into_iter().collect();
     let mut restored = 0usize;
     let mut skipped = 0usize;
     let mut warnings = Vec::new();
@@ -1381,7 +1466,10 @@ async fn restore_hermes_backup_file(
                     let file = parts.next().unwrap_or_default();
                     if !allowed_profiles.contains(profile) {
                         skipped += 1;
-                        warnings.push(format!("文件 {key} 的 profile 不在备份索引中，已跳过。", key = artifact.key));
+                        warnings.push(format!(
+                            "文件 {key} 的 profile 不在备份索引中，已跳过。",
+                            key = artifact.key
+                        ));
                         continue;
                     }
                     let root = profile_home(Some(profile))?;
@@ -1485,29 +1573,34 @@ async fn create_hermes_bundle(kind: &str) -> Result<String, String> {
     let profiles = list_hermes_profiles().await.unwrap_or_default();
     let profile_names: Vec<String> = profiles.into_iter().map(|item| item.name).collect();
 
-    let install_status = inspect_hermes_install().await.unwrap_or_else(|_| HermesInstallStatus {
-        installed: false,
-        command: None,
-        version: Some("inspect 失败".to_string()),
-        hermes_home: hermes_home()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|_| String::new()),
-        active_profile: active_profile.clone(),
-        config_exists: false,
-        env_exists: false,
-        api_server_key_present: false,
-        api_server_configured: false,
-        gateway_running: false,
-        gateway_health: "unknown".to_string(),
-    });
+    let install_status = inspect_hermes_install()
+        .await
+        .unwrap_or_else(|_| HermesInstallStatus {
+            installed: false,
+            command: None,
+            version: Some("inspect 失败".to_string()),
+            hermes_home: hermes_home()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|_| String::new()),
+            active_profile: active_profile.clone(),
+            config_exists: false,
+            env_exists: false,
+            api_server_key_present: false,
+            api_server_configured: false,
+            gateway_running: false,
+            gateway_health: "unknown".to_string(),
+        });
     let connection = read_connection_config()?;
-    let connection_status = get_remote_connection_status().await.unwrap_or(RemoteConnectionStatus {
-        mode: connection.mode.clone(),
-        base_url: resolve_gateway_url(None)?,
-        ssh_tunnel_active: false,
-        ok: false,
-        message: "connection status 获取失败".to_string(),
-    });
+    let connection_status =
+        get_remote_connection_status()
+            .await
+            .unwrap_or(RemoteConnectionStatus {
+                mode: connection.mode.clone(),
+                base_url: resolve_gateway_url(None)?,
+                ssh_tunnel_active: false,
+                ok: false,
+                message: "connection status 获取失败".to_string(),
+            });
     let gateway_probe = probe_hermes_gateway(None, Some(active_profile.clone()))
         .await
         .unwrap_or_else(|error| GatewayProbeResult {
@@ -1651,16 +1744,16 @@ fn redact_sensitive_text(content: &str) -> String {
         let trimmed = line.trim_start();
         let has_indent = line.len().saturating_sub(trimmed.len());
         let indent = &line[..has_indent];
-    let marker = trimmed.find(|ch| ['=', ':'].contains(&ch));
-    if let Some(index) = marker {
-        let key = trimmed[..index].trim().trim_end_matches(':').trim();
-        if is_sensitive_key(key) {
-            let sep = trimmed.as_bytes()[index];
-            let pair = if sep == b'=' {
-                format!("{indent}{key}=***REDACTED***")
-            } else {
-                format!("{indent}{key}: ***REDACTED***")
-            };
+        let marker = trimmed.find(|ch| ['=', ':'].contains(&ch));
+        if let Some(index) = marker {
+            let key = trimmed[..index].trim().trim_end_matches(':').trim();
+            if is_sensitive_key(key) {
+                let sep = trimmed.as_bytes()[index];
+                let pair = if sep == b'=' {
+                    format!("{indent}{key}=***REDACTED***")
+                } else {
+                    format!("{indent}{key}: ***REDACTED***")
+                };
                 output.push(pair);
                 continue;
             }
@@ -1687,12 +1780,16 @@ fn is_sensitive_key(key: &str) -> bool {
 }
 
 #[tauri::command]
-async fn test_remote_connection(config: RemoteConnectionConfig) -> Result<RemoteConnectionStatus, String> {
+async fn test_remote_connection(
+    config: RemoteConnectionConfig,
+) -> Result<RemoteConnectionStatus, String> {
     validate_connection_config(&config)?;
     let base_url = match config.mode.as_str() {
         "local" => "http://127.0.0.1:8642".to_string(),
         "remote" => normalize_base_url(Some(&config.remote_url)),
-        "ssh" => start_ssh_tunnel_for_config(&config.ssh, optional_api_key(&config.api_key).as_deref())?,
+        "ssh" => {
+            start_ssh_tunnel_for_config(&config.ssh, optional_api_key(&config.api_key).as_deref())?
+        }
         other => return Err(format!("未知连接模式：{other}")),
     };
     let auth = if config.api_key.trim().is_empty() {
@@ -1715,11 +1812,14 @@ async fn test_remote_connection(config: RemoteConnectionConfig) -> Result<Remote
 }
 
 #[tauri::command]
-async fn start_ssh_tunnel(config: RemoteConnectionConfig) -> Result<RemoteConnectionStatus, String> {
+async fn start_ssh_tunnel(
+    config: RemoteConnectionConfig,
+) -> Result<RemoteConnectionStatus, String> {
     validate_connection_config(&config)?;
     let mut next = config.clone();
     next.mode = "ssh".to_string();
-    let base_url = start_ssh_tunnel_for_config(&next.ssh, optional_api_key(&next.api_key).as_deref())?;
+    let base_url =
+        start_ssh_tunnel_for_config(&next.ssh, optional_api_key(&next.api_key).as_deref())?;
     write_connection_config(&next)?;
     let auth = if next.api_key.trim().is_empty() {
         None
@@ -1823,7 +1923,10 @@ async fn ensure_hermes_gateway(
         .env("HERMES_HOME", hermes_home()?.to_string_lossy().to_string())
         .env("HOME", home_dir()?)
         .env("API_SERVER_ENABLED", "true")
-        .env("API_SERVER_PORT", gateway_port_from_base_url(&base).to_string())
+        .env(
+            "API_SERVER_PORT",
+            gateway_port_from_base_url(&base).to_string(),
+        )
         .env("HERMES_ACCEPT_HOOKS", "1")
         .env("PATH", enhanced_path())
         .stdout(Stdio::from(stdout))
@@ -1942,7 +2045,8 @@ async fn run_hermes_agent(input: RunHermesAgentInput) -> Result<RunHermesAgentOu
     if is_task_cancelled(task_id.as_deref()) {
         return Err("任务已取消。".to_string());
     }
-    let endpoint = resolve_connection_endpoint(input.profile.as_deref(), input.base_url.as_deref())?;
+    let endpoint =
+        resolve_connection_endpoint(input.profile.as_deref(), input.base_url.as_deref())?;
     let mut messages = vec![json!({
         "role": "system",
         "content": input.system_prompt,
@@ -1951,7 +2055,11 @@ async fn run_hermes_agent(input: RunHermesAgentInput) -> Result<RunHermesAgentOu
         messages.push(message);
     }
     for item in input.history {
-        let role = if item.role == "assistant" { "assistant" } else { "user" };
+        let role = if item.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         messages.push(json!({
             "role": role,
             "content": item.content,
@@ -1959,7 +2067,10 @@ async fn run_hermes_agent(input: RunHermesAgentInput) -> Result<RunHermesAgentOu
     }
     let attachment_context = read_attachment_context(&input.attachments)?;
     let user_content = if attachment_context.is_empty() {
-        format!("请以 {} 的身份完成任务：\n{}", input.agent_name, input.instruction)
+        format!(
+            "请以 {} 的身份完成任务：\n{}",
+            input.agent_name, input.instruction
+        )
     } else {
         format!(
             "请以 {} 的身份完成任务：\n{}\n\n附件内容：\n{}",
@@ -2028,11 +2139,15 @@ async fn run_hermes_agent_stream(
     app: AppHandle,
     input: RunHermesAgentInput,
 ) -> Result<RunHermesAgentOutput, String> {
-    let task_id = input.task_id.clone().unwrap_or_else(|| "unknown".to_string());
+    let task_id = input
+        .task_id
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
     if is_task_cancelled(Some(&task_id)) {
         return Err("任务已取消。".to_string());
     }
-    let endpoint = resolve_connection_endpoint(input.profile.as_deref(), input.base_url.as_deref())?;
+    let endpoint =
+        resolve_connection_endpoint(input.profile.as_deref(), input.base_url.as_deref())?;
     let mut messages = vec![json!({
         "role": "system",
         "content": input.system_prompt,
@@ -2041,7 +2156,11 @@ async fn run_hermes_agent_stream(
         messages.push(message);
     }
     for item in input.history {
-        let role = if item.role == "assistant" { "assistant" } else { "user" };
+        let role = if item.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         messages.push(json!({
             "role": role,
             "content": item.content,
@@ -2049,7 +2168,10 @@ async fn run_hermes_agent_stream(
     }
     let attachment_context = read_attachment_context(&input.attachments)?;
     let user_content = if attachment_context.is_empty() {
-        format!("请以 {} 的身份完成任务：\n{}", input.agent_name, input.instruction)
+        format!(
+            "请以 {} 的身份完成任务：\n{}",
+            input.agent_name, input.instruction
+        )
     } else {
         format!(
             "请以 {} 的身份完成任务：\n{}\n\n附件内容：\n{}",
@@ -2381,7 +2503,11 @@ return output
 "#;
         let output = run_osascript(script)?;
         let mut items = Vec::new();
-        for line in output.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        for line in output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
             let path = PathBuf::from(line);
             if path.exists() {
                 items.push(selected_path_info(path)?);
@@ -2417,7 +2543,9 @@ return POSIX path of chosenFolder
 }
 
 fn context_folder_system_message(context_folder: Option<&str>) -> Option<serde_json::Value> {
-    let folder = context_folder.map(str::trim).filter(|value| !value.is_empty())?;
+    let folder = context_folder
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
     Some(json!({
         "role": "system",
         "content": format!(
@@ -2514,7 +2642,9 @@ fn http_stream_chat_completion(
                     }
                 }
             }
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                continue
+            }
             Err(error) => return Err(format!("读取 HTTP 响应失败：{error}")),
         }
     }
@@ -2546,7 +2676,13 @@ fn http_stream_chat_completion(
 
     let body = String::from_utf8_lossy(&plain_body).to_string();
     if head.to_ascii_lowercase().contains("text/event-stream") || body.contains("data:") {
-        process_sse_text(app, task_id, &(body + "\n\n"), &mut sse_buffer, &mut full_content)?;
+        process_sse_text(
+            app,
+            task_id,
+            &(body + "\n\n"),
+            &mut sse_buffer,
+            &mut full_content,
+        )?;
         return Ok(full_content);
     }
     let content = parse_completion_content(&body)?;
@@ -2657,8 +2793,16 @@ fn parse_stream_delta(data: &str) -> Result<String, String> {
     Ok(value
         .pointer("/choices/0/delta/content")
         .and_then(|item| item.as_str())
-        .or_else(|| value.pointer("/choices/0/message/content").and_then(|item| item.as_str()))
-        .or_else(|| value.pointer("/choices/0/text").and_then(|item| item.as_str()))
+        .or_else(|| {
+            value
+                .pointer("/choices/0/message/content")
+                .and_then(|item| item.as_str())
+        })
+        .or_else(|| {
+            value
+                .pointer("/choices/0/text")
+                .and_then(|item| item.as_str())
+        })
         .unwrap_or("")
         .to_string())
 }
@@ -2669,7 +2813,11 @@ fn parse_completion_content(body: &str) -> Result<String, String> {
     Ok(value
         .pointer("/choices/0/message/content")
         .and_then(|item| item.as_str())
-        .or_else(|| value.pointer("/choices/0/text").and_then(|item| item.as_str()))
+        .or_else(|| {
+            value
+                .pointer("/choices/0/text")
+                .and_then(|item| item.as_str())
+        })
         .unwrap_or("")
         .trim()
         .to_string())
@@ -2739,7 +2887,10 @@ fn http_request_with_cancel(
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(size) => raw_bytes.extend_from_slice(&buffer[..size]),
-            Err(error) if task_id.is_some() && matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            Err(error)
+                if task_id.is_some()
+                    && matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+            {
                 continue;
             }
             Err(error) => return Err(format!("读取 HTTP 响应失败：{error}")),
@@ -2765,8 +2916,7 @@ fn http_request_with_cancel(
 
 fn decode_http_body(headers: &str, body: &str) -> Result<String, String> {
     let is_chunked = headers.lines().any(|line| {
-        line.to_ascii_lowercase()
-            .starts_with("transfer-encoding:")
+        line.to_ascii_lowercase().starts_with("transfer-encoding:")
             && line.to_ascii_lowercase().contains("chunked")
     });
     if !is_chunked {
@@ -2930,7 +3080,10 @@ fn default_connection_config() -> RemoteConnectionConfig {
             host: String::new(),
             port: 22,
             username: String::new(),
-            key_path: format!("{}/.ssh/id_rsa", home_dir().unwrap_or_else(|_| "~".to_string())),
+            key_path: format!(
+                "{}/.ssh/id_rsa",
+                home_dir().unwrap_or_else(|_| "~".to_string())
+            ),
             remote_port: 8642,
             local_port: 18642,
         },
@@ -2956,8 +3109,7 @@ fn write_connection_config(config: &RemoteConnectionConfig) -> Result<(), String
     }
     let body = serde_json::to_string_pretty(config)
         .map_err(|error| format!("序列化远程连接配置失败：{error}"))?;
-    fs::write(&path, body)
-        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+    fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
 }
 
 fn validate_connection_config(config: &RemoteConnectionConfig) -> Result<(), String> {
@@ -2995,7 +3147,10 @@ fn resolve_connection_endpoint(
     profile: Option<&str>,
     explicit_base_url: Option<&str>,
 ) -> Result<RuntimeEndpoint, String> {
-    if let Some(value) = explicit_base_url.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(value) = explicit_base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         return Ok(RuntimeEndpoint {
             base_url: normalize_base_url(Some(value)),
             auth: read_api_server_key(normalize_profile(profile).as_deref())?,
@@ -3049,7 +3204,10 @@ fn ssh_tunnel_url_store() -> &'static Mutex<Option<String>> {
 }
 
 fn current_ssh_tunnel_url() -> Option<String> {
-    ssh_tunnel_url_store().lock().ok().and_then(|value| value.clone())
+    ssh_tunnel_url_store()
+        .lock()
+        .ok()
+        .and_then(|value| value.clone())
 }
 
 fn is_ssh_tunnel_active() -> bool {
@@ -3118,11 +3276,10 @@ fn start_ssh_tunnel_for_config(
     if let Ok(mut url) = ssh_tunnel_url_store().lock() {
         *url = Some(base_url.clone());
     }
-    wait_for_gateway_health(&base_url, bearer_token, Duration::from_secs(20))
-        .map_err(|error| {
-            stop_ssh_tunnel_process();
-            error
-        })?;
+    wait_for_gateway_health(&base_url, bearer_token, Duration::from_secs(20)).map_err(|error| {
+        stop_ssh_tunnel_process();
+        error
+    })?;
     Ok(base_url)
 }
 
@@ -3159,11 +3316,7 @@ fn wait_for_gateway_health(
         if gateway_is_ready(base_url, bearer_token) {
             return Ok(());
         }
-        if SystemTime::now()
-            .duration_since(start)
-            .unwrap_or_default()
-            > timeout
-        {
+        if SystemTime::now().duration_since(start).unwrap_or_default() > timeout {
             return Err("SSH 隧道已启动，但远端 Hermes Gateway 健康检查超时。".to_string());
         }
         sleep(Duration::from_millis(500));
@@ -3210,7 +3363,9 @@ fn profile_home(profile: Option<&str>) -> Result<PathBuf, String> {
 fn resolve_gateway_url(profile: Option<&str>) -> Result<String, String> {
     let port = match profile {
         None => read_configured_port(None)?.unwrap_or(8642),
-        Some(name) => read_configured_port(Some(name))?.unwrap_or(inferred_named_profile_port(name)?),
+        Some(name) => {
+            read_configured_port(Some(name))?.unwrap_or(inferred_named_profile_port(name)?)
+        }
     };
     Ok(format!("http://127.0.0.1:{port}"))
 }
@@ -3307,9 +3462,8 @@ fn hermes_version(path: &PathBuf) -> Result<String, String> {
 fn enhanced_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
-    let prefix = format!(
-        "{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    );
+    let prefix =
+        format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
     if current.is_empty() {
         prefix
     } else {
@@ -3319,10 +3473,12 @@ fn enhanced_path() -> String {
 
 fn read_configured_port(profile: Option<&str>) -> Result<Option<u16>, String> {
     let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
-    Ok(read_nested_yaml_scalar(&config, &["platforms", "api_server", "extra", "port"])
-        .or_else(|| read_nested_yaml_scalar(&config, &["api_server", "extra", "port"]))
-        .and_then(|value| value.parse::<u16>().ok())
-        .filter(|port| *port > 0))
+    Ok(
+        read_nested_yaml_scalar(&config, &["platforms", "api_server", "extra", "port"])
+            .or_else(|| read_nested_yaml_scalar(&config, &["api_server", "extra", "port"]))
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port > 0),
+    )
 }
 
 fn read_api_server_key(profile: Option<&str>) -> Result<Option<String>, String> {
@@ -3416,8 +3572,8 @@ fn upsert_env_value(profile: Option<&str>, key: &str, value: &str) -> Result<(),
 }
 
 fn random_hex(bytes_len: usize) -> Result<String, String> {
-    let mut file = fs::File::open("/dev/urandom")
-        .map_err(|error| format!("无法打开系统随机源：{error}"))?;
+    let mut file =
+        fs::File::open("/dev/urandom").map_err(|error| format!("无法打开系统随机源：{error}"))?;
     let mut bytes = vec![0_u8; bytes_len];
     file.read_exact(&mut bytes)
         .map_err(|error| format!("读取系统随机源失败：{error}"))?;
@@ -3498,13 +3654,62 @@ fn write_models(models: &[SavedModel]) -> Result<(), String> {
 fn default_models() -> Vec<SavedModel> {
     let now = unix_millis();
     vec![
-        saved_model("default-openrouter-claude-sonnet-4", "Claude Sonnet 4", "openrouter", "anthropic/claude-sonnet-4-20250514", "", now),
-        saved_model("default-anthropic-claude-sonnet-4", "Claude Sonnet 4", "anthropic", "claude-sonnet-4-20250514", "", now),
-        saved_model("default-openai-gpt-4-1", "GPT-4.1", "openai", "gpt-4.1", "", now),
-        saved_model("default-ollama-cloud-glm-5-1", "glm-5.1", "ollama-cloud", "glm-5.1", "https://ollama.com/v1", now),
-        saved_model("default-atlascloud-deepseek-v4-pro", "DeepSeek V4 Pro (Atlas Cloud)", "atlascloud", "deepseek-ai/deepseek-v4-pro", "", now),
-        saved_model("default-atlascloud-deepseek-v4-flash", "DeepSeek V4 Flash (Atlas Cloud)", "atlascloud", "deepseek-ai/deepseek-v4-flash", "", now),
-        saved_model("default-atlascloud-qwen3-235b", "Qwen3-235B Instruct (Atlas Cloud)", "atlascloud", "Qwen/Qwen3-235B-A22B-Instruct-2507", "", now),
+        saved_model(
+            "default-openrouter-claude-sonnet-4",
+            "Claude Sonnet 4",
+            "openrouter",
+            "anthropic/claude-sonnet-4-20250514",
+            "",
+            now,
+        ),
+        saved_model(
+            "default-anthropic-claude-sonnet-4",
+            "Claude Sonnet 4",
+            "anthropic",
+            "claude-sonnet-4-20250514",
+            "",
+            now,
+        ),
+        saved_model(
+            "default-openai-gpt-4-1",
+            "GPT-4.1",
+            "openai",
+            "gpt-4.1",
+            "",
+            now,
+        ),
+        saved_model(
+            "default-ollama-cloud-glm-5-1",
+            "glm-5.1",
+            "ollama-cloud",
+            "glm-5.1",
+            "https://ollama.com/v1",
+            now,
+        ),
+        saved_model(
+            "default-atlascloud-deepseek-v4-pro",
+            "DeepSeek V4 Pro (Atlas Cloud)",
+            "atlascloud",
+            "deepseek-ai/deepseek-v4-pro",
+            "",
+            now,
+        ),
+        saved_model(
+            "default-atlascloud-deepseek-v4-flash",
+            "DeepSeek V4 Flash (Atlas Cloud)",
+            "atlascloud",
+            "deepseek-ai/deepseek-v4-flash",
+            "",
+            now,
+        ),
+        saved_model(
+            "default-atlascloud-qwen3-235b",
+            "Qwen3-235B Instruct (Atlas Cloud)",
+            "atlascloud",
+            "Qwen/Qwen3-235B-A22B-Instruct-2507",
+            "",
+            now,
+        ),
     ]
 }
 
@@ -3588,7 +3793,11 @@ fn upsert_block_child(content: &str, block: &str, key: &str, rendered_value: &st
         .iter()
         .position(|line| line.trim_end() == header && !line.starts_with(' '))
     else {
-        let sep = if content.is_empty() || content.ends_with('\n') { "" } else { "\n" };
+        let sep = if content.is_empty() || content.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
         return format!("{content}{sep}{block}:\n  {key}: {rendered_value}\n");
     };
 
@@ -3756,8 +3965,10 @@ fn provider_discovery_unsupported(provider: &str) -> bool {
 }
 
 fn provider_can_discover_without_key(provider: &str, base_url: &str) -> bool {
-    matches!(provider, "lmstudio" | "atomicchat" | "ollama" | "vllm" | "llamacpp")
-        || (provider == "custom" && is_loopback_base_url(base_url))
+    matches!(
+        provider,
+        "lmstudio" | "atomicchat" | "ollama" | "vllm" | "llamacpp"
+    ) || (provider == "custom" && is_loopback_base_url(base_url))
 }
 
 fn is_loopback_base_url(base_url: &str) -> bool {
@@ -3773,7 +3984,10 @@ fn is_loopback_base_url(base_url: &str) -> bool {
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
-    matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]")
+    matches!(
+        host.as_str(),
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "[::1]"
+    )
 }
 
 fn provider_env_key(provider: &str, base_url: &str) -> Option<&'static str> {
@@ -3858,7 +4072,10 @@ fn curl_json_get(url: &str, provider: &str, api_key: &str) -> Result<(u16, Strin
     ];
     if !api_key.trim().is_empty() {
         if provider == "anthropic" {
-            config.push(format!("header = \"x-api-key: {}\"", curl_escape(api_key.trim())));
+            config.push(format!(
+                "header = \"x-api-key: {}\"",
+                curl_escape(api_key.trim())
+            ));
             config.push("header = \"anthropic-version: 2023-06-01\"".to_string());
         } else {
             config.push(format!(
@@ -3950,7 +4167,11 @@ fn extract_context_length(item: &serde_json::Value) -> Option<u64> {
 fn json_positive_u64(value: &serde_json::Value) -> Option<u64> {
     value
         .as_u64()
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<u64>().ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+        })
         .filter(|value| *value > 0)
 }
 
@@ -3958,7 +4179,9 @@ fn auth_file_path(profile: Option<&str>) -> Result<PathBuf, String> {
     Ok(profile_home(profile)?.join("auth.json"))
 }
 
-fn read_auth_store(profile: Option<&str>) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+fn read_auth_store(
+    profile: Option<&str>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let path = auth_file_path(profile)?;
     if !path.exists() {
         return Ok(serde_json::Map::new());
@@ -3995,12 +4218,15 @@ fn auth_store_pool(
     store: &serde_json::Map<String, serde_json::Value>,
 ) -> std::collections::BTreeMap<String, Vec<CredentialPoolEntry>> {
     let mut pool = std::collections::BTreeMap::new();
-    let Some(value) = store.get("credential_pool").and_then(|value| value.as_object()) else {
+    let Some(value) = store
+        .get("credential_pool")
+        .and_then(|value| value.as_object())
+    else {
         return pool;
     };
     for (provider, entries) in value {
-        let parsed = serde_json::from_value::<Vec<CredentialPoolEntry>>(entries.clone())
-            .unwrap_or_default();
+        let parsed =
+            serde_json::from_value::<Vec<CredentialPoolEntry>>(entries.clone()).unwrap_or_default();
         pool.insert(provider.clone(), parsed);
     }
     pool
@@ -4017,7 +4243,10 @@ fn write_auth_store_pool(
             serde_json::to_value(entries).unwrap_or_else(|_| serde_json::Value::Array(Vec::new())),
         );
     }
-    store.insert("credential_pool".to_string(), serde_json::Value::Object(object));
+    store.insert(
+        "credential_pool".to_string(),
+        serde_json::Value::Object(object),
+    );
 }
 
 fn build_credential_pool_entry(
@@ -4046,7 +4275,9 @@ fn build_credential_pool_entry(
         access_token: Some(api_key.trim().to_string()),
         refresh_token: None,
         api_key: None,
-        base_url: canonical_provider_base_url(provider).map(str::to_string).or_else(|| Some(String::new())),
+        base_url: canonical_provider_base_url(provider)
+            .map(str::to_string)
+            .or_else(|| Some(String::new())),
         request_count: Some(0),
         key: None,
     })
@@ -4188,7 +4419,8 @@ fn parse_cli_toolsets(config: &str) -> Option<Vec<String>> {
             }
             continue;
         }
-        if in_cli && line.starts_with("  ") && !line.starts_with("    ") && stripped.ends_with(':') {
+        if in_cli && line.starts_with("  ") && !line.starts_with("    ") && stripped.ends_with(':')
+        {
             in_cli = false;
         }
         if in_cli {
@@ -4239,7 +4471,11 @@ fn replace_top_level_block(content: &str, block_name: &str, rendered: &str) -> S
         .iter()
         .position(|line| line.trim_end() == header && !line.starts_with(' '))
     else {
-        let sep = if content.is_empty() || content.ends_with('\n') { "" } else { "\n" };
+        let sep = if content.is_empty() || content.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
         return format!("{content}{sep}{rendered}\n");
     };
     let mut end = lines.len();
@@ -4300,7 +4536,10 @@ fn parse_mcp_servers(config: &str) -> Vec<McpServerInfo> {
 fn validate_mcp_input(input: &SaveMcpServerInput) -> Result<(), String> {
     let name = input.name.trim();
     if !is_valid_mcp_name(name) {
-        return Err("MCP server 名称只能包含字母、数字、下划线和中划线，并且必须以字母或数字开头。".to_string());
+        return Err(
+            "MCP server 名称只能包含字母、数字、下划线和中划线，并且必须以字母或数字开头。"
+                .to_string(),
+        );
     }
     match input.transport.trim() {
         "http" => {
@@ -4338,8 +4577,15 @@ fn upsert_mcp_server_config(content: &str, input: &SaveMcpServerInput) -> Result
     let block = mcp_block_bounds(content);
     let lines: Vec<&str> = content.lines().collect();
     let Some((start, end)) = block else {
-        let sep = if content.is_empty() || content.ends_with('\n') { "" } else { "\n" };
-        return Ok(format!("{content}{sep}mcp_servers:\n{}\n", rendered.join("\n")));
+        let sep = if content.is_empty() || content.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        return Ok(format!(
+            "{content}{sep}mcp_servers:\n{}\n",
+            rendered.join("\n")
+        ));
     };
     let mut output = Vec::new();
     output.extend(lines[..=start].iter().map(|line| (*line).to_string()));
@@ -4384,7 +4630,9 @@ fn remove_mcp_server_config(content: &str, name: &str) -> String {
 
 fn mcp_block_bounds(content: &str) -> Option<(usize, usize)> {
     let lines: Vec<&str> = content.lines().collect();
-    let start = lines.iter().position(|line| line.trim() == "mcp_servers:")?;
+    let start = lines
+        .iter()
+        .position(|line| line.trim() == "mcp_servers:")?;
     let mut end = lines.len();
     for (index, line) in lines.iter().enumerate().skip(start + 1) {
         if !line.trim().is_empty() && !line.starts_with(' ') && line.contains(':') {
@@ -4425,8 +4673,16 @@ fn render_mcp_server(input: &SaveMcpServerInput) -> Result<Vec<String>, String> 
     let mut lines = vec![format!("  {}:", input.name.trim())];
     match input.transport.trim() {
         "http" => {
-            lines.push(format!("    url: {}", quote_yaml(input.url.as_deref().unwrap_or("").trim())));
-            if let Some(auth) = input.auth.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            lines.push(format!(
+                "    url: {}",
+                quote_yaml(input.url.as_deref().unwrap_or("").trim())
+            ));
+            if let Some(auth) = input
+                .auth
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
                 lines.push(format!("    auth: {}", quote_yaml(auth)));
             }
         }
@@ -4453,7 +4709,10 @@ fn render_mcp_server(input: &SaveMcpServerInput) -> Result<Vec<String>, String> 
         other => return Err(format!("未知 MCP transport：{other}")),
     }
     if let Some(enabled) = input.enabled {
-        lines.push(format!("    enabled: {}", if enabled { "true" } else { "false" }));
+        lines.push(format!(
+            "    enabled: {}",
+            if enabled { "true" } else { "false" }
+        ));
     }
     Ok(lines)
 }
@@ -4635,10 +4894,7 @@ fn parse_memory_entries(content: &str) -> usize {
 }
 
 fn unquote(value: &str) -> &str {
-    value
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
+    value.trim().trim_matches('"').trim_matches('\'')
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -4680,6 +4936,8 @@ pub fn run() {
             save_hermes_team_state,
             load_hermes_team_sessions,
             save_hermes_team_session,
+            update_hermes_team_session_title,
+            delete_hermes_team_session,
             create_hermes_debug_dump,
             create_hermes_backup_file,
             restore_hermes_backup_file,

@@ -45,6 +45,7 @@ import {
   activateHermesModel,
   buildSessionSummary,
   cancelHermesTask,
+  deleteHermesTeamSession,
   discoverProviderModels,
   ensureHermesGateway,
   createHermesBackupFile,
@@ -91,6 +92,7 @@ import {
   stopHermesGateway,
   stopSshTunnel,
   testRemoteConnection,
+  updateHermesTeamSessionTitle,
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
@@ -345,6 +347,7 @@ export function App() {
   const [keyBusy, setKeyBusy] = useState(false);
   const [stateReady, setStateReady] = useState(false);
   const saveTimerRef = useRef<number | undefined>(undefined);
+  const sessionsRef = useRef<HermesTeamSessionSummary[]>([]);
   const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
   const parallelTrackerRef = useRef(new ParallelBatchTracker());
   const serialTrackerRef = useRef(new SerialChainTracker());
@@ -786,12 +789,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
     if (!stateReady) return;
     window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
       void saveHermesTeamState(state).catch(() => undefined);
       if (state.messages.length > 0) {
-        void saveHermesTeamSession(buildSessionSummary(state))
+        void saveHermesTeamSession(sessionSummaryForSave(state, sessionsRef.current))
           .then((items) => setSessions(normalizeLoadedSessions(items)))
           .catch(() => undefined);
       }
@@ -891,6 +898,59 @@ export function App() {
     setRuntimeEvents([]);
     setActiveView("team");
     setNotice(`已恢复会话：${session.title}`);
+  };
+
+  const renameSession = async (sessionId: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      setNotice("Session 标题不能为空。");
+      return;
+    }
+    const previous = sessionsRef.current;
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId ? { ...session, title: trimmed, titleEdited: true } : session,
+      ),
+    );
+    try {
+      const next = await updateHermesTeamSessionTitle(sessionId, trimmed);
+      setSessions(normalizeLoadedSessions(next));
+      setNotice("Session 标题已更新。");
+    } catch (error) {
+      setSessions(previous);
+      setNotice(`重命名 Session 失败：${runtimeErrorMessage(error)}`);
+    }
+  };
+
+  const deleteSession = async (sessionId: string) => {
+    if (sessionId === state.workspace.id && hasActiveSessionTasks(state)) {
+      setNotice("当前会话仍有运行中的 Agent，请先等待完成或终止任务后再删除。");
+      return;
+    }
+    const previous = sessionsRef.current;
+    setSessions((current) => current.filter((session) => session.id !== sessionId));
+    try {
+      const next = await deleteHermesTeamSession(sessionId);
+      setSessions(normalizeLoadedSessions(next));
+      if (sessionId === state.workspace.id) {
+        const nextState = buildFreshOrchestrationState(mode);
+        parallelTrackerRef.current.clear(state.workspace.id);
+        serialTrackerRef.current.clear(state.workspace.id);
+        cancelledTaskIdsRef.current.clear();
+        setModeState(nextState.workspace.mode);
+        setState(nextState);
+        setDraft("");
+        setDraftAttachments([]);
+        setAttachmentPathDraft("");
+        setRuntimeEvents([]);
+        setActiveView("team");
+        void saveHermesTeamState(nextState).catch(() => undefined);
+      }
+      setNotice("Session 已删除。");
+    } catch (error) {
+      setSessions(previous);
+      setNotice(`删除 Session 失败：${runtimeErrorMessage(error)}`);
+    }
   };
 
   const updateAgentProfile = (agentId: string, hermesProfile: string) => {
@@ -2767,6 +2827,8 @@ export function App() {
             formatTime={formatTime}
             onNewChat={() => void createNewSession()}
             onRestore={(session) => void restoreSession(session)}
+            onRename={(sessionId, title) => void renameSession(sessionId, title)}
+            onDelete={(sessionId) => void deleteSession(sessionId)}
           />
         ) : (
           <>
@@ -3102,6 +3164,20 @@ function normalizeLoadedSessions(sessions: HermesTeamSessionSummary[]): HermesTe
       taskCount: state.tasks.length,
     };
   });
+}
+
+function sessionSummaryForSave(
+  state: OrchestrationState,
+  sessions: HermesTeamSessionSummary[],
+): HermesTeamSessionSummary {
+  const summary = buildSessionSummary(state);
+  const existing = sessions.find((session) => session.id === summary.id);
+  if (!existing?.titleEdited) return summary;
+  return {
+    ...summary,
+    title: existing.title,
+    titleEdited: true,
+  };
 }
 
 function runtimeErrorMessage(error: unknown): string {

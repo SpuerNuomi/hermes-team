@@ -222,6 +222,7 @@ export interface HermesTeamSessionSummary {
   id: string;
   workspaceId: string;
   title: string;
+  titleEdited?: boolean;
   messageCount: number;
   taskCount: number;
   updatedAt: number;
@@ -541,6 +542,19 @@ export async function loadHermesTeamSessions(): Promise<HermesTeamSessionSummary
 export async function saveHermesTeamSession(session: HermesTeamSessionSummary): Promise<HermesTeamSessionSummary[]> {
   ensureTauriRuntime();
   return invoke<HermesTeamSessionSummary[]>("save_hermes_team_session", { session });
+}
+
+export async function updateHermesTeamSessionTitle(
+  sessionId: string,
+  title: string,
+): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("update_hermes_team_session_title", { sessionId, title });
+}
+
+export async function deleteHermesTeamSession(sessionId: string): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("delete_hermes_team_session", { sessionId });
 }
 
 export async function listHermesLogs(): Promise<HermesLogInfo[]> {

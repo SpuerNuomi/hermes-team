@@ -2230,6 +2230,7 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   min-height: 28px;
   margin-top: 10px;
   padding: 5px 8px;
@@ -2248,7 +2249,78 @@ textarea:focus {
 
 .mini-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  justify-content: flex-end;
+}
+
+.mini-actions .danger-action {
+  color: #7f1d1d;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.session-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  color: #647067;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.session-search input {
+  min-width: 0;
+  color: #17201c;
+  background: transparent;
+  border: 0;
+  outline: none;
+  font-size: 13px;
+}
+
+.session-search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: #647067;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.session-search button:hover {
+  background: #eef2ef;
+}
+
+.session-title-input {
+  width: min(460px, 100%);
+  min-width: 0;
+  height: 32px;
+  padding: 6px 8px;
+  color: #17201c;
+  background: #ffffff;
+  border: 1px solid #cdd4ce;
+  border-radius: 8px;
+  outline: none;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.session-title-input:focus {
+  border-color: #17201c;
+  box-shadow: 0 0 0 3px rgba(23, 32, 28, 0.1);
+}
+
+.session-delete-warning {
+  color: #7f1d1d !important;
+  font-weight: 700;
 }
 
 .skill-manager {
