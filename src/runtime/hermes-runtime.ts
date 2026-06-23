@@ -1,0 +1,799 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { OrchestrationState } from "../core/orchestrator";
+import type { Agent, CapabilityBinding, DispatchTask, Message, MessageAttachment } from "../core/types";
+
+export interface RuntimeMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface RuntimeAttachment {
+  path: string;
+  name?: string;
+}
+
+export interface SelectedPathInfo {
+  path: string;
+  name: string;
+  isFile: boolean;
+  isDir: boolean;
+  sizeBytes?: number;
+}
+
+export interface DirectoryEntryInfo {
+  name: string;
+  path: string;
+  isFile: boolean;
+  isDir: boolean;
+  sizeBytes?: number;
+}
+
+export interface FileReadResult {
+  content: string;
+  truncated: boolean;
+}
+
+export interface GatewayProbeResult {
+  ok: boolean;
+  baseUrl: string;
+  profile: string;
+  message: string;
+  capabilities?: unknown;
+}
+
+export interface HermesProfileInfo {
+  name: string;
+  active: boolean;
+  home: string;
+  gatewayUrl: string;
+  hasApiKey: boolean;
+}
+
+export interface HermesInstallStatus {
+  installed: boolean;
+  command?: string;
+  version?: string;
+  hermesHome: string;
+  activeProfile: string;
+  configExists: boolean;
+  envExists: boolean;
+  apiServerKeyPresent: boolean;
+  apiServerConfigured: boolean;
+  gatewayRunning: boolean;
+  gatewayHealth: string;
+}
+
+export interface ToolsetInfo {
+  key: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface McpServerInfo {
+  name: string;
+  transport: string;
+  enabled: boolean;
+  detail: string;
+  url?: string;
+  command?: string;
+  args: string[];
+  env: string[];
+}
+
+export interface SaveMcpServerInput {
+  profile?: string;
+  name: string;
+  transport: "http" | "stdio";
+  url?: string;
+  command?: string;
+  args?: string;
+  env?: string;
+  auth?: string;
+  enabled?: boolean;
+}
+
+export interface InstalledSkillInfo {
+  name: string;
+  dirName: string;
+  category: string;
+  description: string;
+  path: string;
+}
+
+export interface InstallSkillInput {
+  profile?: string;
+  sourcePath: string;
+  category?: string;
+  name?: string;
+}
+
+export interface MemorySummary {
+  memoryExists: boolean;
+  userExists: boolean;
+  memoryChars: number;
+  userChars: number;
+  memoryEntries: number;
+  memoryPath: string;
+  userPath: string;
+}
+
+export interface MemoryContent {
+  memory: string;
+  user: string;
+  memoryPath: string;
+  userPath: string;
+}
+
+export interface SavedModel {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  baseUrl: string;
+  apiMode?: string;
+  contextLength?: number;
+  createdAt: number;
+}
+
+export interface ActiveModelConfig {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  contextLength?: number;
+}
+
+export interface SaveModelInput {
+  id?: string;
+  name: string;
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  apiMode?: string;
+  contextLength?: number;
+}
+
+export interface ProviderKeyInfo {
+  provider: string;
+  label: string;
+  envKey: string;
+  present: boolean;
+  masked: string;
+}
+
+export interface CredentialPoolDisplayEntry {
+  id: string;
+  label: string;
+  masked: string;
+  authType: string;
+  source: string;
+  baseUrl: string;
+}
+
+export interface CredentialPoolGroup {
+  provider: string;
+  entries: CredentialPoolDisplayEntry[];
+}
+
+export interface DiscoveredModel {
+  id: string;
+  contextLength?: number;
+}
+
+export interface ProviderDiscoveryResult {
+  ok: boolean;
+  provider: string;
+  baseUrl: string;
+  envKey: string;
+  keyPresent: boolean;
+  status: string;
+  message: string;
+  modelCount: number;
+  models: DiscoveredModel[];
+}
+
+export interface RunHermesAgentInput {
+  taskId?: string;
+  baseUrl?: string;
+  profile?: string;
+  model?: string;
+  agentName: string;
+  systemPrompt: string;
+  instruction: string;
+  history: RuntimeMessage[];
+  attachments: RuntimeAttachment[];
+  contextFolder?: string;
+}
+
+export interface RunHermesAgentOutput {
+  content: string;
+}
+
+export interface RuntimeStreamEvent {
+  taskId: string;
+  kind: "start" | "delta" | "done" | "error";
+  delta: string;
+  content: string;
+  message: string;
+}
+
+export interface HermesTeamSessionSummary {
+  id: string;
+  workspaceId: string;
+  title: string;
+  messageCount: number;
+  taskCount: number;
+  updatedAt: number;
+  state: OrchestrationState;
+}
+
+export interface HermesLogInfo {
+  name: string;
+  path: string;
+  sizeBytes: number;
+  modifiedAt: number;
+}
+
+export interface HermesLogContent {
+  name: string;
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface SshConnectionConfig {
+  host: string;
+  port: number;
+  username: string;
+  keyPath: string;
+  remotePort: number;
+  localPort: number;
+}
+
+export interface RemoteConnectionConfig {
+  mode: "local" | "remote" | "ssh";
+  remoteUrl: string;
+  apiKey: string;
+  ssh: SshConnectionConfig;
+}
+
+export interface RemoteConnectionStatus {
+  mode: string;
+  baseUrl: string;
+  sshTunnelActive: boolean;
+  ok: boolean;
+  message: string;
+}
+
+export interface EnsureGatewayResult {
+  ok: boolean;
+  profile: string;
+  baseUrl: string;
+  message: string;
+  logPath?: string;
+}
+
+export interface ApiServerKeyResult {
+  ok: boolean;
+  profile: string;
+  message: string;
+}
+
+export const TAURI_UNAVAILABLE_MESSAGE =
+  "当前运行在浏览器预览模式，无法调用本机 Hermes/Tauri 命令。请使用 npm run tauri:dev 或打开 Hermes Team.app。";
+
+export async function listHermesProfiles(): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("list_hermes_profiles");
+}
+
+export async function inspectHermesInstall(): Promise<HermesInstallStatus> {
+  ensureTauriRuntime();
+  return invoke<HermesInstallStatus>("inspect_hermes_install");
+}
+
+export async function listHermesToolsets(params: {
+  profile?: string;
+} = {}): Promise<ToolsetInfo[]> {
+  ensureTauriRuntime();
+  return invoke<ToolsetInfo[]>("list_hermes_toolsets", {
+    profile: params.profile,
+  });
+}
+
+export async function setHermesToolsetEnabled(input: {
+  profile?: string;
+  key: string;
+  enabled: boolean;
+}): Promise<ToolsetInfo[]> {
+  ensureTauriRuntime();
+  return invoke<ToolsetInfo[]>("set_hermes_toolset_enabled", { input });
+}
+
+export async function listHermesMcpServers(params: {
+  profile?: string;
+} = {}): Promise<McpServerInfo[]> {
+  ensureTauriRuntime();
+  return invoke<McpServerInfo[]>("list_hermes_mcp_servers", {
+    profile: params.profile,
+  });
+}
+
+export async function saveHermesMcpServer(input: SaveMcpServerInput): Promise<McpServerInfo[]> {
+  ensureTauriRuntime();
+  return invoke<McpServerInfo[]>("save_hermes_mcp_server", { input });
+}
+
+export async function removeHermesMcpServer(input: {
+  profile?: string;
+  name: string;
+}): Promise<McpServerInfo[]> {
+  ensureTauriRuntime();
+  return invoke<McpServerInfo[]>("remove_hermes_mcp_server", { input });
+}
+
+export async function listHermesSkills(params: {
+  profile?: string;
+} = {}): Promise<InstalledSkillInfo[]> {
+  ensureTauriRuntime();
+  return invoke<InstalledSkillInfo[]>("list_hermes_skills", {
+    profile: params.profile,
+  });
+}
+
+export async function searchHermesSkills(params: {
+  profile?: string;
+  query?: string;
+} = {}): Promise<InstalledSkillInfo[]> {
+  ensureTauriRuntime();
+  return invoke<InstalledSkillInfo[]>("search_hermes_skills", { input: params });
+}
+
+export async function installHermesSkill(input: InstallSkillInput): Promise<InstalledSkillInfo[]> {
+  ensureTauriRuntime();
+  return invoke<InstalledSkillInfo[]>("install_hermes_skill", { input });
+}
+
+export async function removeHermesSkill(input: {
+  profile?: string;
+  category: string;
+  name: string;
+}): Promise<InstalledSkillInfo[]> {
+  ensureTauriRuntime();
+  return invoke<InstalledSkillInfo[]>("remove_hermes_skill", { input });
+}
+
+export async function readHermesMemorySummary(params: {
+  profile?: string;
+} = {}): Promise<MemorySummary> {
+  ensureTauriRuntime();
+  return invoke<MemorySummary>("read_hermes_memory_summary", {
+    profile: params.profile,
+  });
+}
+
+export async function readHermesMemoryContent(params: {
+  profile?: string;
+} = {}): Promise<MemoryContent> {
+  ensureTauriRuntime();
+  return invoke<MemoryContent>("read_hermes_memory_content", {
+    profile: params.profile,
+  });
+}
+
+export async function writeHermesMemoryContent(input: {
+  profile?: string;
+  kind: "memory" | "user";
+  content: string;
+}): Promise<MemoryContent> {
+  ensureTauriRuntime();
+  return invoke<MemoryContent>("write_hermes_memory_content", { input });
+}
+
+export async function getHermesModelConfig(params: {
+  profile?: string;
+} = {}): Promise<ActiveModelConfig> {
+  ensureTauriRuntime();
+  return invoke<ActiveModelConfig>("get_hermes_model_config", {
+    profile: params.profile,
+  });
+}
+
+export async function listHermesModels(): Promise<SavedModel[]> {
+  ensureTauriRuntime();
+  return invoke<SavedModel[]>("list_hermes_models");
+}
+
+export async function saveHermesModel(input: SaveModelInput): Promise<SavedModel> {
+  ensureTauriRuntime();
+  return invoke<SavedModel>("save_hermes_model", { input });
+}
+
+export async function removeHermesModel(id: string): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("remove_hermes_model", { id });
+}
+
+export async function activateHermesModel(input: {
+  profile?: string;
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  contextLength?: number;
+}): Promise<ActiveModelConfig> {
+  ensureTauriRuntime();
+  return invoke<ActiveModelConfig>("activate_hermes_model", { input });
+}
+
+export async function listProviderKeys(params: {
+  profile?: string;
+} = {}): Promise<ProviderKeyInfo[]> {
+  ensureTauriRuntime();
+  return invoke<ProviderKeyInfo[]>("list_provider_keys", {
+    profile: params.profile,
+  });
+}
+
+export async function saveProviderKey(input: {
+  profile?: string;
+  envKey: string;
+  value: string;
+}): Promise<ProviderKeyInfo> {
+  ensureTauriRuntime();
+  return invoke<ProviderKeyInfo>("save_provider_key", { input });
+}
+
+export async function listCredentialPool(params: {
+  profile?: string;
+} = {}): Promise<CredentialPoolGroup[]> {
+  ensureTauriRuntime();
+  return invoke<CredentialPoolGroup[]>("list_credential_pool", {
+    profile: params.profile,
+  });
+}
+
+export async function addCredentialPoolEntry(input: {
+  profile?: string;
+  provider: string;
+  apiKey: string;
+  label?: string;
+}): Promise<CredentialPoolGroup[]> {
+  ensureTauriRuntime();
+  return invoke<CredentialPoolGroup[]>("add_credential_pool_entry", { input });
+}
+
+export async function removeCredentialPoolEntry(input: {
+  profile?: string;
+  provider: string;
+  id: string;
+}): Promise<CredentialPoolGroup[]> {
+  ensureTauriRuntime();
+  return invoke<CredentialPoolGroup[]>("remove_credential_pool_entry", { input });
+}
+
+export async function discoverProviderModels(input: {
+  profile?: string;
+  provider: string;
+  baseUrl?: string;
+  envKey?: string;
+}): Promise<ProviderDiscoveryResult> {
+  ensureTauriRuntime();
+  return invoke<ProviderDiscoveryResult>("discover_provider_models", { input });
+}
+
+export async function probeHermesGateway(params: {
+  baseUrl?: string;
+  profile?: string;
+} = {}): Promise<GatewayProbeResult> {
+  ensureTauriRuntime();
+  return invoke<GatewayProbeResult>("probe_hermes_gateway", {
+    baseUrl: params.baseUrl,
+    profile: params.profile,
+  });
+}
+
+export async function ensureHermesGateway(params: {
+  profile?: string;
+  replace?: boolean;
+} = {}): Promise<EnsureGatewayResult> {
+  ensureTauriRuntime();
+  return invoke<EnsureGatewayResult>("ensure_hermes_gateway", {
+    profile: params.profile,
+    replace: params.replace,
+  });
+}
+
+export async function stopHermesGateway(params: {
+  profile?: string;
+} = {}): Promise<EnsureGatewayResult> {
+  ensureTauriRuntime();
+  return invoke<EnsureGatewayResult>("stop_hermes_gateway", {
+    profile: params.profile,
+  });
+}
+
+export async function generateApiServerKey(params: {
+  profile?: string;
+} = {}): Promise<ApiServerKeyResult> {
+  ensureTauriRuntime();
+  return invoke<ApiServerKeyResult>("generate_api_server_key", {
+    profile: params.profile,
+  });
+}
+
+export async function loadHermesTeamState(): Promise<OrchestrationState | null> {
+  ensureTauriRuntime();
+  return invoke<OrchestrationState | null>("load_hermes_team_state");
+}
+
+export async function saveHermesTeamState(state: OrchestrationState): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("save_hermes_team_state", { state });
+}
+
+export async function loadHermesTeamSessions(): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("load_hermes_team_sessions");
+}
+
+export async function saveHermesTeamSession(session: HermesTeamSessionSummary): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("save_hermes_team_session", { session });
+}
+
+export async function listHermesLogs(): Promise<HermesLogInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesLogInfo[]>("list_hermes_logs");
+}
+
+export async function readHermesLog(path: string, maxBytes = 96 * 1024): Promise<HermesLogContent> {
+  ensureTauriRuntime();
+  return invoke<HermesLogContent>("read_hermes_log", { path, maxBytes });
+}
+
+export async function createHermesBackupFile(): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("create_hermes_backup_file");
+}
+
+export async function createHermesDebugDump(): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("create_hermes_debug_dump");
+}
+
+export interface HermesRestoreResult {
+  targetPath: string;
+  restored: number;
+  skipped: number;
+  warnings: string[];
+  ok: boolean;
+}
+
+export interface RestoreHermesBackupInput {
+  path?: string;
+  content?: string;
+  overwrite?: boolean;
+}
+
+export async function restoreHermesBackupFile(input: RestoreHermesBackupInput): Promise<HermesRestoreResult> {
+  ensureTauriRuntime();
+  return invoke<HermesRestoreResult>("restore_hermes_backup_file", { input });
+}
+
+export async function getRemoteConnectionConfig(): Promise<RemoteConnectionConfig> {
+  ensureTauriRuntime();
+  return invoke<RemoteConnectionConfig>("get_remote_connection_config");
+}
+
+export async function saveRemoteConnectionConfig(config: RemoteConnectionConfig): Promise<RemoteConnectionConfig> {
+  ensureTauriRuntime();
+  return invoke<RemoteConnectionConfig>("save_remote_connection_config", { config });
+}
+
+export async function getRemoteConnectionStatus(): Promise<RemoteConnectionStatus> {
+  ensureTauriRuntime();
+  return invoke<RemoteConnectionStatus>("get_remote_connection_status");
+}
+
+export async function testRemoteConnection(config: RemoteConnectionConfig): Promise<RemoteConnectionStatus> {
+  ensureTauriRuntime();
+  return invoke<RemoteConnectionStatus>("test_remote_connection", { config });
+}
+
+export async function startSshTunnel(config: RemoteConnectionConfig): Promise<RemoteConnectionStatus> {
+  ensureTauriRuntime();
+  return invoke<RemoteConnectionStatus>("start_ssh_tunnel", { config });
+}
+
+export async function stopSshTunnel(): Promise<RemoteConnectionStatus> {
+  ensureTauriRuntime();
+  return invoke<RemoteConnectionStatus>("stop_ssh_tunnel");
+}
+
+export async function cancelHermesTask(taskId: string): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("cancel_hermes_task", { taskId });
+}
+
+export async function listenHermesAgentStream(
+  handler: (event: RuntimeStreamEvent) => void,
+): Promise<() => void> {
+  ensureTauriRuntime();
+  return listen<RuntimeStreamEvent>("hermes-agent-stream", (event) => {
+    handler(event.payload);
+  });
+}
+
+export async function selectAttachmentFiles(): Promise<SelectedPathInfo[]> {
+  ensureTauriRuntime();
+  return invoke<SelectedPathInfo[]>("select_attachment_files");
+}
+
+export async function selectContextFolder(): Promise<SelectedPathInfo | null> {
+  ensureTauriRuntime();
+  return invoke<SelectedPathInfo | null>("select_context_folder");
+}
+
+export async function readDirectory(path: string): Promise<DirectoryEntryInfo[]> {
+  ensureTauriRuntime();
+  return invoke<DirectoryEntryInfo[]>("read_directory", { path });
+}
+
+export async function readFile(path: string, maxBytes = 102_400): Promise<FileReadResult> {
+  ensureTauriRuntime();
+  return invoke<FileReadResult>("read_file", { path, maxBytes });
+}
+
+export async function readImageFile(path: string): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("read_image_file", { path });
+}
+
+export async function openFileInEditor(path: string): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("open_file_in_editor", { path });
+}
+
+export async function runHermesTask(params: {
+  task: DispatchTask;
+  agent: Agent;
+  binding?: CapabilityBinding;
+  messages: Message[];
+  baseUrl?: string;
+}): Promise<string> {
+  ensureTauriRuntime();
+  const history: RuntimeMessage[] = params.messages
+    .filter((message) => message.authorKind === "user" || message.authorKind === "agent")
+    .slice(-12)
+    .map((message) => ({
+      role: message.authorKind === "agent" ? "assistant" : "user",
+      content: `${message.authorName}: ${message.content}`,
+    }));
+
+  const output = await invoke<RunHermesAgentOutput>("run_hermes_agent", {
+    input: {
+      baseUrl: params.baseUrl,
+      taskId: params.task.id,
+      profile: params.binding?.hermesProfile ?? "default",
+      model: params.binding?.model,
+      agentName: params.agent.name,
+      systemPrompt: buildSystemPrompt(params.agent, params.binding),
+      instruction: buildInstructionWithAttachments(params.task.instruction, params.messages, params.task.triggerMessageId),
+      history,
+      attachments: attachmentsForTask(params.messages, params.task.triggerMessageId),
+      contextFolder: params.binding?.workDir,
+    } satisfies RunHermesAgentInput,
+  });
+
+  if (!output.content.trim()) {
+    throw new Error("Hermes 返回了空内容。");
+  }
+  return output.content;
+}
+
+export async function runHermesTaskStream(params: {
+  task: DispatchTask;
+  agent: Agent;
+  binding?: CapabilityBinding;
+  messages: Message[];
+  baseUrl?: string;
+}): Promise<string> {
+  ensureTauriRuntime();
+  const history = historyForMessages(params.messages);
+  const output = await invoke<RunHermesAgentOutput>("run_hermes_agent_stream", {
+    input: {
+      baseUrl: params.baseUrl,
+      taskId: params.task.id,
+      profile: params.binding?.hermesProfile ?? "default",
+      model: params.binding?.model,
+      agentName: params.agent.name,
+      systemPrompt: buildSystemPrompt(params.agent, params.binding),
+      instruction: buildInstructionWithAttachments(params.task.instruction, params.messages, params.task.triggerMessageId),
+      history,
+      attachments: attachmentsForTask(params.messages, params.task.triggerMessageId),
+      contextFolder: params.binding?.workDir,
+    } satisfies RunHermesAgentInput,
+  });
+
+  if (!output.content.trim()) {
+    throw new Error("Hermes 返回了空内容。");
+  }
+  return output.content;
+}
+
+export function buildSessionSummary(state: OrchestrationState): HermesTeamSessionSummary {
+  const firstUserMessage = state.messages.find((message) => message.authorKind === "user");
+  return {
+    id: state.workspace.id,
+    workspaceId: state.workspace.id,
+    title: firstUserMessage?.content.slice(0, 80) || state.workspace.name,
+    messageCount: state.messages.length,
+    taskCount: state.tasks.length,
+    updatedAt: Date.now(),
+    state,
+  };
+}
+
+export function isTauriRuntimeAvailable(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function ensureTauriRuntime(): void {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+  }
+}
+
+function buildSystemPrompt(agent: Agent, binding?: CapabilityBinding): string {
+  const capabilityLines = binding
+    ? [
+        `Hermes Profile: ${binding.hermesProfile}`,
+        `Toolsets: ${binding.toolsets.join(", ") || "none"}`,
+        `MCP Servers: ${binding.mcpServers.join(", ") || "none"}`,
+        `Skills: ${binding.skills.join(", ") || "none"}`,
+        `Memory: ${binding.memoryEnabled ? "enabled" : "disabled"}`,
+      ]
+    : ["Hermes capability binding is not configured."];
+
+  return [
+    `你是 Hermes Team 中的 Agent：${agent.name}。`,
+    `角色：${agent.role}。`,
+    agent.prompt,
+    "",
+    "当前能力绑定：",
+    ...capabilityLines,
+    "",
+    "只回答你被分配的任务。不要伪造工具结果；如果需要工具但当前运行时未提供，请明确说明缺口。",
+  ].join("\n");
+}
+
+function historyForMessages(messages: Message[]): RuntimeMessage[] {
+  return messages
+    .filter((message) => message.authorKind === "user" || message.authorKind === "agent")
+    .slice(-12)
+    .map((message) => ({
+      role: message.authorKind === "agent" ? "assistant" : "user",
+      content: `${message.authorName}: ${message.content}`,
+    }));
+}
+
+function attachmentsForTask(messages: Message[], triggerMessageId: string): RuntimeAttachment[] {
+  return messages
+    .find((message) => message.id === triggerMessageId)
+    ?.attachments?.map((attachment) => ({
+      path: attachment.path,
+      name: attachment.name,
+    })) ?? [];
+}
+
+function buildInstructionWithAttachments(instruction: string, messages: Message[], triggerMessageId: string): string {
+  const attachments = attachmentsForTask(messages, triggerMessageId);
+  if (attachments.length === 0) return instruction;
+  return [
+    instruction,
+    "",
+    "用户随消息附加了以下本地文件。请只基于 Hermes Runtime 实际读取到的附件内容回答；如果附件不可读，请说明具体缺口。",
+    ...attachments.map((attachment) => `- ${attachment.name ?? "attachment"}: ${attachment.path}`),
+  ].join("\n");
+}
