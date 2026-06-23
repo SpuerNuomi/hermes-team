@@ -108,6 +108,29 @@ export interface ConfigHealthFixResult {
   message: string;
 }
 
+export interface AppSettings {
+  theme: string;
+  roundedCorners: boolean;
+  font: string;
+}
+
+export interface UpdateStatus {
+  appVersion: string;
+  hermesVersion?: string | null;
+  autoUpgrade: boolean;
+  lastCheckedAt: number;
+  updateAvailable?: string | null;
+  message: string;
+  logPath: string;
+}
+
+export interface UpdateRunResult {
+  ok: boolean;
+  message: string;
+  logPath: string;
+  output: string;
+}
+
 export interface ToolsetInfo {
   key: string;
   label: string;
@@ -490,6 +513,36 @@ export async function autofixConfigIssue(input: {
 }): Promise<ConfigHealthFixResult> {
   ensureTauriRuntime();
   return invoke<ConfigHealthFixResult>("autofix_config_issue", { input });
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  ensureTauriRuntime();
+  return invoke<AppSettings>("get_app_settings");
+}
+
+export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
+  ensureTauriRuntime();
+  return invoke<AppSettings>("save_app_settings", { settings });
+}
+
+export async function getUpdateStatus(): Promise<UpdateStatus> {
+  ensureTauriRuntime();
+  return invoke<UpdateStatus>("get_update_status");
+}
+
+export async function setAutoUpgradeEnabled(enabled: boolean): Promise<UpdateStatus> {
+  ensureTauriRuntime();
+  return invoke<UpdateStatus>("set_auto_upgrade_enabled", { enabled });
+}
+
+export async function checkForAppUpdates(): Promise<UpdateStatus> {
+  ensureTauriRuntime();
+  return invoke<UpdateStatus>("check_for_app_updates");
+}
+
+export async function runHermesUpdate(): Promise<UpdateRunResult> {
+  ensureTauriRuntime();
+  return invoke<UpdateRunResult>("run_hermes_update");
 }
 
 export async function listHermesToolsets(params: {

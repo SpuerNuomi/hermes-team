@@ -1,15 +1,24 @@
 :root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --radius-scale: 1;
   color: #17201c;
   background: #eef2ef;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+:root[data-rounded="false"] {
+  --radius-scale: 0.35;
+}
+
+:root[data-theme="dark"],
+:root[data-theme="github-dark"],
+:root[data-theme="dracula"],
+:root[data-theme="nord"],
+:root[data-theme="one-dark"] {
+  color: #ecf2ee;
+  background: #151917;
 }
 
 * {
@@ -30,6 +39,14 @@ body {
   background: #eef2ef;
 }
 
+:root[data-theme="dark"] body,
+:root[data-theme="github-dark"] body,
+:root[data-theme="dracula"] body,
+:root[data-theme="nord"] body,
+:root[data-theme="one-dark"] body {
+  background: #151917;
+}
+
 button,
 input,
 select,
@@ -39,6 +56,21 @@ textarea {
 
 button {
   cursor: pointer;
+}
+
+:root[data-rounded="false"] button,
+:root[data-rounded="false"] input,
+:root[data-rounded="false"] select,
+:root[data-rounded="false"] textarea,
+:root[data-rounded="false"] .settings-card,
+:root[data-rounded="false"] .settings-section-tabs,
+:root[data-rounded="false"] .status-row,
+:root[data-rounded="false"] .theme-card,
+:root[data-rounded="false"] .config-health-issue,
+:root[data-rounded="false"] .log-card,
+:root[data-rounded="false"] .capability-card,
+:root[data-rounded="false"] .settings-profile {
+  border-radius: 3px;
 }
 
 .app-shell {
@@ -56,6 +88,114 @@ button {
 .inspector {
   background: #f9faf7;
   border-color: #d9ded6;
+}
+
+:root[data-theme="dark"] .sidebar,
+:root[data-theme="dark"] .inspector,
+:root[data-theme="github-dark"] .sidebar,
+:root[data-theme="github-dark"] .inspector,
+:root[data-theme="dracula"] .sidebar,
+:root[data-theme="dracula"] .inspector,
+:root[data-theme="nord"] .sidebar,
+:root[data-theme="nord"] .inspector,
+:root[data-theme="one-dark"] .sidebar,
+:root[data-theme="one-dark"] .inspector,
+:root[data-theme="dark"] .settings-card,
+:root[data-theme="github-dark"] .settings-card,
+:root[data-theme="dracula"] .settings-card,
+:root[data-theme="nord"] .settings-card,
+:root[data-theme="one-dark"] .settings-card,
+:root[data-theme="dark"] .settings-section-tabs,
+:root[data-theme="github-dark"] .settings-section-tabs,
+:root[data-theme="dracula"] .settings-section-tabs,
+:root[data-theme="nord"] .settings-section-tabs,
+:root[data-theme="one-dark"] .settings-section-tabs {
+  color: #ecf2ee;
+  background: #202622;
+  border-color: #39423c;
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea,
+:root[data-theme="dark"] .status-row,
+:root[data-theme="dark"] .config-health-issue,
+:root[data-theme="dark"] .settings-profile,
+:root[data-theme="dark"] .capability-card,
+:root[data-theme="dark"] .log-card,
+:root[data-theme="github-dark"] input,
+:root[data-theme="github-dark"] select,
+:root[data-theme="github-dark"] textarea,
+:root[data-theme="github-dark"] .status-row,
+:root[data-theme="github-dark"] .config-health-issue,
+:root[data-theme="github-dark"] .settings-profile,
+:root[data-theme="github-dark"] .capability-card,
+:root[data-theme="github-dark"] .log-card,
+:root[data-theme="dracula"] input,
+:root[data-theme="dracula"] select,
+:root[data-theme="dracula"] textarea,
+:root[data-theme="dracula"] .status-row,
+:root[data-theme="dracula"] .config-health-issue,
+:root[data-theme="dracula"] .settings-profile,
+:root[data-theme="dracula"] .capability-card,
+:root[data-theme="dracula"] .log-card,
+:root[data-theme="nord"] input,
+:root[data-theme="nord"] select,
+:root[data-theme="nord"] textarea,
+:root[data-theme="nord"] .status-row,
+:root[data-theme="nord"] .config-health-issue,
+:root[data-theme="nord"] .settings-profile,
+:root[data-theme="nord"] .capability-card,
+:root[data-theme="nord"] .log-card,
+:root[data-theme="one-dark"] input,
+:root[data-theme="one-dark"] select,
+:root[data-theme="one-dark"] textarea,
+:root[data-theme="one-dark"] .status-row,
+:root[data-theme="one-dark"] .config-health-issue,
+:root[data-theme="one-dark"] .settings-profile,
+:root[data-theme="one-dark"] .capability-card,
+:root[data-theme="one-dark"] .log-card,
+:root[data-theme="dark"] .theme-card,
+:root[data-theme="github-dark"] .theme-card,
+:root[data-theme="dracula"] .theme-card,
+:root[data-theme="nord"] .theme-card,
+:root[data-theme="one-dark"] .theme-card,
+:root[data-theme="dark"] .settings-toggle-row,
+:root[data-theme="github-dark"] .settings-toggle-row,
+:root[data-theme="dracula"] .settings-toggle-row,
+:root[data-theme="nord"] .settings-toggle-row,
+:root[data-theme="one-dark"] .settings-toggle-row,
+:root[data-theme="dark"] .font-options button,
+:root[data-theme="github-dark"] .font-options button,
+:root[data-theme="dracula"] .font-options button,
+:root[data-theme="nord"] .font-options button,
+:root[data-theme="one-dark"] .font-options button {
+  color: #ecf2ee;
+  background: #151917;
+  border-color: #39423c;
+}
+
+:root[data-theme="dark"] strong,
+:root[data-theme="dark"] h1,
+:root[data-theme="dark"] h2,
+:root[data-theme="dark"] h3,
+:root[data-theme="github-dark"] strong,
+:root[data-theme="github-dark"] h1,
+:root[data-theme="github-dark"] h2,
+:root[data-theme="github-dark"] h3,
+:root[data-theme="dracula"] strong,
+:root[data-theme="dracula"] h1,
+:root[data-theme="dracula"] h2,
+:root[data-theme="dracula"] h3,
+:root[data-theme="nord"] strong,
+:root[data-theme="nord"] h1,
+:root[data-theme="nord"] h2,
+:root[data-theme="nord"] h3,
+:root[data-theme="one-dark"] strong,
+:root[data-theme="one-dark"] h1,
+:root[data-theme="one-dark"] h2,
+:root[data-theme="one-dark"] h3 {
+  color: #f4f8f5;
 }
 
 .sidebar {
@@ -2384,6 +2524,179 @@ textarea:focus {
 .config-health-issue > .refresh-runtime {
   margin-top: 0;
   white-space: nowrap;
+}
+
+.appearance-panel,
+.update-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.appearance-panel h3,
+.appearance-options h3 {
+  margin: 0 0 10px;
+  color: #17201c;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.theme-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  color: #17201c;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.theme-card.active {
+  border-color: #17201c;
+  box-shadow: inset 0 0 0 1px #17201c;
+}
+
+.theme-card strong,
+.theme-card small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-card small {
+  color: #647067;
+  font-size: 12px;
+}
+
+.theme-preview {
+  display: grid;
+  grid-template-columns: 30% 1fr;
+  height: 58px;
+  overflow: hidden;
+  border: 1px solid #d9ded6;
+  border-radius: 6px;
+}
+
+.theme-preview i,
+.theme-preview b {
+  display: block;
+}
+
+.theme-preview i {
+  background: #17201c;
+}
+
+.theme-preview b {
+  background: #eef2ef;
+}
+
+.theme-preview[data-theme-preview="dark"] i,
+.theme-preview[data-theme-preview="github-dark"] i,
+.theme-preview[data-theme-preview="dracula"] i,
+.theme-preview[data-theme-preview="nord"] i,
+.theme-preview[data-theme-preview="one-dark"] i {
+  background: #111613;
+}
+
+.theme-preview[data-theme-preview="dark"] b,
+.theme-preview[data-theme-preview="github-dark"] b,
+.theme-preview[data-theme-preview="dracula"] b,
+.theme-preview[data-theme-preview="nord"] b,
+.theme-preview[data-theme-preview="one-dark"] b {
+  background: #28302b;
+}
+
+.theme-preview[data-theme-preview="dracula"] i {
+  background: #282a36;
+}
+
+.theme-preview[data-theme-preview="dracula"] b {
+  background: #44475a;
+}
+
+.theme-preview[data-theme-preview="nord"] i {
+  background: #2e3440;
+}
+
+.theme-preview[data-theme-preview="nord"] b {
+  background: #3b4252;
+}
+
+.appearance-options {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.settings-toggle-row span {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-toggle-row small {
+  color: #647067;
+  font-size: 12px;
+}
+
+.settings-toggle-row input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.font-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.font-options button {
+  min-height: 34px;
+  padding: 7px 10px;
+  color: #17201c;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  font-weight: 700;
+}
+
+.font-options button.active {
+  color: #ffffff;
+  background: #17201c;
+  border-color: #17201c;
+}
+
+.update-output {
+  max-height: 260px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: #dfeee7;
+  background: #111613;
+  border: 1px solid #39423c;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .settings-actions {

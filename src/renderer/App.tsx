@@ -49,6 +49,7 @@ import {
   autofixConfigIssue,
   buildSessionSummary,
   cancelHermesTask,
+  checkForAppUpdates,
   createHermesCronJob,
   createHermesProfile,
   deleteHermesTeamSession,
@@ -59,10 +60,12 @@ import {
   createHermesDebugDump,
   restoreHermesBackupFile,
   generateApiServerKey,
+  getAppSettings,
   getConfigHealth,
   getHermesModelConfig,
   getRemoteConnectionConfig,
   getRemoteConnectionStatus,
+  getUpdateStatus,
   inspectHermesInstall,
   installHermesSkill,
   isTauriRuntimeAvailable,
@@ -91,7 +94,9 @@ import {
   removeHermesMcpServer,
   removeHermesSkill,
   pauseHermesCronJob,
+  runHermesUpdate,
   runHermesTaskStream,
+  saveAppSettings,
   saveHermesMcpServer,
   saveHermesTeamSession,
   saveHermesTeamState,
@@ -103,6 +108,7 @@ import {
   removeHermesModel,
   searchHermesSkills,
   setActiveHermesProfile,
+  setAutoUpgradeEnabled,
   setHermesToolsetEnabled,
   resumeHermesCronJob,
   startSshTunnel,
@@ -116,6 +122,7 @@ import {
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
+  type AppSettings,
   type ConfigHealthIssue,
   type ConfigHealthReport,
   type CronJobActionResult,
@@ -143,10 +150,11 @@ import {
   type RuntimeStreamEvent,
   type SavedModel,
   type ToolsetInfo,
+  type UpdateStatus,
 } from "../runtime/hermes-runtime";
 
 type ActiveView = "team" | "sessions" | "settings";
-type SettingsPanel = "overview" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "logs";
+type SettingsPanel = "overview" | "appearance" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
   id?: string;
@@ -212,6 +220,25 @@ const LEGACY_SEED_MESSAGE_CONTENTS = new Set([
 ]);
 const DEFAULT_WORKSPACE_NAME = seedWorkspace.name;
 const DEFAULT_WORKSPACE_DESCRIPTION = seedWorkspace.description;
+const themeOptions = [
+  { id: "light", name: "Light", appearance: "light" },
+  { id: "dark", name: "Dark", appearance: "dark" },
+  { id: "github-light", name: "GitHub Light", appearance: "light" },
+  { id: "github-dark", name: "GitHub Dark", appearance: "dark" },
+  { id: "dracula", name: "Dracula", appearance: "dark" },
+  { id: "nord", name: "Nord", appearance: "dark" },
+  { id: "one-dark", name: "One Dark", appearance: "dark" },
+];
+const fontOptions = [
+  { id: "system", name: "System", stack: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
+  { id: "serif", name: "Serif", stack: "Georgia, 'Times New Roman', serif" },
+  { id: "mono", name: "Mono", stack: "'SFMono-Regular', Consolas, 'Liberation Mono', monospace" },
+];
+const defaultAppSettings: AppSettings = {
+  theme: "light",
+  roundedCorners: true,
+  font: "system",
+};
 
 const emptyModelForm: ModelForm = {
   name: "",
@@ -391,6 +418,9 @@ export function App() {
   const [profiles, setProfiles] = useState<HermesProfileInfo[]>([]);
   const [installStatus, setInstallStatus] = useState<HermesInstallStatus | null>(null);
   const [configHealth, setConfigHealth] = useState<ConfigHealthReport | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettings>(defaultAppSettings);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateOutput, setUpdateOutput] = useState("");
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
   const [skills, setSkills] = useState<InstalledSkillInfo[]>([]);
@@ -423,6 +453,8 @@ export function App() {
   const [installBusy, setInstallBusy] = useState(false);
   const [configHealthBusy, setConfigHealthBusy] = useState(false);
   const [configFixingCode, setConfigFixingCode] = useState<string | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [updateBusy, setUpdateBusy] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -450,6 +482,7 @@ export function App() {
   );
   const settingsPanels: Array<{ id: SettingsPanel; label: string }> = [
     { id: "overview", label: "概览" },
+    { id: "appearance", label: "Appearance" },
     { id: "profiles", label: "Profiles" },
     { id: "providers", label: "Provider" },
     { id: "models", label: "Models" },
@@ -459,6 +492,7 @@ export function App() {
     { id: "capabilities", label: "Capabilities" },
     { id: "skills", label: "Skills" },
     { id: "memory", label: "Memory" },
+    { id: "update", label: "Update" },
     { id: "logs", label: "Logs" },
   ];
   const inspectorPanels: Array<{ id: InspectorPanel; label: string }> = [
@@ -610,6 +644,110 @@ export function App() {
       });
     }
   }
+
+  const applyAppSettings = (settings: AppSettings) => {
+    const fontStack = fontOptions.find((item) => item.id === settings.font)?.stack ?? fontOptions[0].stack;
+    document.documentElement.dataset.theme = settings.theme;
+    document.documentElement.dataset.rounded = settings.roundedCorners ? "true" : "false";
+    document.documentElement.style.setProperty("--font-sans", fontStack);
+  };
+
+  const refreshAppSettings = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      applyAppSettings(defaultAppSettings);
+      return defaultAppSettings;
+    }
+    try {
+      const settings = await getAppSettings();
+      setAppSettings(settings);
+      applyAppSettings(settings);
+      return settings;
+    } catch (error) {
+      setNotice(`读取外观设置失败：${runtimeErrorMessage(error)}`);
+      return null;
+    }
+  };
+
+  const updateAppSettings = async (patch: Partial<AppSettings>) => {
+    const next = { ...appSettings, ...patch };
+    setAppSettings(next);
+    applyAppSettings(next);
+    if (!isTauriRuntimeAvailable()) return;
+    setSettingsBusy(true);
+    try {
+      const saved = await saveAppSettings(next);
+      setAppSettings(saved);
+      applyAppSettings(saved);
+      setNotice("外观设置已保存。");
+    } catch (error) {
+      setNotice(`保存外观设置失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setSettingsBusy(false);
+    }
+  };
+
+  const refreshUpdateStatus = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setUpdateStatus(null);
+      return null;
+    }
+    setUpdateBusy(true);
+    try {
+      const status = await getUpdateStatus();
+      setUpdateStatus(status);
+      return status;
+    } catch (error) {
+      setNotice(`读取更新状态失败：${runtimeErrorMessage(error)}`);
+      return null;
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const checkUpdatesNow = async () => {
+    setUpdateBusy(true);
+    try {
+      const status = await checkForAppUpdates();
+      setUpdateStatus(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(`检查更新失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const toggleAutoUpgrade = async (enabled: boolean) => {
+    if (!updateStatus) return;
+    setUpdateStatus({ ...updateStatus, autoUpgrade: enabled });
+    if (!isTauriRuntimeAvailable()) return;
+    setUpdateBusy(true);
+    try {
+      const status = await setAutoUpgradeEnabled(enabled);
+      setUpdateStatus(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(`保存更新偏好失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const runHermesUpdateNow = async () => {
+    setUpdateBusy(true);
+    setUpdateOutput("");
+    try {
+      const result = await runHermesUpdate();
+      setUpdateOutput(result.output);
+      setNotice(result.message);
+      await refreshInstallStatus();
+      await refreshUpdateStatus();
+    } catch (error) {
+      setNotice(`运行 hermes update 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
 
   const currentProfileName = (profileName?: string) =>
     profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
@@ -1119,6 +1257,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     if (!isTauriRuntimeAvailable()) {
+      applyAppSettings(defaultAppSettings);
       setStateReady(true);
       setRuntimeStatus({
         state: "unavailable",
@@ -1141,9 +1280,11 @@ export function App() {
         setNotice("Hermes Chat 已就绪。");
       })
       .finally(() => {
-        if (cancelled) return;
-        setStateReady(true);
-        void refreshRemoteConnection();
+      if (cancelled) return;
+      setStateReady(true);
+      void refreshAppSettings();
+      void refreshUpdateStatus();
+      void refreshRemoteConnection();
         void loadHermesTeamSessions()
           .then((items) => setSessions(normalizeLoadedSessions(items)))
           .catch(() => undefined);
@@ -2728,6 +2869,67 @@ export function App() {
                 )}
               </section>
 
+              <section className={settingsCardClass("appearance", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Appearance</p>
+                    <h2>外观设置</h2>
+                  </div>
+                  <span className="count-pill">{settingsBusy ? "Saving" : "Local"}</span>
+                </div>
+                <div className="appearance-panel">
+                  <div>
+                    <h3>Theme</h3>
+                    <div className="theme-grid">
+                      {themeOptions.map((theme) => (
+                        <button
+                          className={`theme-card ${appSettings.theme === theme.id ? "active" : ""}`}
+                          key={theme.id}
+                          type="button"
+                          onClick={() => void updateAppSettings({ theme: theme.id })}
+                        >
+                          <span className="theme-preview" data-theme-preview={theme.id}>
+                            <i />
+                            <b />
+                          </span>
+                          <strong>{theme.name}</strong>
+                          <small>{theme.appearance}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="appearance-options">
+                    <label className="settings-toggle-row">
+                      <span>
+                        <strong>Rounded corners</strong>
+                        <small>匹配 Hermes Desktop 的圆角偏好。</small>
+                      </span>
+                      <input
+                        checked={appSettings.roundedCorners}
+                        type="checkbox"
+                        onChange={(event) => void updateAppSettings({ roundedCorners: event.target.checked })}
+                      />
+                    </label>
+                    <div>
+                      <h3>Font</h3>
+                      <div className="font-options">
+                        {fontOptions.map((font) => (
+                          <button
+                            className={appSettings.font === font.id ? "active" : ""}
+                            key={font.id}
+                            style={{ fontFamily: font.stack }}
+                            type="button"
+                            onClick={() => void updateAppSettings({ font: font.id })}
+                          >
+                            {font.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
               <section className={settingsCardClass("profiles", "settings-card-wide")}>
                 <div className="settings-card-head">
                   <div>
@@ -3665,6 +3867,50 @@ export function App() {
                   </div>
                 ) : (
                   <p className="empty-note">尚未读取 Memory 摘要。</p>
+                )}
+              </section>
+
+              <section className={settingsCardClass("update", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Update</p>
+                    <h2>更新检查</h2>
+                  </div>
+                  <div className="settings-actions">
+                    <button className="refresh-runtime" disabled={updateBusy} type="button" onClick={() => void checkUpdatesNow()}>
+                      <RefreshCw size={14} />
+                      <span>{updateBusy ? "检查中..." : "检查版本"}</span>
+                    </button>
+                    <button className="refresh-runtime" disabled={updateBusy} type="button" onClick={() => void runHermesUpdateNow()}>
+                      <Upload size={14} />
+                      <span>{updateBusy ? "运行中..." : "运行 hermes update"}</span>
+                    </button>
+                  </div>
+                </div>
+                {updateStatus ? (
+                  <div className="update-panel">
+                    <div className="settings-rows">
+                      <StatusRow label="App Version" value={updateStatus.appVersion} ok />
+                      <StatusRow label="Hermes CLI" value={updateStatus.hermesVersion ?? "未找到"} ok={Boolean(updateStatus.hermesVersion)} />
+                      <StatusRow label="Last Check" value={formatTime(updateStatus.lastCheckedAt)} ok />
+                      <StatusRow label="Update Log" value={updateStatus.logPath} ok />
+                    </div>
+                    <label className="settings-toggle-row">
+                      <span>
+                        <strong>Auto upgrade</strong>
+                        <small>保存 Hermes Desktop 等价的自动更新偏好；Tauri 版手动更新仍走 hermes update。</small>
+                      </span>
+                      <input
+                        checked={updateStatus.autoUpgrade}
+                        type="checkbox"
+                        onChange={(event) => void toggleAutoUpgrade(event.target.checked)}
+                      />
+                    </label>
+                    <p className="empty-note">{updateStatus.message}</p>
+                    {updateOutput && <pre className="update-output">{updateOutput}</pre>}
+                  </div>
+                ) : (
+                  <p className="empty-note">尚未读取更新状态。</p>
                 )}
               </section>
 

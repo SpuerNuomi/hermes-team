@@ -279,6 +279,41 @@ struct RemoteConnectionStatus {
     message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    theme: String,
+    rounded_corners: bool,
+    font: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePreferences {
+    auto_upgrade: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateStatus {
+    app_version: String,
+    hermes_version: Option<String>,
+    auto_upgrade: bool,
+    last_checked_at: u64,
+    update_available: Option<String>,
+    message: String,
+    log_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateRunResult {
+    ok: bool,
+    message: String,
+    log_path: String,
+    output: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SavedModel {
@@ -1290,6 +1325,74 @@ async fn write_hermes_memory_content(input: WriteMemoryInput) -> Result<MemoryCo
     fs::write(&path, ensure_trailing_newline(&input.content))
         .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
     read_hermes_memory_content(input.profile).await
+}
+
+#[tauri::command]
+async fn get_app_settings() -> Result<AppSettings, String> {
+    read_app_settings()
+}
+
+#[tauri::command]
+async fn save_app_settings(settings: AppSettings) -> Result<AppSettings, String> {
+    let normalized = normalize_app_settings(settings);
+    write_app_settings(&normalized)?;
+    Ok(normalized)
+}
+
+#[tauri::command]
+async fn get_update_status() -> Result<UpdateStatus, String> {
+    build_update_status("尚未运行更新检查。".to_string(), None)
+}
+
+#[tauri::command]
+async fn set_auto_upgrade_enabled(enabled: bool) -> Result<UpdateStatus, String> {
+    write_update_preferences(&UpdatePreferences {
+        auto_upgrade: enabled,
+    })?;
+    append_update_log(&format!("auto_upgrade={enabled}"))?;
+    build_update_status("更新偏好已保存。".to_string(), None)
+}
+
+#[tauri::command]
+async fn check_for_app_updates() -> Result<UpdateStatus, String> {
+    let status = build_update_status("已检查本地 Hermes 版本。".to_string(), None)?;
+    append_update_log(&format!(
+        "check app_version={} hermes_version={}",
+        status.app_version,
+        status
+            .hermes_version
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string())
+    ))?;
+    Ok(status)
+}
+
+#[tauri::command]
+async fn run_hermes_update() -> Result<UpdateRunResult, String> {
+    let log_path = updater_log_path()?;
+    append_update_log("running hermes update")?;
+    let result = run_hermes_cli(&["update".to_string()], Duration::from_secs(120));
+    match result {
+        Ok(output) => {
+            let trimmed = truncate(output.trim(), 12_000);
+            append_update_log(&format!("hermes update ok\n{trimmed}"))?;
+            Ok(UpdateRunResult {
+                ok: true,
+                message: "hermes update 已完成。".to_string(),
+                log_path: log_path.to_string_lossy().to_string(),
+                output: trimmed,
+            })
+        }
+        Err(error) => {
+            append_update_log(&format!("hermes update failed: {error}"))?;
+            Ok(UpdateRunResult {
+                ok: false,
+                message: format!("hermes update 失败：{error}"),
+                log_path: log_path.to_string_lossy().to_string(),
+                output: error,
+            })
+        }
+    }
 }
 
 #[tauri::command]
@@ -4312,6 +4415,18 @@ fn app_connection_path() -> Result<PathBuf, String> {
     Ok(app_home()?.join("connection.json"))
 }
 
+fn app_settings_path() -> Result<PathBuf, String> {
+    Ok(app_home()?.join("settings.json"))
+}
+
+fn update_preferences_path() -> Result<PathBuf, String> {
+    Ok(app_home()?.join("update-preferences.json"))
+}
+
+fn updater_log_path() -> Result<PathBuf, String> {
+    Ok(app_home()?.join("logs").join("updater.log"))
+}
+
 fn hermes_log_dirs() -> Result<Vec<PathBuf>, String> {
     Ok(vec![app_home()?.join("logs"), hermes_home()?.join("logs")])
 }
@@ -4367,6 +4482,117 @@ fn default_connection_config() -> RemoteConnectionConfig {
             local_port: 18642,
         },
     }
+}
+
+fn default_app_settings() -> AppSettings {
+    AppSettings {
+        theme: "light".to_string(),
+        rounded_corners: true,
+        font: "system".to_string(),
+    }
+}
+
+fn normalize_app_settings(settings: AppSettings) -> AppSettings {
+    let theme = match settings.theme.trim() {
+        "light" | "dark" | "dracula" | "nord" | "one-dark" | "github-dark" | "github-light" => {
+            settings.theme.trim().to_string()
+        }
+        _ => "light".to_string(),
+    };
+    let font = match settings.font.trim() {
+        "system" | "serif" | "mono" => settings.font.trim().to_string(),
+        _ => "system".to_string(),
+    };
+    AppSettings {
+        theme,
+        rounded_corners: settings.rounded_corners,
+        font,
+    }
+}
+
+fn read_app_settings() -> Result<AppSettings, String> {
+    let path = app_settings_path()?;
+    if !path.exists() {
+        return Ok(default_app_settings());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("读取 {} 失败：{error}", path.to_string_lossy()))?;
+    let parsed = serde_json::from_str(&content)
+        .map_err(|error| format!("解析 {} 失败：{error}", path.to_string_lossy()))?;
+    Ok(normalize_app_settings(parsed))
+}
+
+fn write_app_settings(settings: &AppSettings) -> Result<(), String> {
+    let path = app_settings_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    }
+    let body = serde_json::to_string_pretty(settings)
+        .map_err(|error| format!("序列化应用设置失败：{error}"))?;
+    fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
+fn default_update_preferences() -> UpdatePreferences {
+    UpdatePreferences { auto_upgrade: true }
+}
+
+fn read_update_preferences() -> Result<UpdatePreferences, String> {
+    let path = update_preferences_path()?;
+    if !path.exists() {
+        return Ok(default_update_preferences());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("读取 {} 失败：{error}", path.to_string_lossy()))?;
+    serde_json::from_str(&content)
+        .map_err(|error| format!("解析 {} 失败：{error}", path.to_string_lossy()))
+}
+
+fn write_update_preferences(preferences: &UpdatePreferences) -> Result<(), String> {
+    let path = update_preferences_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    }
+    let body = serde_json::to_string_pretty(preferences)
+        .map_err(|error| format!("序列化更新偏好失败：{error}"))?;
+    fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
+fn build_update_status(
+    message: String,
+    update_available: Option<String>,
+) -> Result<UpdateStatus, String> {
+    let preferences = read_update_preferences()?;
+    let hermes_version = find_hermes_command()
+        .ok()
+        .and_then(|path| hermes_version(&path).ok());
+    let log_path = updater_log_path()?;
+    Ok(UpdateStatus {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        hermes_version,
+        auto_upgrade: preferences.auto_upgrade,
+        last_checked_at: unix_millis(),
+        update_available,
+        message,
+        log_path: log_path.to_string_lossy().to_string(),
+    })
+}
+
+fn append_update_log(message: &str) -> Result<(), String> {
+    let path = updater_log_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    }
+    let line = format!("{} [updater] {}\n", unix_millis(), message);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| format!("打开 {} 失败：{error}", path.to_string_lossy()))?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
 }
 
 fn read_connection_config() -> Result<RemoteConnectionConfig, String> {
@@ -7652,6 +7878,12 @@ pub fn run() {
             read_hermes_memory_summary,
             read_hermes_memory_content,
             write_hermes_memory_content,
+            get_app_settings,
+            save_app_settings,
+            get_update_status,
+            set_auto_upgrade_enabled,
+            check_for_app_updates,
+            run_hermes_update,
             get_hermes_model_config,
             get_hermes_reasoning_effort,
             set_hermes_reasoning_effort,
