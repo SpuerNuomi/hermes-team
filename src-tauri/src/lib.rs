@@ -5303,6 +5303,23 @@ fn handle_run_event(
             Ok(RunSignal::Continue)
         }
         "message.complete" | "assistant.completed" => {
+            let reasoning = completion_reasoning_text(value);
+            if !reasoning.is_empty()
+                && full_reasoning.trim().is_empty()
+                && !is_duplicate_process_snapshot(&reasoning, full_content)
+            {
+                full_reasoning.push_str(&reasoning);
+                emit_stream_event(
+                    app,
+                    RuntimeStreamEvent {
+                        task_id: task_id.to_string(),
+                        kind: "reasoning".to_string(),
+                        delta: reasoning,
+                        content: full_reasoning.clone(),
+                        message: String::new(),
+                    },
+                )?;
+            }
             let text = value
                 .pointer("/payload/text")
                 .and_then(|item| item.as_str())
@@ -5406,7 +5423,8 @@ fn handle_run_event(
         _ => {
             if is_tool_event_name(event_name) {
                 let status = tool_event_status(event_name);
-                let tool_event = tool_event_from_payload(event_name, value, &status);
+                let payload = value.get("payload").unwrap_or(value);
+                let tool_event = tool_event_from_payload(event_name, payload, &status);
                 if tool_event.name == "_thinking" {
                     let text = if !tool_event.result.trim().is_empty() {
                         tool_event.result.clone()
@@ -5479,6 +5497,46 @@ fn run_reasoning_text(value: &serde_json::Value) -> String {
         }
     }
     String::new()
+}
+
+fn completion_reasoning_text(value: &serde_json::Value) -> String {
+    for pointer in [
+        "/payload/reasoning",
+        "/payload/reasoning_content",
+        "/reasoning",
+        "/reasoning_content",
+    ] {
+        if let Some(text) = reasoning_string(value.pointer(pointer)) {
+            return text;
+        }
+    }
+    if let Some(details) = value
+        .pointer("/payload/reasoning_details")
+        .or_else(|| value.get("reasoning_details"))
+        .and_then(|item| item.as_array())
+    {
+        let joined = details
+            .iter()
+            .filter_map(|entry| reasoning_string(Some(entry)))
+            .collect::<Vec<_>>()
+            .join("");
+        if !joined.is_empty() {
+            return joined;
+        }
+    }
+    String::new()
+}
+
+fn normalize_process_snapshot(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_duplicate_process_snapshot(process_text: &str, answer_text: &str) -> bool {
+    let process = normalize_process_snapshot(process_text);
+    let answer = normalize_process_snapshot(answer_text);
+    !process.is_empty()
+        && !answer.is_empty()
+        && (process == answer || process.starts_with(&answer) || answer.starts_with(&process))
 }
 
 /// Pull a reasoning/thinking text fragment out of one streamed event.
@@ -10815,4 +10873,49 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Hermes Team");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_gateway_thinking_tool_progress_payload() {
+        let event = json!({
+            "type": "tool.progress",
+            "event": "tool.progress",
+            "payload": {
+                "tool_name": "_thinking",
+                "delta": "正在检查上下文。",
+                "status": "running"
+            }
+        });
+        let payload = event.get("payload").unwrap_or(&event);
+        let tool = tool_event_from_payload("tool.progress", payload, "running");
+
+        assert_eq!(tool.name, "_thinking");
+        assert_eq!(tool.status, "running");
+        assert_eq!(tool.result, "正在检查上下文。");
+    }
+
+    #[test]
+    fn reads_completion_reasoning_from_gateway_payload() {
+        let event = json!({
+            "type": "message.complete",
+            "event": "message.complete",
+            "payload": {
+                "text": "最终回答",
+                "reasoning": "先检查文件，再汇总结论。"
+            }
+        });
+
+        assert_eq!(
+            completion_reasoning_text(&event),
+            "先检查文件，再汇总结论。"
+        );
+        assert!(!is_duplicate_process_snapshot(
+            "先检查文件，再汇总结论。",
+            "最终回答"
+        ));
+    }
 }
