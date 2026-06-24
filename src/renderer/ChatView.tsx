@@ -17,7 +17,7 @@ import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
 import { useInputHistory } from "./chatInput/useInputHistory";
 import { ChatControls } from "./ChatControls";
-import { MessageRow, RuntimeActivityGroup, TypingIndicator, type RuntimeActivityItem } from "./MessageRow";
+import { MessageRow, TypingIndicator } from "./MessageRow";
 import { WorktreePanel } from "./WorktreePanel";
 import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtime/hermes-runtime";
 
@@ -52,7 +52,6 @@ export function ChatView({
   queuedMessages,
   isLoading,
   activityText,
-  activityEvents,
   profiles,
   models,
   currentProfile,
@@ -91,7 +90,6 @@ export function ChatView({
   queuedMessages: Array<{ id: string; text: string; attachments: MessageAttachment[] }>;
   isLoading: boolean;
   activityText?: string;
-  activityEvents?: RuntimeActivityItem[];
   profiles: HermesProfileInfo[];
   models: SavedModel[];
   currentProfile: string;
@@ -164,6 +162,7 @@ export function ChatView({
   );
   const visibleMessages = useMemo(() => {
     return messages.filter((message) => {
+      if (message.authorName === "Runtime activity") return false;
       if (message.kind === "reasoning" || message.kind === "tool") return true;
       return message.content.trim().length > 0;
     });
@@ -349,13 +348,6 @@ export function ChatView({
             })}
             {isLoading && visibleMessages.at(-1)?.authorKind !== "agent" && (
               <TypingIndicator detail={activityText} />
-            )}
-            {isLoading && visibleMessages.at(-1)?.authorKind !== "agent" && activityEvents && activityEvents.length > 0 && (
-              <RuntimeActivityGroup
-                items={activityEvents}
-                active={isLoading}
-                formatTime={formatTime}
-              />
             )}
           </>
         )}
