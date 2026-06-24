@@ -50,7 +50,6 @@ export function ChatView({
   draft,
   draftAttachments,
   queuedMessages,
-  attachmentPathDraft,
   isLoading,
   activityText,
   activityEvents,
@@ -64,7 +63,6 @@ export function ChatView({
   modelBusy,
   formatTime,
   onDraftChange,
-  onAttachmentPathChange,
   onAddAttachment,
   onAttachFiles,
   onPickAttachments,
@@ -89,7 +87,6 @@ export function ChatView({
   draft: string;
   draftAttachments: MessageAttachment[];
   queuedMessages: Array<{ id: string; text: string; attachments: MessageAttachment[] }>;
-  attachmentPathDraft: string;
   isLoading: boolean;
   activityText?: string;
   activityEvents?: RuntimeActivityItem[];
@@ -103,7 +100,6 @@ export function ChatView({
   modelBusy: boolean;
   formatTime: (timestamp: number) => string;
   onDraftChange: (value: string) => void;
-  onAttachmentPathChange: (value: string) => void;
   onAddAttachment: (path?: string) => void;
   onAttachFiles: (files: File[]) => void;
   onPickAttachments: () => void;
@@ -162,6 +158,27 @@ export function ChatView({
         : [],
     [slashMenuOpen, slashFilter],
   );
+  const processMessagesByReply = useMemo(() => {
+    const groups = new Map<string, Message[]>();
+    for (const message of messages) {
+      if ((message.kind !== "reasoning" && message.kind !== "tool") || !message.replyToMessageId) continue;
+      groups.set(message.replyToMessageId, [...(groups.get(message.replyToMessageId) ?? []), message]);
+    }
+    return groups;
+  }, [messages]);
+  const visibleMessages = useMemo(() => {
+    const replyIdsWithAgentAnswer = new Set(
+      messages
+        .filter((message) => message.authorKind === "agent" && message.kind !== "reasoning" && message.kind !== "tool")
+        .map((message) => message.replyToMessageId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    return messages.filter((message) => {
+      if (message.kind !== "reasoning" && message.kind !== "tool") return true;
+      if (!message.replyToMessageId) return true;
+      return !replyIdsWithAgentAnswer.has(message.replyToMessageId);
+    });
+  }, [messages]);
 
   useEffect(() => {
     if (!isLoading) inputRef.current?.focus();
@@ -311,21 +328,26 @@ export function ChatView({
         </div>
       </header>
 
-      <div className={`message-list ${messages.length === 0 ? "message-list-empty" : ""}`} aria-label="消息流">
-        {messages.length === 0 ? (
+      <div className={`message-list ${visibleMessages.length === 0 ? "message-list-empty" : ""}`} aria-label="消息流">
+        {visibleMessages.length === 0 ? (
           <section className="chat-empty-state">
             <strong>Hermes</strong>
             <span>Ask anything, build anything.</span>
           </section>
         ) : (
           <>
-            {messages.map((message, index) => {
-              const previous = messages[index - 1];
-              const isLast = index === messages.length - 1;
+            {visibleMessages.map((message, index) => {
+              const previous = visibleMessages[index - 1];
+              const isLast = index === visibleMessages.length - 1;
+              const processMessages =
+                message.authorKind === "agent" && message.kind !== "reasoning" && message.kind !== "tool" && message.replyToMessageId
+                  ? processMessagesByReply.get(message.replyToMessageId) ?? []
+                  : [];
               return (
                 <MessageRow
                   key={message.id}
                   message={message}
+                  processMessages={processMessages}
                   isLast={isLast}
                   isLoading={isLoading && isLast && message.authorKind === "agent"}
                   showMeta={
@@ -339,7 +361,7 @@ export function ChatView({
                 />
               );
             })}
-            {isLoading && messages.at(-1)?.authorKind !== "agent" && (
+            {isLoading && visibleMessages.at(-1)?.authorKind !== "agent" && (
               <TypingIndicator detail={activityText} />
             )}
             {isLoading && activityEvents && activityEvents.length > 0 && (
@@ -521,21 +543,6 @@ export function ChatView({
               {isLoading ? <Square size={14} /> : <ArrowUp size={20} />}
             </button>
           </div>
-        </div>
-        <div className="attachment-row">
-          <input
-            aria-label="附件路径"
-            placeholder="/path/to/local-file.md"
-            value={attachmentPathDraft}
-            onChange={(event) => onAttachmentPathChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onAddAttachment();
-            }}
-          />
-          <button className="refresh-runtime" type="button" onClick={() => onAddAttachment()}>
-            <Paperclip size={14} />
-            <span>添加附件</span>
-          </button>
         </div>
       </footer>
     </>

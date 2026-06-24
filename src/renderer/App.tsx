@@ -430,7 +430,6 @@ export function App() {
   const [activeSettingsPanel, setActiveSettingsPanel] = useState<SettingsPanel>("overview");
   const [activeInspectorPanel, setActiveInspectorPanel] = useState<InspectorPanel>("agents");
   const [draft, setDraft] = useState("");
-  const [attachmentPathDraft, setAttachmentPathDraft] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
   const [worktreeVisible, setWorktreeVisible] = useState(false);
@@ -658,11 +657,24 @@ export function App() {
           createdAt: existing?.createdAt ?? Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
+        const updatedMessages = existing
+          ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+          : [...current.messages, nextMessage];
+        const streamMessageId = `stream-${event.taskId}`;
+        const streamExists = updatedMessages.some((message) => message.id === streamMessageId);
+        const streamMessage = {
+          id: streamMessageId,
+          workspaceId: task.workspaceId,
+          authorKind: "agent" as const,
+          authorId: agent?.id,
+          authorName: agent?.name ?? "Hermes",
+          content: "正在生成...",
+          createdAt: Date.now(),
+          replyToMessageId: task.triggerMessageId,
+        };
         return {
           ...current,
-          messages: existing
-            ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-            : [...current.messages, nextMessage],
+          messages: streamExists ? updatedMessages : [...updatedMessages, streamMessage],
         };
       });
       return;
@@ -688,11 +700,24 @@ export function App() {
           createdAt: existing?.createdAt ?? Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
+        const updatedMessages = existing
+          ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+          : [...current.messages, nextMessage];
+        const streamMessageId = `stream-${event.taskId}`;
+        const streamExists = updatedMessages.some((message) => message.id === streamMessageId);
+        const streamMessage = {
+          id: streamMessageId,
+          workspaceId: task.workspaceId,
+          authorKind: "agent" as const,
+          authorId: agent?.id,
+          authorName: agent?.name ?? "Hermes",
+          content: "正在生成...",
+          createdAt: Date.now(),
+          replyToMessageId: task.triggerMessageId,
+        };
         return {
           ...current,
-          messages: existing
-            ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-            : [...current.messages, nextMessage],
+          messages: streamExists ? updatedMessages : [...updatedMessages, streamMessage],
         };
       });
       return;
@@ -1516,7 +1541,6 @@ export function App() {
       setActiveView("team");
       setDraft("");
       setDraftAttachments([]);
-      setAttachmentPathDraft("");
       setNotice("当前已经是空白新会话。");
       return;
     }
@@ -1532,10 +1556,9 @@ export function App() {
     setState(nextState);
     setDraft("");
     setDraftAttachments([]);
-    setAttachmentPathDraft("");
-    setRuntimeEvents([]);
-    setActiveView("team");
-    setNotice("已打开新会话。发送第一条消息后会进入 Session 历史。");
+      setRuntimeEvents([]);
+      setActiveView("team");
+      setNotice("已打开新会话。发送第一条消息后会进入 Session 历史。");
 
     if (!isTauriRuntimeAvailable()) {
       return;
@@ -1571,10 +1594,9 @@ export function App() {
     setState(nextState);
     setDraft("");
     setDraftAttachments([]);
-    setAttachmentPathDraft("");
-    setRuntimeEvents([]);
-    setActiveView("team");
-    setNotice(`已恢复会话：${session.title}`);
+      setRuntimeEvents([]);
+      setActiveView("team");
+      setNotice(`已恢复会话：${session.title}`);
   };
 
   const refreshLocalSessions = async () => {
@@ -1622,7 +1644,6 @@ export function App() {
       setState(imported);
       setDraft("");
       setDraftAttachments([]);
-      setAttachmentPathDraft("");
       setRuntimeEvents([]);
       setActiveView("team");
       setNotice(`已导入 Hermes Desktop 会话：${session.title}`);
@@ -1680,7 +1701,6 @@ export function App() {
         setState(nextState);
         setDraft("");
         setDraftAttachments([]);
-        setAttachmentPathDraft("");
         setRuntimeEvents([]);
         setActiveView("team");
         void saveHermesTeamState(nextState).catch(() => undefined);
@@ -2619,7 +2639,7 @@ export function App() {
   };
 
   const addDraftAttachment = (pathOverride?: string) => {
-    const path = (pathOverride ?? attachmentPathDraft).trim();
+    const path = pathOverride?.trim();
     if (!path) return;
     const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
     setDraftAttachments((current) => {
@@ -2635,7 +2655,6 @@ export function App() {
         },
       ];
     });
-    if (!pathOverride) setAttachmentPathDraft("");
   };
 
   const pickDraftAttachments = async () => {
@@ -2834,9 +2853,8 @@ export function App() {
     }));
     setDraft("");
     setDraftAttachments([]);
-    setAttachmentPathDraft("");
-    setRuntimeEvents([]);
-    setNotice("当前会话已清空。");
+      setRuntimeEvents([]);
+      setNotice("当前会话已清空。");
   };
 
   const sendMessage = (contentOverride?: string) => {
@@ -2847,7 +2865,6 @@ export function App() {
       setWebPreviewUrl(browseUrl);
       setDraft("");
       setDraftAttachments([]);
-      setAttachmentPathDraft("");
       setNotice(`已打开 Web preview：${browseUrl}`);
       return;
     }
@@ -2864,7 +2881,6 @@ export function App() {
       ]);
       setDraft("");
       setDraftAttachments([]);
-      setAttachmentPathDraft("");
       setNotice("当前 Agent 正在执行，消息已加入队列。");
       return;
     }
@@ -2879,7 +2895,6 @@ export function App() {
     setNotice(backgroundQuestion !== null ? "旁支问题已启动，不会阻塞主对话。" : result.notice);
     setDraft("");
     setDraftAttachments([]);
-    setAttachmentPathDraft("");
     const latestDecision = result.state.logs[0]?.decision;
     if (latestDecision?.type === "dispatch" && latestDecision.mode === "parallel") {
       parallelTrackerRef.current.start(
@@ -5030,7 +5045,6 @@ export function App() {
           draft={draft}
           draftAttachments={draftAttachments}
           queuedMessages={queuedMessages}
-          attachmentPathDraft={attachmentPathDraft}
           isLoading={Boolean(activeTask)}
           activityText={activeRuntimeEvent?.detail}
           activityEvents={activeRuntimeEvents}
@@ -5044,7 +5058,6 @@ export function App() {
           modelBusy={modelBusy}
           formatTime={formatTime}
           onDraftChange={setDraft}
-          onAttachmentPathChange={setAttachmentPathDraft}
           onAddAttachment={addDraftAttachment}
           onAttachFiles={(files) => void attachDroppedOrPastedFiles(files)}
           onPickAttachments={() => void pickDraftAttachments()}

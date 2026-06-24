@@ -3693,37 +3693,46 @@ async fn run_hermes_agent_stream(
     }
     let endpoint =
         resolve_connection_endpoint(input.profile.as_deref(), input.base_url.as_deref())?;
+    let model = input
+        .model
+        .clone()
+        .unwrap_or_else(|| "hermes-agent".to_string());
+    let reasoning_effort = reasoning_effort_for_profile(input.profile.as_deref())?;
+    let user_content =
+        build_user_message_content(&input.agent_name, &input.instruction, &input.attachments)?;
+
     let mut messages = vec![json!({
         "role": "system",
         "content": input.system_prompt,
     })];
-    if let Some(message) = context_folder_system_message(input.context_folder.as_deref()) {
+    let context_message = context_folder_system_message(input.context_folder.as_deref());
+    if let Some(message) = context_message.clone() {
         messages.push(message);
     }
-    for item in input.history {
+    let mut conversation_history = Vec::new();
+    for item in &input.history {
         let role = if item.role == "assistant" {
             "assistant"
         } else {
             "user"
         };
-        messages.push(json!({
-            "role": role,
-            "content": item.content,
-        }));
+        let entry = json!({ "role": role, "content": item.content });
+        messages.push(entry.clone());
+        conversation_history.push(entry);
     }
     messages.push(json!({
         "role": "user",
-        "content": build_user_message_content(&input.agent_name, &input.instruction, &input.attachments)?,
+        "content": user_content.clone(),
     }));
 
     let mut body = json!({
-        "model": input.model.unwrap_or_else(|| "hermes-agent".to_string()),
+        "model": model.clone(),
         "messages": messages,
         "stream": true,
     });
-    if let Some(reasoning_effort) = reasoning_effort_for_profile(input.profile.as_deref())? {
+    if let Some(ref effort) = reasoning_effort {
         if let Some(body_obj) = body.as_object_mut() {
-            body_obj.insert("reasoning_effort".to_string(), json!(reasoning_effort));
+            body_obj.insert("reasoning_effort".to_string(), json!(effort));
         }
     }
 
@@ -3737,6 +3746,76 @@ async fn run_hermes_agent_stream(
             message: "Hermes stream started".to_string(),
         },
     )?;
+
+    // Prefer Hermes Desktop's native `/v1/runs` events transport (live
+    // reasoning + tool events) when the gateway advertises it, then fall back
+    // transparently to the OpenAI-compatible `/v1/chat/completions` stream.
+    // The runs transport carries a plain-text `input`, so it's only attempted
+    // when the user payload has no inline image parts.
+    if let Some(runs_input) = user_content.as_str() {
+        if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
+            let mut instructions = input.system_prompt.clone();
+            if let Some(content) = context_message
+                .as_ref()
+                .and_then(|message| message.get("content"))
+                .and_then(|item| item.as_str())
+            {
+                if !instructions.trim().is_empty() {
+                    instructions.push_str("\n\n");
+                }
+                instructions.push_str(content);
+            }
+            let mut runs_body = json!({
+                "model": model.clone(),
+                "input": runs_input,
+                "conversation_history": conversation_history,
+            });
+            if let Some(body_obj) = runs_body.as_object_mut() {
+                if !instructions.trim().is_empty() {
+                    body_obj.insert("instructions".to_string(), json!(instructions));
+                }
+                if let Some(ref effort) = reasoning_effort {
+                    body_obj.insert("reasoning_effort".to_string(), json!(effort));
+                }
+            }
+            match http_stream_runs(
+                &app,
+                &task_id,
+                &endpoint.base_url,
+                &runs_body.to_string(),
+                endpoint.auth.as_deref(),
+            ) {
+                Ok(Some(content)) => {
+                    emit_stream_event(
+                        &app,
+                        RuntimeStreamEvent {
+                            task_id: task_id.clone(),
+                            kind: "done".to_string(),
+                            delta: String::new(),
+                            content: content.clone(),
+                            message: "Hermes stream completed".to_string(),
+                        },
+                    )?;
+                    return Ok(RunHermesAgentOutput { content });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = emit_stream_event(
+                        &app,
+                        RuntimeStreamEvent {
+                            task_id: task_id.clone(),
+                            kind: "error".to_string(),
+                            delta: String::new(),
+                            content: String::new(),
+                            message: error.clone(),
+                        },
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     match http_stream_chat_completion(
         &app,
         &task_id,
@@ -4526,6 +4605,540 @@ fn process_sse_text(
     Ok(false)
 }
 
+/// Control signal returned while consuming Hermes `/v1/runs` SSE events.
+enum RunSignal {
+    /// Keep reading more events.
+    Continue,
+    /// The run finished successfully (`run.completed` / `[DONE]`).
+    Completed,
+    /// The run can't be served by this transport — retry over chat/completions.
+    Fallback,
+}
+
+/// Mirrors Hermes Desktop's `supportsHermesRunsTransport`: probe `/v1/capabilities`
+/// and only use the runs transport when the gateway advertises the full feature
+/// set and the canonical endpoint paths.
+fn gateway_supports_runs(base_url: &str, bearer_token: Option<&str>, task_id: &str) -> bool {
+    let Ok(response) = http_request_with_cancel(
+        base_url,
+        "GET",
+        "/v1/capabilities",
+        None,
+        bearer_token,
+        Some(task_id),
+    ) else {
+        return false;
+    };
+    if !(200..300).contains(&response.status) {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&response.body) else {
+        return false;
+    };
+    let feature = |name: &str| {
+        value
+            .pointer(&format!("/features/{name}"))
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false)
+    };
+    let endpoint = |name: &str| {
+        value
+            .pointer(&format!("/endpoints/{name}/path"))
+            .and_then(|item| item.as_str())
+            .unwrap_or_default()
+    };
+    feature("run_submission")
+        && feature("run_events_sse")
+        && feature("run_stop")
+        && feature("run_approval_response")
+        && feature("tool_progress_events")
+        && endpoint("runs") == "/v1/runs"
+        && endpoint("run_events") == "/v1/runs/{run_id}/events"
+        && endpoint("run_approval") == "/v1/runs/{run_id}/approval"
+        && endpoint("run_stop") == "/v1/runs/{run_id}/stop"
+}
+
+/// Submit a run to `/v1/runs` and stream `/v1/runs/{run_id}/events`.
+///
+/// Returns `Ok(Some(content))` on a completed run, `Ok(None)` when the run
+/// couldn't start or produced no content (caller should fall back to
+/// chat/completions), and `Err` for a hard failure surfaced after content.
+fn http_stream_runs(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    run_body: &str,
+    bearer_token: Option<&str>,
+) -> Result<Option<String>, String> {
+    let response = match http_request_with_cancel(
+        base_url,
+        "POST",
+        "/v1/runs",
+        Some(run_body),
+        bearer_token,
+        Some(task_id),
+    ) {
+        Ok(response) => response,
+        Err(error) if error == "任务已取消。" => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    if response.status != 200 && response.status != 202 {
+        return Ok(None);
+    }
+    let run_id = serde_json::from_str::<serde_json::Value>(&response.body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("run_id")
+                .and_then(|item| item.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if run_id.is_empty() {
+        return Ok(None);
+    }
+    stream_run_events(app, task_id, base_url, &run_id, bearer_token)
+}
+
+/// Best-effort request to stop a server-side run (mirrors Hermes Desktop's
+/// `postRunStop`). Failures are ignored — the local task is already cancelled.
+fn post_run_stop(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
+    let path = format!("/v1/runs/{}/stop", encode_path_segment(run_id));
+    let _ = http_request(base_url, "POST", &path, None, bearer_token);
+}
+
+/// Best-effort auto-approval of a paused run (`POST /v1/runs/{run_id}/approval`).
+///
+/// The `/v1/runs` transport pauses on a dangerous-command `approval.request`
+/// and waits for an explicit decision, whereas the OpenAI-compatible
+/// `/v1/chat/completions` path the app previously used executes those tools
+/// server-side without pausing. To keep the live reasoning/tool stream flowing
+/// (and surface the thinking process), approve the pending request for the
+/// session and let the run continue. Failures are ignored — the caller falls
+/// back to chat/completions if the stream still can't make progress.
+fn post_run_approval(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
+    if run_id.is_empty() {
+        return;
+    }
+    let path = format!("/v1/runs/{}/approval", encode_path_segment(run_id));
+    let body = json!({ "choice": "session", "all": true }).to_string();
+    let _ = http_request(base_url, "POST", &path, Some(&body), bearer_token);
+}
+
+fn stream_run_events(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    run_id: &str,
+    bearer_token: Option<&str>,
+) -> Result<Option<String>, String> {
+    let target = parse_http_base(base_url)?;
+    let request_path = format!(
+        "{}/v1/runs/{}/events",
+        target.path_prefix,
+        encode_path_segment(run_id)
+    );
+    let mut stream = TcpStream::connect((&*target.host, target.port))
+        .map_err(|error| format!("连接 {}:{} 失败：{error}", target.host, target.port))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|error| format!("设置读取超时失败：{error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .map_err(|error| format!("设置写入超时失败：{error}"))?;
+
+    let auth_header = bearer_token
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("Authorization: Bearer {}\r\n", value.trim()))
+        .unwrap_or_default();
+    let request = format!(
+        "GET {request_path} HTTP/1.1\r\nHost: {host}\r\n{auth_header}Accept: text/event-stream\r\nConnection: close\r\n\r\n",
+        host = target.host_header,
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("写入 HTTP 请求失败：{error}"))?;
+
+    let mut raw = Vec::new();
+    let mut headers: Option<String> = None;
+    let mut status = 0_u16;
+    let mut is_chunked = false;
+    let mut pending_body = Vec::new();
+    let mut plain_body = Vec::new();
+    let mut sse_buffer = String::new();
+    let mut full_content = String::new();
+    let mut full_reasoning = String::new();
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        if is_task_cancelled(Some(task_id)) {
+            post_run_stop(base_url, run_id, bearer_token);
+            return Err("任务已取消。".to_string());
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => {
+                if headers.is_none() {
+                    raw.extend_from_slice(&buffer[..size]);
+                    if let Some(index) = find_header_end(&raw) {
+                        let head = String::from_utf8_lossy(&raw[..index]).to_string();
+                        status = parse_http_status(&head)?;
+                        is_chunked = head.lines().any(|line| {
+                            line.to_ascii_lowercase().starts_with("transfer-encoding:")
+                                && line.to_ascii_lowercase().contains("chunked")
+                        });
+                        pending_body.extend_from_slice(&raw[index + 4..]);
+                        headers = Some(head);
+                    }
+                } else {
+                    pending_body.extend_from_slice(&buffer[..size]);
+                }
+
+                if headers.is_some() {
+                    if !(200..300).contains(&status) {
+                        return Ok(None);
+                    }
+                    if is_chunked {
+                        match drain_chunked_run_sse(
+                            app,
+                            task_id,
+                            base_url,
+                            bearer_token,
+                            &mut pending_body,
+                            &mut sse_buffer,
+                            &mut full_content,
+                            &mut full_reasoning,
+                        )? {
+                            RunSignal::Continue => {}
+                            RunSignal::Completed => return Ok(runs_result(full_content)),
+                            RunSignal::Fallback => {
+                                return Ok(if full_content.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(full_content)
+                                })
+                            }
+                        }
+                    } else {
+                        plain_body.extend_from_slice(&pending_body);
+                        pending_body.clear();
+                    }
+                }
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                continue
+            }
+            Err(error) => return Err(format!("读取 HTTP 响应失败：{error}")),
+        }
+    }
+
+    if headers.is_none() || !(200..300).contains(&status) {
+        return Ok(None);
+    }
+    if !is_chunked {
+        let body = String::from_utf8_lossy(&plain_body).to_string();
+        match process_run_sse_text(
+            app,
+            task_id,
+            base_url,
+            bearer_token,
+            &(body + "\n\n"),
+            &mut sse_buffer,
+            &mut full_content,
+            &mut full_reasoning,
+        )? {
+            RunSignal::Fallback if full_content.trim().is_empty() => return Ok(None),
+            _ => {}
+        }
+    }
+    Ok(runs_result(full_content))
+}
+
+fn runs_result(content: String) -> Option<String> {
+    if content.trim().is_empty() {
+        None
+    } else {
+        Some(content)
+    }
+}
+
+fn drain_chunked_run_sse(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    bearer_token: Option<&str>,
+    pending: &mut Vec<u8>,
+    sse_buffer: &mut String,
+    full_content: &mut String,
+    full_reasoning: &mut String,
+) -> Result<RunSignal, String> {
+    loop {
+        let Some(line_end) = pending.windows(2).position(|window| window == b"\r\n") else {
+            return Ok(RunSignal::Continue);
+        };
+        let size_line = String::from_utf8_lossy(&pending[..line_end]).to_string();
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| format!("Hermes Gateway 返回了无效 chunk 大小：{size_hex}"))?;
+        let data_start = line_end + 2;
+        if pending.len() < data_start + size + 2 {
+            return Ok(RunSignal::Continue);
+        }
+        if size == 0 {
+            pending.drain(..data_start + 2);
+            return Ok(RunSignal::Continue);
+        }
+        let chunk = pending[data_start..data_start + size].to_vec();
+        pending.drain(..data_start + size + 2);
+        let text = String::from_utf8_lossy(&chunk).to_string();
+        match process_run_sse_text(
+            app,
+            task_id,
+            base_url,
+            bearer_token,
+            &text,
+            sse_buffer,
+            full_content,
+            full_reasoning,
+        )? {
+            RunSignal::Continue => {}
+            other => return Ok(other),
+        }
+    }
+}
+
+fn process_run_sse_text(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    bearer_token: Option<&str>,
+    text: &str,
+    sse_buffer: &mut String,
+    full_content: &mut String,
+    full_reasoning: &mut String,
+) -> Result<RunSignal, String> {
+    sse_buffer.push_str(&text.replace("\r\n", "\n"));
+    while let Some(index) = sse_buffer.find("\n\n") {
+        let event = sse_buffer[..index].to_string();
+        *sse_buffer = sse_buffer[index + 2..].to_string();
+        let data = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data.starts_with(':') {
+            continue;
+        }
+        if data == "[DONE]" {
+            return Ok(RunSignal::Completed);
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+            continue;
+        };
+        match handle_run_event(
+            app,
+            task_id,
+            base_url,
+            bearer_token,
+            &value,
+            full_content,
+            full_reasoning,
+        )? {
+            RunSignal::Continue => {}
+            other => return Ok(other),
+        }
+    }
+    Ok(RunSignal::Continue)
+}
+
+/// Translate a single Hermes `/v1/runs` event into UI stream events. Mirrors
+/// Hermes Desktop's `handleRunEvent` (message.delta / reasoning.available /
+/// tool.* / run.completed / run.failed / run.cancelled / approval.request).
+fn handle_run_event(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    bearer_token: Option<&str>,
+    value: &serde_json::Value,
+    full_content: &mut String,
+    full_reasoning: &mut String,
+) -> Result<RunSignal, String> {
+    let event_name = value
+        .get("event")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+
+    match event_name {
+        "message.delta" => {
+            let delta = value
+                .get("delta")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            if !delta.is_empty() {
+                full_content.push_str(delta);
+                emit_stream_event(
+                    app,
+                    RuntimeStreamEvent {
+                        task_id: task_id.to_string(),
+                        kind: "delta".to_string(),
+                        delta: delta.to_string(),
+                        content: full_content.clone(),
+                        message: String::new(),
+                    },
+                )?;
+            }
+            Ok(RunSignal::Continue)
+        }
+        "reasoning.available" | "reasoning.delta" | "reasoning.summary" => {
+            let text = value
+                .get("text")
+                .and_then(|item| item.as_str())
+                .or_else(|| value.get("delta").and_then(|item| item.as_str()))
+                .or_else(|| {
+                    value
+                        .pointer("/payload/text")
+                        .and_then(|item| item.as_str())
+                })
+                .or_else(|| value.get("summary").and_then(|item| item.as_str()))
+                .unwrap_or("");
+            if !text.is_empty() {
+                full_reasoning.push_str(text);
+                emit_stream_event(
+                    app,
+                    RuntimeStreamEvent {
+                        task_id: task_id.to_string(),
+                        kind: "reasoning".to_string(),
+                        delta: text.to_string(),
+                        content: full_reasoning.clone(),
+                        message: String::new(),
+                    },
+                )?;
+            }
+            Ok(RunSignal::Continue)
+        }
+        "run.completed" => {
+            let output = value
+                .get("output")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            if !output.is_empty() && full_content.trim().is_empty() {
+                full_content.push_str(output);
+                emit_stream_event(
+                    app,
+                    RuntimeStreamEvent {
+                        task_id: task_id.to_string(),
+                        kind: "delta".to_string(),
+                        delta: output.to_string(),
+                        content: full_content.clone(),
+                        message: String::new(),
+                    },
+                )?;
+            }
+            Ok(RunSignal::Completed)
+        }
+        "run.failed" => {
+            if full_content.trim().is_empty() {
+                Ok(RunSignal::Fallback)
+            } else {
+                Err(value
+                    .get("error")
+                    .and_then(|item| item.as_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("Hermes run failed.")
+                    .to_string())
+            }
+        }
+        "run.cancelled" => Ok(RunSignal::Completed),
+        "approval.request" => {
+            // The runs transport pauses here waiting for a decision. Auto-approve
+            // for the session so tools execute and the run continues streaming
+            // (delivering live reasoning + the final answer), matching the
+            // chat/completions path which never pauses. Keep reading the same
+            // event stream rather than falling back.
+            let run_id = value
+                .get("run_id")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
+            post_run_approval(base_url, run_id, bearer_token);
+            Ok(RunSignal::Continue)
+        }
+        _ => {
+            if is_tool_event_name(event_name) {
+                let status = tool_event_status(event_name);
+                let tool_event = tool_event_from_payload(event_name, value, &status);
+                emit_stream_event(
+                    app,
+                    RuntimeStreamEvent {
+                        task_id: task_id.to_string(),
+                        kind: "tool".to_string(),
+                        delta: tool_event.status.clone(),
+                        content: format_tool_event_content(&tool_event),
+                        message: tool_event.call_id,
+                    },
+                )?;
+            }
+            Ok(RunSignal::Continue)
+        }
+    }
+}
+
+/// Pull a reasoning/thinking text fragment out of one streamed event.
+///
+/// Mirrors Hermes Desktop's `extractReasoningDelta` (string `reasoning_content` /
+/// `reasoning`) but also tolerates the object/array shapes some providers emit
+/// (`reasoning: { text|content }`, `reasoning_details: [{ text|summary }]`) and
+/// the Hermes Gateway native `reasoning.delta` event (`payload.text`).
+fn extract_reasoning_delta(value: &serde_json::Value) -> String {
+    if let Some(text) = reasoning_string(value.pointer("/choices/0/delta/reasoning_content")) {
+        return text;
+    }
+    if let Some(text) = reasoning_string(value.pointer("/choices/0/delta/reasoning")) {
+        return text;
+    }
+    if let Some(details) = value
+        .pointer("/choices/0/delta/reasoning_details")
+        .and_then(|item| item.as_array())
+    {
+        let joined = details
+            .iter()
+            .filter_map(|entry| reasoning_string(Some(entry)))
+            .collect::<Vec<_>>()
+            .join("");
+        if !joined.is_empty() {
+            return joined;
+        }
+    }
+    if value.get("type").and_then(|item| item.as_str()) == Some("reasoning.delta") {
+        if let Some(text) = value
+            .pointer("/payload/text")
+            .and_then(|item| item.as_str())
+        {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Coerce a JSON reasoning field into text. Accepts a bare string or an object
+/// carrying the text under `text` / `content` / `summary`.
+fn reasoning_string(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(text)) if !text.is_empty() => Some(text.clone()),
+        Some(serde_json::Value::Object(_)) => {
+            let object = value?;
+            for key in ["text", "content", "summary"] {
+                if let Some(text) = object.get(key).and_then(|item| item.as_str()) {
+                    if !text.is_empty() {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta, String> {
     let value = serde_json::from_str::<serde_json::Value>(data)
         .map_err(|error| format!("Hermes Runtime 流式事件不是 JSON：{error}"))?;
@@ -4544,25 +5157,7 @@ fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta,
         })
         .unwrap_or("")
         .to_string();
-    let reasoning_delta = value
-        .pointer("/choices/0/delta/reasoning_content")
-        .and_then(|item| item.as_str())
-        .or_else(|| {
-            value
-                .pointer("/choices/0/delta/reasoning")
-                .and_then(|item| item.as_str())
-        })
-        .or_else(|| {
-            if value.get("type").and_then(|item| item.as_str()) == Some("reasoning.delta") {
-                value
-                    .pointer("/payload/text")
-                    .and_then(|item| item.as_str())
-            } else {
-                None
-            }
-        })
-        .unwrap_or("")
-        .to_string();
+    let reasoning_delta = extract_reasoning_delta(&value);
     let gateway_message_delta =
         if value.get("type").and_then(|item| item.as_str()) == Some("message.delta") {
             value

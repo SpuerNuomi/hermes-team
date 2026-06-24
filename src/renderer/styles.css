@@ -777,6 +777,68 @@ button {
   white-space: pre-wrap;
 }
 
+.message-process {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e7e3;
+}
+
+.message-process-summary {
+  min-height: 28px;
+  padding: 0;
+  color: #335044;
+}
+
+.message-process-list {
+  display: grid;
+  gap: 8px;
+}
+
+.message-process-item {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  background: #f8faf8;
+  border: 1px solid #dce3df;
+  border-radius: 8px;
+}
+
+.message-process-item.tool {
+  background: #f6fbf8;
+  border-color: #d4e5dc;
+}
+
+.message-process-item-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #4a554d;
+  font-size: 12px;
+}
+
+.message-process-item-head strong {
+  font-size: 12px;
+}
+
+.message-process-item-head time {
+  margin-left: auto;
+  color: #8a948d;
+  font-size: 11px;
+}
+
+.message-process-item pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  color: #37413b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .message p {
   margin: 0;
   line-height: 1.6;
@@ -1244,28 +1306,6 @@ textarea:focus {
 
 .send-button.stop-button {
   background: #7f1d1d;
-}
-
-.attachment-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.attachment-row input {
-  min-width: 0;
-  height: 34px;
-  padding: 7px 9px;
-  color: #17201c;
-  background: #ffffff;
-  border: 1px solid #cdd4ce;
-  border-radius: 8px;
-  outline: none;
-}
-
-.attachment-row .refresh-runtime {
-  margin-top: 0;
 }
 
 .chat-input-wrapper {

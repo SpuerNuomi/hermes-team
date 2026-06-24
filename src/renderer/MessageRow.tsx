@@ -116,6 +116,7 @@ export const RuntimeActivityGroup = memo(function RuntimeActivityGroup({
 
 export const MessageRow = memo(function MessageRow({
   message,
+  processMessages = [],
   isLast,
   isLoading,
   showMeta,
@@ -124,6 +125,7 @@ export const MessageRow = memo(function MessageRow({
   onDeny,
 }: {
   message: Message;
+  processMessages?: Message[];
   isLast: boolean;
   isLoading: boolean;
   showMeta: boolean;
@@ -132,7 +134,8 @@ export const MessageRow = memo(function MessageRow({
   onDeny: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(true);
+  const [processOpen, setProcessOpen] = useState(true);
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
   const isReasoning = message.kind === "reasoning";
@@ -235,6 +238,44 @@ export const MessageRow = memo(function MessageRow({
                 <small>{attachmentLabel(attachment)}</small>
               </span>
             ))}
+          </div>
+        )}
+        {!isReasoning && !isTool && processMessages.length > 0 && (
+          <div className="message-process">
+            <button
+              className="reasoning-summary message-process-summary"
+              type="button"
+              aria-expanded={processOpen}
+              onClick={() => setProcessOpen((value) => !value)}
+            >
+              <ChevronRight
+                size={14}
+                className={`reasoning-chevron ${processOpen ? "reasoning-chevron-open" : ""}`}
+              />
+              <Brain size={14} />
+              <span>{isLoading ? "正在思考与执行" : "思考与执行过程"}</span>
+              <small>
+                {processMessages.filter((item) => item.kind === "reasoning").length} thinking ·{" "}
+                {processMessages.filter((item) => item.kind === "tool").length} tools
+              </small>
+            </button>
+            {processOpen && (
+              <div className="message-process-list">
+                {processMessages.map((item) => {
+                  const itemIsTool = item.kind === "tool";
+                  return (
+                    <section className={`message-process-item ${itemIsTool ? "tool" : "reasoning"}`} key={item.id}>
+                      <div className="message-process-item-head">
+                        {itemIsTool ? <Wrench size={13} /> : <Brain size={13} />}
+                        <strong>{itemIsTool ? "工具调用" : "Thinking"}</strong>
+                        <time>{formatTime(item.createdAt)}</time>
+                      </div>
+                      <pre>{item.content}</pre>
+                    </section>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
         {showApprovalBar && (
