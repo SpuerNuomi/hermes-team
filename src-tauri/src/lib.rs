@@ -3747,92 +3747,13 @@ async fn run_hermes_agent_stream(
         },
     )?;
 
-    // Prefer the native `/v1/runs` events transport (live reasoning + tool
-    // events) when the gateway advertises it, then fall back
-    // transparently to the OpenAI-compatible `/v1/chat/completions` stream.
-    // The runs transport carries a plain-text `input`, so it's only attempted
-    // when the user payload has no inline image parts.
-    if let Some(runs_input) = user_content.as_str() {
-        if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
-            emit_stream_event(
-                &app,
-                RuntimeStreamEvent {
-                    task_id: task_id.clone(),
-                    kind: "tool".to_string(),
-                    delta: "running".to_string(),
-                    content: "running · transport\nHermes /v1/runs event stream".to_string(),
-                    message: format!("transport-{task_id}"),
-                },
-            )?;
-            let mut instructions = input.system_prompt.clone();
-            if let Some(content) = context_message
-                .as_ref()
-                .and_then(|message| message.get("content"))
-                .and_then(|item| item.as_str())
-            {
-                if !instructions.trim().is_empty() {
-                    instructions.push_str("\n\n");
-                }
-                instructions.push_str(content);
-            }
-            let mut runs_body = json!({
-                "model": model.clone(),
-                "input": runs_input,
-                "conversation_history": conversation_history,
-            });
-            if let Some(body_obj) = runs_body.as_object_mut() {
-                if !instructions.trim().is_empty() {
-                    body_obj.insert("instructions".to_string(), json!(instructions));
-                }
-                if let Some(ref effort) = reasoning_effort {
-                    body_obj.insert("reasoning_effort".to_string(), json!(effort));
-                }
-            }
-            match http_stream_runs(
-                &app,
-                &task_id,
-                &endpoint.base_url,
-                &runs_body.to_string(),
-                endpoint.auth.as_deref(),
-            ) {
-                Ok(Some(content)) => {
-                    emit_stream_event(
-                        &app,
-                        RuntimeStreamEvent {
-                            task_id: task_id.clone(),
-                            kind: "done".to_string(),
-                            delta: String::new(),
-                            content: content.clone(),
-                            message: "Hermes stream completed".to_string(),
-                        },
-                    )?;
-                    return Ok(RunHermesAgentOutput { content });
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let _ = emit_stream_event(
-                        &app,
-                        RuntimeStreamEvent {
-                            task_id: task_id.clone(),
-                            kind: "error".to_string(),
-                            delta: String::new(),
-                            content: String::new(),
-                            message: error.clone(),
-                        },
-                    );
-                    return Err(error);
-                }
-            }
-        }
-    }
-
     emit_stream_event(
         &app,
         RuntimeStreamEvent {
             task_id: task_id.clone(),
             kind: "tool".to_string(),
             delta: "running".to_string(),
-            content: "running · transport\nHermes /v1/chat/completions SSE fallback".to_string(),
+            content: "running · transport\nHermes /v1/chat/completions SSE".to_string(),
             message: format!("transport-chat-{task_id}"),
         },
     )?;
@@ -4627,6 +4548,7 @@ fn process_sse_text(
 }
 
 /// Control signal returned while consuming Hermes `/v1/runs` SSE events.
+#[allow(dead_code)]
 enum RunSignal {
     /// Keep reading more events.
     Continue,
@@ -4638,6 +4560,7 @@ enum RunSignal {
 
 /// Probe `/v1/capabilities` and only use the runs transport when the gateway
 /// advertises the full feature set and the canonical endpoint paths.
+#[allow(dead_code)]
 fn gateway_supports_runs(base_url: &str, bearer_token: Option<&str>, task_id: &str) -> bool {
     let Ok(response) = http_request_with_cancel(
         base_url,
@@ -4683,6 +4606,7 @@ fn gateway_supports_runs(base_url: &str, bearer_token: Option<&str>, task_id: &s
 /// Returns `Ok(Some(content))` on a completed run, `Ok(None)` when the run
 /// couldn't start or produced no content (caller should fall back to
 /// chat/completions), and `Err` for a hard failure surfaced after content.
+#[allow(dead_code)]
 fn http_stream_runs(
     app: &AppHandle,
     task_id: &str,
@@ -4722,6 +4646,7 @@ fn http_stream_runs(
 
 /// Best-effort request to stop a server-side run. Failures are ignored — the
 /// local task is already cancelled.
+#[allow(dead_code)]
 fn post_run_stop(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
     let path = format!("/v1/runs/{}/stop", encode_path_segment(run_id));
     let _ = http_request(base_url, "POST", &path, None, bearer_token);
@@ -4736,6 +4661,7 @@ fn post_run_stop(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
 /// (and surface the thinking process), approve the pending request for the
 /// session and let the run continue. Failures are ignored — the caller falls
 /// back to chat/completions if the stream still can't make progress.
+#[allow(dead_code)]
 fn post_run_approval(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
     if run_id.is_empty() {
         return;
@@ -4745,6 +4671,7 @@ fn post_run_approval(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
     let _ = http_request(base_url, "POST", &path, Some(&body), bearer_token);
 }
 
+#[allow(dead_code)]
 fn stream_run_events(
     app: &AppHandle,
     task_id: &str,
@@ -4874,6 +4801,7 @@ fn stream_run_events(
     Ok(runs_result(full_content))
 }
 
+#[allow(dead_code)]
 fn runs_result(content: String) -> Option<String> {
     if content.trim().is_empty() {
         None
@@ -4882,6 +4810,7 @@ fn runs_result(content: String) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn completion_suffix(streamed: &str, final_text: &str) -> String {
     if final_text.is_empty() {
         return String::new();
@@ -4898,6 +4827,7 @@ fn completion_suffix(streamed: &str, final_text: &str) -> String {
     String::new()
 }
 
+#[allow(dead_code)]
 fn drain_chunked_run_sse(
     app: &AppHandle,
     task_id: &str,
@@ -4943,6 +4873,7 @@ fn drain_chunked_run_sse(
     }
 }
 
+#[allow(dead_code)]
 fn process_run_sse_text(
     app: &AppHandle,
     task_id: &str,
@@ -4988,6 +4919,7 @@ fn process_run_sse_text(
 }
 
 /// Translate a single Hermes `/v1/runs` event into UI stream events.
+#[allow(dead_code)]
 fn handle_run_event(
     app: &AppHandle,
     task_id: &str,
