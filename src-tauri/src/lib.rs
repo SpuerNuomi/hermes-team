@@ -3747,13 +3747,93 @@ async fn run_hermes_agent_stream(
         },
     )?;
 
+    // Prefer the native run event stream so Hermes can surface reasoning,
+    // tool progress, approvals, and final output under one answer. Attachments
+    // may produce structured user content, so only use runs for plain text.
+    if let Some(runs_input) = user_content.as_str() {
+        if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
+            emit_stream_event(
+                &app,
+                RuntimeStreamEvent {
+                    task_id: task_id.clone(),
+                    kind: "tool".to_string(),
+                    delta: "running".to_string(),
+                    content: "running · transport\nHermes /v1/runs event stream".to_string(),
+                    message: format!("transport-{task_id}"),
+                },
+            )?;
+
+            let mut instructions = input.system_prompt.clone();
+            if let Some(content) = context_message
+                .as_ref()
+                .and_then(|message| message.get("content"))
+                .and_then(|item| item.as_str())
+            {
+                if !instructions.trim().is_empty() {
+                    instructions.push_str("\n\n");
+                }
+                instructions.push_str(content);
+            }
+
+            let mut runs_body = json!({
+                "model": model.clone(),
+                "input": runs_input,
+                "conversation_history": conversation_history,
+            });
+            if let Some(body_obj) = runs_body.as_object_mut() {
+                if !instructions.trim().is_empty() {
+                    body_obj.insert("instructions".to_string(), json!(instructions));
+                }
+                if let Some(ref effort) = reasoning_effort {
+                    body_obj.insert("reasoning_effort".to_string(), json!(effort));
+                }
+            }
+
+            match http_stream_runs(
+                &app,
+                &task_id,
+                &endpoint.base_url,
+                &runs_body.to_string(),
+                endpoint.auth.as_deref(),
+            ) {
+                Ok(Some(content)) => {
+                    emit_stream_event(
+                        &app,
+                        RuntimeStreamEvent {
+                            task_id,
+                            kind: "done".to_string(),
+                            delta: String::new(),
+                            content: content.clone(),
+                            message: "Hermes stream completed".to_string(),
+                        },
+                    )?;
+                    return Ok(RunHermesAgentOutput { content });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = emit_stream_event(
+                        &app,
+                        RuntimeStreamEvent {
+                            task_id,
+                            kind: "error".to_string(),
+                            delta: String::new(),
+                            content: String::new(),
+                            message: error.clone(),
+                        },
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     emit_stream_event(
         &app,
         RuntimeStreamEvent {
             task_id: task_id.clone(),
             kind: "tool".to_string(),
             delta: "running".to_string(),
-            content: "running · transport\nHermes /v1/chat/completions SSE".to_string(),
+            content: "running · transport\nHermes /v1/chat/completions SSE fallback".to_string(),
             message: format!("transport-chat-{task_id}"),
         },
     )?;
