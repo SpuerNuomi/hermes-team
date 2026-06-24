@@ -389,6 +389,37 @@ struct ProviderKeyInfo {
     masked: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderRegistryEntry {
+    id: String,
+    label: String,
+    auth_type: String,
+    base_url: String,
+    env_key: String,
+    key_present: bool,
+    credential_count: usize,
+    discoverable: bool,
+    local: bool,
+    notes: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthLoginInput {
+    profile: Option<String>,
+    provider: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthLoginResult {
+    ok: bool,
+    provider: String,
+    message: String,
+    output: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveProviderKeyInput {
@@ -474,6 +505,8 @@ struct ProviderDiscoveryResult {
     key_present: bool,
     status: String,
     message: String,
+    cached: bool,
+    free_models: Vec<String>,
     model_count: usize,
     models: Vec<DiscoveredModel>,
 }
@@ -1553,6 +1586,79 @@ async fn list_provider_keys(profile: Option<String>) -> Result<Vec<ProviderKeyIn
 }
 
 #[tauri::command]
+async fn list_provider_registry(
+    profile: Option<String>,
+) -> Result<Vec<ProviderRegistryEntry>, String> {
+    let profile = normalize_profile(profile.as_deref());
+    let env = read_profile_file(profile.as_deref(), ".env")?.unwrap_or_default();
+    let pool = read_credential_pool(profile.as_deref())?;
+    Ok(provider_registry_defs()
+        .into_iter()
+        .map(|def| {
+            let env_key = provider_env_key(def.id, def.base_url).unwrap_or("");
+            let key_present = if env_key.is_empty() {
+                false
+            } else {
+                read_env_value(&env, env_key)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+            };
+            let credential_count = pool.get(def.id).map(Vec::len).unwrap_or(0);
+            ProviderRegistryEntry {
+                id: def.id.to_string(),
+                label: def.label.to_string(),
+                auth_type: def.auth_type.to_string(),
+                base_url: def.base_url.to_string(),
+                env_key: env_key.to_string(),
+                key_present,
+                credential_count,
+                discoverable: provider_is_discoverable(def.id, def.base_url),
+                local: provider_can_discover_without_key(def.id, def.base_url),
+                notes: def.notes.to_string(),
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn run_oauth_provider_login(input: OAuthLoginInput) -> Result<OAuthLoginResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let provider = input.provider.trim().to_ascii_lowercase();
+    if !oauth_provider_defs()
+        .iter()
+        .any(|def| def.id == provider.as_str())
+    {
+        return Err(format!("未知 OAuth provider：{provider}"));
+    }
+    let mut args = Vec::new();
+    if let Some(name) = profile.as_deref() {
+        args.push("--profile".to_string());
+        args.push(name.to_string());
+    }
+    args.extend([
+        "auth".to_string(),
+        "add".to_string(),
+        provider.clone(),
+        "--type".to_string(),
+        "oauth".to_string(),
+    ]);
+    match run_hermes_cli(&args, Duration::from_secs(300)) {
+        Ok(output) => Ok(OAuthLoginResult {
+            ok: true,
+            provider,
+            message: "OAuth 登录命令已完成。".to_string(),
+            output: truncate(output.trim(), 12_000),
+        }),
+        Err(error) => Ok(OAuthLoginResult {
+            ok: false,
+            provider,
+            message: format!("OAuth 登录失败：{error}"),
+            output: error,
+        }),
+    }
+}
+
+#[tauri::command]
 async fn save_provider_key(input: SaveProviderKeyInput) -> Result<ProviderKeyInfo, String> {
     let profile = normalize_profile(input.profile.as_deref());
     let env_key = input.env_key.trim();
@@ -1659,6 +1765,32 @@ async fn discover_provider_models(
     if provider.is_empty() {
         return Err("provider 不能为空。".to_string());
     }
+    if provider_is_oauth(&provider) {
+        let models = discover_oauth_provider_models(&provider);
+        let message = if models.is_empty() {
+            "OAuth provider 可用，但 hermes-agent 未返回模型列表。".to_string()
+        } else {
+            format!("OAuth provider 模型注册表返回 {} 个模型。", models.len())
+        };
+        return Ok(provider_discovery_result(
+            true,
+            &provider,
+            "",
+            "",
+            true,
+            "ok",
+            &message,
+            false,
+            oauth_free_models(&provider, &models),
+            models
+                .into_iter()
+                .map(|id| DiscoveredModel {
+                    id,
+                    context_length: None,
+                })
+                .collect(),
+        ));
+    }
     if base_url.is_empty() {
         return Ok(provider_discovery_result(
             false,
@@ -1668,6 +1800,8 @@ async fn discover_provider_models(
             false,
             "unknown-host",
             "当前 provider 没有可探测的 base URL。",
+            false,
+            Vec::new(),
             Vec::new(),
         ));
     }
@@ -1680,6 +1814,8 @@ async fn discover_provider_models(
             false,
             "unsupported",
             "当前 provider 不支持静态 API key 的 /models 探测。",
+            false,
+            Vec::new(),
             Vec::new(),
         ));
     }
@@ -1705,6 +1841,8 @@ async fn discover_provider_models(
             false,
             "no-key",
             "未发现该 provider 的 API key。",
+            false,
+            Vec::new(),
             Vec::new(),
         ));
     }
@@ -1726,6 +1864,8 @@ async fn discover_provider_models(
                 key_present,
                 "ok",
                 &message,
+                false,
+                Vec::new(),
                 models,
             ))
         }
@@ -1737,6 +1877,8 @@ async fn discover_provider_models(
             key_present,
             &format!("http_{status}"),
             &format!("Provider 返回 HTTP {status}：{}", truncate(&body, 240)),
+            false,
+            Vec::new(),
             Vec::new(),
         )),
         Err(error) => Ok(provider_discovery_result(
@@ -1747,6 +1889,8 @@ async fn discover_provider_models(
             key_present,
             "error",
             &error,
+            false,
+            Vec::new(),
             Vec::new(),
         )),
     }
@@ -5925,6 +6069,240 @@ fn provider_key_defs() -> Vec<(&'static str, &'static str, &'static str)> {
     ]
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProviderRegistryDef {
+    id: &'static str,
+    label: &'static str,
+    auth_type: &'static str,
+    base_url: &'static str,
+    notes: &'static str,
+}
+
+fn provider_registry_defs() -> Vec<ProviderRegistryDef> {
+    let mut defs = vec![
+        ProviderRegistryDef {
+            id: "openrouter",
+            label: "OpenRouter",
+            auth_type: "api_key",
+            base_url: "https://openrouter.ai/api/v1",
+            notes: "OpenAI-compatible; exposes /models with context metadata.",
+        },
+        ProviderRegistryDef {
+            id: "anthropic",
+            label: "Anthropic",
+            auth_type: "api_key",
+            base_url: "https://api.anthropic.com/v1",
+            notes: "Uses x-api-key header; /models support varies.",
+        },
+        ProviderRegistryDef {
+            id: "openai",
+            label: "OpenAI",
+            auth_type: "api_key",
+            base_url: "https://api.openai.com/v1",
+            notes: "OpenAI-compatible static key provider.",
+        },
+        ProviderRegistryDef {
+            id: "deepseek",
+            label: "DeepSeek",
+            auth_type: "api_key",
+            base_url: "https://api.deepseek.com/v1",
+            notes: "OpenAI-compatible static key provider.",
+        },
+        ProviderRegistryDef {
+            id: "groq",
+            label: "Groq",
+            auth_type: "api_key",
+            base_url: "https://api.groq.com/openai/v1",
+            notes: "OpenAI-compatible static key provider.",
+        },
+        ProviderRegistryDef {
+            id: "mistral",
+            label: "Mistral",
+            auth_type: "api_key",
+            base_url: "https://api.mistral.ai/v1",
+            notes: "OpenAI-compatible static key provider.",
+        },
+        ProviderRegistryDef {
+            id: "huggingface",
+            label: "Hugging Face",
+            auth_type: "api_key",
+            base_url: "https://router.huggingface.co/v1",
+            notes: "Uses HF_TOKEN.",
+        },
+        ProviderRegistryDef {
+            id: "ollama",
+            label: "Ollama",
+            auth_type: "none",
+            base_url: "http://localhost:11434/v1",
+            notes: "Local OpenAI-compatible endpoint; no key required.",
+        },
+        ProviderRegistryDef {
+            id: "lmstudio",
+            label: "LM Studio",
+            auth_type: "none",
+            base_url: "http://localhost:1234/v1",
+            notes: "Local OpenAI-compatible endpoint; no key required.",
+        },
+    ];
+    defs.extend(oauth_provider_defs());
+    defs
+}
+
+fn oauth_provider_defs() -> Vec<ProviderRegistryDef> {
+    vec![
+        ProviderRegistryDef {
+            id: "openai-codex",
+            label: "ChatGPT (Codex Plan)",
+            auth_type: "oauth_device_code",
+            base_url: "",
+            notes: "Uses hermes auth add openai-codex --type oauth.",
+        },
+        ProviderRegistryDef {
+            id: "xai-oauth",
+            label: "xAI Grok OAuth",
+            auth_type: "oauth_device_code",
+            base_url: "",
+            notes: "Uses hermes auth add xai-oauth --type oauth.",
+        },
+        ProviderRegistryDef {
+            id: "qwen-oauth",
+            label: "Qwen OAuth",
+            auth_type: "oauth_device_code",
+            base_url: "",
+            notes: "Uses hermes auth add qwen-oauth --type oauth.",
+        },
+        ProviderRegistryDef {
+            id: "google-gemini-cli",
+            label: "Gemini CLI OAuth",
+            auth_type: "oauth_device_code",
+            base_url: "",
+            notes: "Uses hermes auth add google-gemini-cli --type oauth.",
+        },
+        ProviderRegistryDef {
+            id: "minimax-oauth",
+            label: "MiniMax OAuth",
+            auth_type: "oauth_device_code",
+            base_url: "",
+            notes: "Uses hermes auth add minimax-oauth --type oauth.",
+        },
+        ProviderRegistryDef {
+            id: "nous",
+            label: "Nous Portal",
+            auth_type: "oauth_device_code",
+            base_url: "",
+            notes: "OAuth provider; model list comes from hermes-agent registry.",
+        },
+    ]
+}
+
+fn provider_is_oauth(provider: &str) -> bool {
+    oauth_provider_defs()
+        .iter()
+        .any(|def| def.id == provider.trim())
+}
+
+fn provider_is_discoverable(provider: &str, base_url: &str) -> bool {
+    provider_is_oauth(provider)
+        || (!provider_discovery_unsupported(provider)
+            && (!base_url.trim().is_empty() || canonical_provider_base_url(provider).is_some()))
+}
+
+fn discover_oauth_provider_models(provider: &str) -> Vec<String> {
+    run_provider_model_ids_python(provider).unwrap_or_else(|| curated_oauth_models(provider))
+}
+
+fn run_provider_model_ids_python(provider: &str) -> Option<Vec<String>> {
+    let home = hermes_home().ok()?;
+    let candidates = [
+        home.join("hermes-agent/.venv/bin/python"),
+        home.join("hermes-agent/venv/bin/python"),
+        PathBuf::from("/opt/hermes/hermes-agent/.venv/bin/python"),
+        PathBuf::from("/opt/hermes/hermes-agent/venv/bin/python"),
+    ];
+    let python = candidates.into_iter().find(|path| path.exists())?;
+    let snippet = "import json,sys; from hermes_cli.models import provider_model_ids; print(json.dumps(list(provider_model_ids(sys.argv[1]))))";
+    let mut child = Command::new(python)
+        .arg("-c")
+        .arg(snippet)
+        .arg(provider)
+        .env("HERMES_HOME", home.to_string_lossy().to_string())
+        .env("HOME", home_dir().ok()?)
+        .env("PATH", enhanced_path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let started = SystemTime::now();
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            if !status.success() {
+                return None;
+            }
+            let mut stdout = String::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                let _ = pipe.read_to_string(&mut stdout);
+            }
+            let parsed = serde_json::from_str::<Vec<String>>(&stdout).ok()?;
+            return Some(normalize_model_ids(parsed));
+        }
+        if started.elapsed().ok()? > Duration::from_secs(20) {
+            let _ = child.kill();
+            return None;
+        }
+        sleep(Duration::from_millis(50));
+    }
+}
+
+fn curated_oauth_models(provider: &str) -> Vec<String> {
+    let models: &[&str] = match provider {
+        "openai-codex" => &[
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "gpt-5.2-codex",
+            "gpt-5.1-codex-max",
+            "gpt-5.1-codex-mini",
+        ],
+        "xai-oauth" => &[
+            "grok-4.3",
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning",
+            "grok-4.20-multi-agent-0309",
+        ],
+        "google-gemini-cli" => &[
+            "gemini-3.1-pro-preview",
+            "gemini-3-pro-preview",
+            "gemini-3-flash-preview",
+        ],
+        "minimax-oauth" => &["MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+        _ => &[],
+    };
+    normalize_model_ids(models.iter().map(|item| item.to_string()).collect())
+}
+
+fn oauth_free_models(provider: &str, models: &[String]) -> Vec<String> {
+    if provider != "nous" {
+        return Vec::new();
+    }
+    models
+        .iter()
+        .filter(|id| id.to_ascii_lowercase().contains("free"))
+        .cloned()
+        .collect()
+}
+
+fn normalize_model_ids(mut models: Vec<String>) -> Vec<String> {
+    models.retain(|item| !item.trim().is_empty());
+    for item in models.iter_mut() {
+        *item = item.trim().to_string();
+    }
+    models.sort();
+    models.dedup();
+    models
+}
+
 fn provider_discovery_result(
     ok: bool,
     provider: &str,
@@ -5933,6 +6311,8 @@ fn provider_discovery_result(
     key_present: bool,
     status: &str,
     message: &str,
+    cached: bool,
+    free_models: Vec<String>,
     models: Vec<DiscoveredModel>,
 ) -> ProviderDiscoveryResult {
     ProviderDiscoveryResult {
@@ -5943,6 +6323,8 @@ fn provider_discovery_result(
         key_present,
         status: status.to_string(),
         message: message.to_string(),
+        cached,
+        free_models,
         model_count: models.len(),
         models,
     }
@@ -7982,6 +8364,8 @@ pub fn run() {
             save_hermes_model,
             remove_hermes_model,
             activate_hermes_model,
+            list_provider_registry,
+            run_oauth_provider_login,
             list_provider_keys,
             save_provider_key,
             list_credential_pool,

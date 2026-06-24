@@ -81,6 +81,7 @@ import {
   listHermesToolsets,
   listMessagingPlatforms,
   listProviderKeys,
+  listProviderRegistry,
   listenHermesAgentStream,
   loadHermesTeamSessions,
   loadHermesStateSession,
@@ -113,6 +114,7 @@ import {
   setAutoUpgradeEnabled,
   setHermesToolsetEnabled,
   resumeHermesCronJob,
+  runOAuthProviderLogin,
   startSshTunnel,
   stopHermesGateway,
   stopSshTunnel,
@@ -148,6 +150,7 @@ import {
   type NetworkSettings,
   type ProviderDiscoveryResult,
   type ProviderKeyInfo,
+  type ProviderRegistryEntry,
   type RemoteConnectionConfig,
   type RemoteConnectionStatus,
   type RuntimeStreamEvent,
@@ -450,6 +453,7 @@ export function App() {
   const [activeModel, setActiveModel] = useState<ActiveModelConfig | null>(null);
   const [modelForm, setModelForm] = useState<ModelForm>(emptyModelForm);
   const [providerKeys, setProviderKeys] = useState<ProviderKeyInfo[]>([]);
+  const [providerRegistry, setProviderRegistry] = useState<ProviderRegistryEntry[]>([]);
   const [providerKeyDrafts, setProviderKeyDrafts] = useState<ProviderKeyDrafts>({});
   const [credentialPool, setCredentialPool] = useState<CredentialPoolGroup[]>([]);
   const [poolForm, setPoolForm] = useState<PoolForm>(emptyPoolForm);
@@ -462,6 +466,7 @@ export function App() {
   const [providerDiscovery, setProviderDiscovery] = useState<ProviderDiscoveryResult | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
   const [providerBusy, setProviderBusy] = useState(false);
+  const [oauthBusyProvider, setOauthBusyProvider] = useState<string | null>(null);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
   const [skillBusy, setSkillBusy] = useState(false);
   const [cronBusy, setCronBusy] = useState(false);
@@ -868,6 +873,7 @@ export function App() {
       setModels([]);
       setActiveModel(null);
       setProviderKeys([]);
+      setProviderRegistry([]);
       setCredentialPool([]);
       return;
     }
@@ -882,6 +888,7 @@ export function App() {
         nextModels,
         nextActiveModel,
         nextProviderKeys,
+        nextProviderRegistry,
         nextCredentialPool,
       ] = await Promise.all([
         listHermesToolsets({ profile: targetProfile }),
@@ -892,6 +899,7 @@ export function App() {
         listHermesModels(),
         getHermesModelConfig({ profile: targetProfile }),
         listProviderKeys({ profile: targetProfile }),
+        listProviderRegistry({ profile: targetProfile }),
         listCredentialPool({ profile: targetProfile }),
       ]);
       setToolsets(nextToolsets);
@@ -906,6 +914,7 @@ export function App() {
       setModels(nextModels);
       setActiveModel(nextActiveModel);
       setProviderKeys(nextProviderKeys);
+      setProviderRegistry(nextProviderRegistry);
       setCredentialPool(nextCredentialPool);
     } catch (error) {
       setNotice(`读取 Hermes 能力失败：${runtimeErrorMessage(error)}`);
@@ -2062,6 +2071,29 @@ export function App() {
     }
   };
 
+  const loginOAuthProvider = async (provider: ProviderRegistryEntry) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((item) => item.active)?.name ?? "default";
+    setOauthBusyProvider(provider.id);
+    setProviderDiscovery(null);
+    try {
+      const result = await runOAuthProviderLogin({
+        profile: targetProfile,
+        provider: provider.id,
+      });
+      setNotice(result.message);
+      await refreshHermesCapabilities(targetProfile);
+      const discovered = await discoverProviderModels({
+        profile: targetProfile,
+        provider: provider.id,
+      });
+      setProviderDiscovery(discovered);
+    } catch (error) {
+      setNotice(`OAuth 登录失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setOauthBusyProvider(null);
+    }
+  };
+
   const diagnoseProvider = async (model?: SavedModel) => {
     const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
     const provider = model?.provider ?? activeModel?.provider ?? "";
@@ -2084,6 +2116,19 @@ export function App() {
     } finally {
       setDiscoveryBusy(false);
     }
+  };
+
+  const useDiscoveredModel = (modelId: string, contextLength?: number) => {
+    const provider = providerDiscovery?.provider ?? modelForm.provider;
+    const baseUrl = providerDiscovery?.baseUrl ?? modelForm.baseUrl;
+    setModelForm((current) => ({
+      ...current,
+      name: current.name || modelId,
+      provider,
+      model: modelId,
+      baseUrl,
+      contextLength: contextLength ? String(contextLength) : current.contextLength,
+    }));
   };
 
   const toggleToolset = async (toolset: ToolsetInfo) => {
@@ -3201,6 +3246,63 @@ export function App() {
                   ))}
                 </div>
 
+                <div className="provider-registry-panel">
+                  <div className="settings-card-head compact-head">
+                    <div>
+                      <p className="panel-label">Provider Registry</p>
+                      <h3>Provider 注册表诊断</h3>
+                    </div>
+                    <span className="count-pill">{providerRegistry.length}</span>
+                  </div>
+                  <div className="provider-registry-grid">
+                    {providerRegistry.map((provider) => (
+                      <article className={`provider-registry-card ${provider.authType.startsWith("oauth") ? "oauth" : ""}`} key={provider.id}>
+                        <div className="provider-registry-head">
+                          <div>
+                            <strong>{provider.label}</strong>
+                            <span>{provider.id} · {provider.authType}</span>
+                          </div>
+                          <em className={provider.keyPresent || provider.credentialCount > 0 || provider.local ? "ok" : "warning"}>
+                            {provider.local ? "local" : provider.keyPresent ? "env" : provider.credentialCount > 0 ? "pool" : "not ready"}
+                          </em>
+                        </div>
+                        <small>{provider.baseUrl || "OAuth / registry models"}{provider.envKey ? ` · ${provider.envKey}` : ""}</small>
+                        <p>{provider.notes}</p>
+                        <div className="provider-registry-actions">
+                          {provider.authType.startsWith("oauth") ? (
+                            <button
+                              disabled={oauthBusyProvider === provider.id}
+                              type="button"
+                              onClick={() => void loginOAuthProvider(provider)}
+                            >
+                              <Plug size={14} />
+                              <span>{oauthBusyProvider === provider.id ? "登录中..." : "OAuth 登录"}</span>
+                            </button>
+                          ) : (
+                            <button
+                              disabled={discoveryBusy || !provider.discoverable}
+                              type="button"
+                              onClick={() =>
+                                void diagnoseProvider({
+                                  id: provider.id,
+                                  name: provider.label,
+                                  provider: provider.id,
+                                  model: "",
+                                  baseUrl: provider.baseUrl,
+                                  createdAt: Date.now(),
+                                })
+                              }
+                            >
+                              <RefreshCw size={14} />
+                              <span>探测</span>
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="credential-pool">
                   <div className="credential-pool-form">
                     <input
@@ -3293,9 +3395,28 @@ export function App() {
                   {providerDiscovery && (
                     <div className={`provider-diagnosis ${providerDiscovery.ok ? "ok" : "warning"}`}>
                       <div>
-                        <strong>{providerDiscovery.provider} · {providerDiscovery.status}</strong>
+                        <strong>{providerDiscovery.provider} · {providerDiscovery.status}{providerDiscovery.cached ? " · cached" : ""}</strong>
                         <span>{providerDiscovery.message}</span>
                         <small>{providerDiscovery.baseUrl || "no base url"} · {providerDiscovery.envKey || "no env key"}</small>
+                        {providerDiscovery.models.length > 0 && (
+                          <div className="discovered-model-list">
+                            {providerDiscovery.models.slice(0, 18).map((model) => {
+                              const free = providerDiscovery.freeModels.includes(model.id);
+                              return (
+                                <button
+                                  key={model.id}
+                                  type="button"
+                                  onClick={() => useDiscoveredModel(model.id, model.contextLength)}
+                                  title={model.contextLength ? `${model.contextLength} tokens` : undefined}
+                                >
+                                  <span>{model.id}</span>
+                                  {free && <em>free</em>}
+                                  {model.contextLength && <small>{model.contextLength}</small>}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                       <em>{providerDiscovery.modelCount} models</em>
                     </div>
@@ -3324,7 +3445,15 @@ export function App() {
                         value={modelForm.model}
                         onChange={(event) => setModelForm((current) => ({ ...current, model: event.target.value }))}
                         placeholder="模型 ID"
+                        list="provider-discovered-models"
                       />
+                      {providerDiscovery?.models.length ? (
+                        <datalist id="provider-discovered-models">
+                          {providerDiscovery.models.map((model) => (
+                            <option key={model.id} value={model.id} />
+                          ))}
+                        </datalist>
+                      ) : null}
                     </label>
                     <label>
                       <span>Base URL</span>

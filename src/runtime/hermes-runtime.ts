@@ -229,6 +229,26 @@ export interface ProviderKeyInfo {
   masked: string;
 }
 
+export interface ProviderRegistryEntry {
+  id: string;
+  label: string;
+  authType: string;
+  baseUrl: string;
+  envKey: string;
+  keyPresent: boolean;
+  credentialCount: number;
+  discoverable: boolean;
+  local: boolean;
+  notes: string;
+}
+
+export interface OAuthLoginResult {
+  ok: boolean;
+  provider: string;
+  message: string;
+  output: string;
+}
+
 export interface CredentialPoolDisplayEntry {
   id: string;
   label: string;
@@ -256,6 +276,8 @@ export interface ProviderDiscoveryResult {
   keyPresent: boolean;
   status: string;
   message: string;
+  cached: boolean;
+  freeModels: string[];
   modelCount: number;
   models: DiscoveredModel[];
 }
@@ -712,6 +734,23 @@ export async function listProviderKeys(params: {
   return invoke<ProviderKeyInfo[]>("list_provider_keys", {
     profile: params.profile,
   });
+}
+
+export async function listProviderRegistry(params: {
+  profile?: string;
+} = {}): Promise<ProviderRegistryEntry[]> {
+  ensureTauriRuntime();
+  return invoke<ProviderRegistryEntry[]>("list_provider_registry", {
+    profile: params.profile,
+  });
+}
+
+export async function runOAuthProviderLogin(input: {
+  profile?: string;
+  provider: string;
+}): Promise<OAuthLoginResult> {
+  ensureTauriRuntime();
+  return invoke<OAuthLoginResult>("run_oauth_provider_login", { input });
 }
 
 export async function saveProviderKey(input: {
