@@ -71,12 +71,14 @@ import {
   getUpdateStatus,
   inspectHermesInstall,
   installHermesSkill,
+  installHermesMcpCatalogEntry,
   isTauriRuntimeAvailable,
   listAuxiliaryModelConfigs,
   listCredentialPool,
   listHermesBundledSkills,
   listHermesCronJobs,
   listHermesLogs,
+  listHermesMcpCatalog,
   listHermesStateSessions,
   listHermesMcpServers,
   listHermesModels,
@@ -127,6 +129,7 @@ import {
   startSshTunnel,
   stopHermesGateway,
   stopSshTunnel,
+  testHermesMcpServer,
   testRemoteConnection,
   testMessagingPlatform,
   triggerHermesCronJob,
@@ -154,6 +157,8 @@ import {
   type HermesStateMessage,
   type HermesStateSessionSummary,
   type InstalledSkillInfo,
+  type McpCatalogEntry,
+  type McpOperationResult,
   type McpServerInfo,
   type MemoryContent,
   type MemoryDetails,
@@ -458,6 +463,11 @@ export function App() {
   const [updateOutput, setUpdateOutput] = useState("");
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
+  const [mcpCatalog, setMcpCatalog] = useState<McpCatalogEntry[]>([]);
+  const [mcpCatalogDiagnostics, setMcpCatalogDiagnostics] = useState<string[]>([]);
+  const [mcpCatalogError, setMcpCatalogError] = useState("");
+  const [mcpCatalogQuery, setMcpCatalogQuery] = useState("");
+  const [mcpTestResult, setMcpTestResult] = useState<{ name: string; result: McpOperationResult } | null>(null);
   const [skills, setSkills] = useState<InstalledSkillInfo[]>([]);
   const [bundledSkills, setBundledSkills] = useState<BundledSkillInfo[]>([]);
   const [memorySummary, setMemorySummary] = useState<MemorySummary | null>(null);
@@ -495,6 +505,8 @@ export function App() {
   const [providerBusy, setProviderBusy] = useState(false);
   const [oauthBusyProvider, setOauthBusyProvider] = useState<string | null>(null);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
+  const [mcpBusyServer, setMcpBusyServer] = useState<string | null>(null);
+  const [mcpCatalogBusyName, setMcpCatalogBusyName] = useState<string | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [cronBusy, setCronBusy] = useState(false);
   const [messagingBusy, setMessagingBusy] = useState(false);
@@ -538,6 +550,16 @@ export function App() {
     }
     return Array.from(groups.entries()).map(([group, items]) => ({ group, items }));
   }, [toolsets]);
+  const filteredMcpCatalog = useMemo(() => {
+    const query = mcpCatalogQuery.trim().toLowerCase();
+    if (!query) return mcpCatalog;
+    return mcpCatalog.filter((entry) =>
+      [entry.name, entry.description, entry.source, entry.transport, entry.authType, entry.requiredEnv.join(" ")]
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [mcpCatalog, mcpCatalogQuery]);
   const filteredBundledSkills = useMemo(() => {
     const query = skillCatalogQuery.trim().toLowerCase();
     if (!query) return bundledSkills;
@@ -911,6 +933,10 @@ export function App() {
     if (!isTauriRuntimeAvailable()) {
       setToolsets([]);
       setMcpServers([]);
+      setMcpCatalog([]);
+      setMcpCatalogDiagnostics([]);
+      setMcpCatalogError("");
+      setMcpTestResult(null);
       setSkills([]);
       setBundledSkills([]);
       setMemorySummary(null);
@@ -934,6 +960,7 @@ export function App() {
       const [
         nextToolsets,
         nextMcpServers,
+        nextMcpCatalog,
         nextSkills,
         nextBundledSkills,
         nextMemory,
@@ -949,6 +976,7 @@ export function App() {
       ] = await Promise.all([
         listHermesToolsets({ profile: targetProfile }),
         listHermesMcpServers({ profile: targetProfile }),
+        listHermesMcpCatalog({ profile: targetProfile }),
         listHermesSkills({ profile: targetProfile }),
         listHermesBundledSkills({ profile: targetProfile }),
         readHermesMemorySummary({ profile: targetProfile }),
@@ -964,6 +992,9 @@ export function App() {
       ]);
       setToolsets(nextToolsets);
       setMcpServers(nextMcpServers);
+      setMcpCatalog(nextMcpCatalog.entries);
+      setMcpCatalogDiagnostics(nextMcpCatalog.diagnostics);
+      setMcpCatalogError(nextMcpCatalog.error ?? "");
       setSkills(nextSkills);
       setBundledSkills(nextBundledSkills);
       setMemorySummary(nextMemory);
@@ -2324,6 +2355,68 @@ export function App() {
       setNotice(`删除 MCP server 失败：${runtimeErrorMessage(error)}`);
     } finally {
       setCapabilityBusy(false);
+    }
+  };
+
+  const refreshMcpCatalog = async () => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setCapabilityBusy(true);
+    try {
+      const next = await listHermesMcpCatalog({ profile: targetProfile });
+      setMcpCatalog(next.entries);
+      setMcpCatalogDiagnostics(next.diagnostics);
+      setMcpCatalogError(next.error ?? "");
+      setNotice(next.error ? `MCP Catalog 刷新失败：${next.error}` : "MCP Catalog 已刷新。");
+    } catch (error) {
+      setNotice(`刷新 MCP Catalog 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCapabilityBusy(false);
+    }
+  };
+
+  const testMcpServer = async (server: McpServerInfo) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMcpBusyServer(server.name);
+    try {
+      const result = await testHermesMcpServer({
+        profile: targetProfile,
+        name: server.name,
+      });
+      setMcpTestResult({ name: server.name, result });
+      setNotice(result.success ? `${server.name} MCP 测试完成。` : `${server.name} MCP 测试失败：${result.error ?? result.output}`);
+    } catch (error) {
+      setNotice(`测试 MCP server 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMcpBusyServer(null);
+    }
+  };
+
+  const installMcpCatalogEntry = async (entry: McpCatalogEntry) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMcpCatalogBusyName(entry.name);
+    try {
+      const result = await installHermesMcpCatalogEntry({
+        profile: targetProfile,
+        name: entry.name,
+      });
+      setMcpTestResult({ name: entry.name, result });
+      if (result.success) {
+        const [nextServers, nextCatalog] = await Promise.all([
+          listHermesMcpServers({ profile: targetProfile }),
+          listHermesMcpCatalog({ profile: targetProfile }),
+        ]);
+        setMcpServers(nextServers);
+        setMcpCatalog(nextCatalog.entries);
+        setMcpCatalogDiagnostics(nextCatalog.diagnostics);
+        setMcpCatalogError(nextCatalog.error ?? "");
+        setNotice(`${entry.name} 已通过 hermes mcp install 安装。`);
+      } else {
+        setNotice(`安装 MCP catalog entry 失败：${result.error ?? result.output}`);
+      }
+    } catch (error) {
+      setNotice(`安装 MCP catalog entry 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMcpCatalogBusyName(null);
     }
   };
 
@@ -4272,6 +4365,30 @@ export function App() {
                     <span>刷新能力</span>
                   </button>
                 </div>
+                <div className="tools-remote-pane">
+                  <div>
+                    <strong>Tools 运行位置</strong>
+                    <span>
+                      {remoteConfig.mode === "local"
+                        ? "本机 Hermes profile"
+                        : remoteConfig.mode === "remote"
+                          ? "远程 Hermes Gateway"
+                          : "SSH 隧道到 Hermes Gateway"}
+                    </span>
+                  </div>
+                  <div>
+                    <strong>连接状态</strong>
+                    <span>{remoteStatus?.message ?? "尚未测试远程连接"}</span>
+                  </div>
+                  <div>
+                    <strong>Base URL</strong>
+                    <span>{remoteStatus?.baseUrl || (remoteConfig.mode === "remote" ? remoteConfig.remoteUrl : "local profile")}</span>
+                  </div>
+                  <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void refreshRemoteConnection()}>
+                    <RefreshCw size={14} />
+                    <span>刷新连接</span>
+                  </button>
+                </div>
                 <div className="capability-split">
                   <div>
                     <h3>Toolsets</h3>
@@ -4388,6 +4505,9 @@ export function App() {
                             <span>{server.detail || server.transport}</span>
                             <small>{server.transport} · {server.enabled ? "enabled" : "disabled"}</small>
                             <div className="mini-actions">
+                              <button disabled={mcpBusyServer === server.name} type="button" onClick={() => void testMcpServer(server)}>
+                                {mcpBusyServer === server.name ? "测试中" : "测试"}
+                              </button>
                               <button type="button" onClick={() => editMcpServer(server)}>编辑</button>
                               <button disabled={capabilityBusy} type="button" onClick={() => void deleteMcpServer(server)}>删除</button>
                             </div>
@@ -4396,6 +4516,79 @@ export function App() {
                       ) : (
                         <p className="empty-note">当前 profile 未配置 MCP server。</p>
                       )}
+                    </div>
+                    {mcpTestResult && (
+                      <div className={`mcp-test-result ${mcpTestResult.result.success ? "success" : "failed"}`}>
+                        <div className="mcp-test-head">
+                          <strong>{mcpTestResult.name}</strong>
+                          <span>{mcpTestResult.result.success ? "test passed" : "test failed"}</span>
+                        </div>
+                        {mcpTestResult.result.tools.length > 0 ? (
+                          <div className="mcp-tool-list">
+                            {mcpTestResult.result.tools.map((tool) => (
+                              <article key={tool.name}>
+                                <strong>{tool.name}</strong>
+                                {tool.description && <span>{tool.description}</span>}
+                              </article>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="empty-note">没有解析到 tools；请查看原始输出。</p>
+                        )}
+                        {mcpTestResult.result.output && <pre>{mcpTestResult.result.output}</pre>}
+                      </div>
+                    )}
+                    <div className="mcp-catalog-panel">
+                      <div className="mcp-catalog-head">
+                        <div>
+                          <strong>MCP Catalog</strong>
+                          <span>{mcpCatalog.length} entries</span>
+                        </div>
+                        <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void refreshMcpCatalog()}>
+                          <RefreshCw size={14} />
+                          <span>刷新 Catalog</span>
+                        </button>
+                      </div>
+                      <div className="session-search">
+                        <Search size={14} />
+                        <input
+                          value={mcpCatalogQuery}
+                          onChange={(event) => setMcpCatalogQuery(event.target.value)}
+                          placeholder="搜索 MCP catalog"
+                        />
+                        <button type="button" onClick={() => setMcpCatalogQuery("")}>
+                          <StopCircle size={13} />
+                        </button>
+                      </div>
+                      {mcpCatalogError && <p className="warning-text">Catalog 命令失败：{mcpCatalogError}</p>}
+                      {mcpCatalogDiagnostics.map((item) => (
+                        <p className="empty-note" key={item}>{item}</p>
+                      ))}
+                      <div className="mcp-catalog-list">
+                        {filteredMcpCatalog.length > 0 ? (
+                          filteredMcpCatalog.map((entry) => (
+                            <article className={`capability-card ${entry.enabled ? "enabled" : ""}`} key={entry.name}>
+                              <strong>{entry.name}</strong>
+                              <span>{entry.description || entry.source || "Hermes MCP catalog entry"}</span>
+                              <small>
+                                {entry.transport} · {entry.installed ? "installed" : "not installed"}
+                                {entry.requiredEnv.length > 0 ? ` · env ${entry.requiredEnv.join(", ")}` : ""}
+                              </small>
+                              <div className="mini-actions">
+                                <button
+                                  disabled={mcpCatalogBusyName === entry.name || !entry.needsInstall}
+                                  type="button"
+                                  onClick={() => void installMcpCatalogEntry(entry)}
+                                >
+                                  {entry.installed ? "已安装" : mcpCatalogBusyName === entry.name ? "安装中" : "安装"}
+                                </button>
+                              </div>
+                            </article>
+                          ))
+                        ) : (
+                          <p className="empty-note">未读取到 catalog entry；如果 Hermes CLI 不支持 catalog，会在上方显示真实错误。</p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

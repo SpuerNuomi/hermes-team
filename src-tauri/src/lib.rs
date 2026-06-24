@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -159,6 +159,46 @@ struct McpServerInfo {
     env: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpTestTool {
+    name: String,
+    description: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpOperationResult {
+    success: bool,
+    error: Option<String>,
+    tools: Vec<McpTestTool>,
+    output: String,
+    background: bool,
+    action: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpCatalogEntry {
+    name: String,
+    description: String,
+    source: String,
+    transport: String,
+    auth_type: String,
+    required_env: Vec<String>,
+    needs_install: bool,
+    installed: bool,
+    enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpCatalogResult {
+    entries: Vec<McpCatalogEntry>,
+    diagnostics: Vec<String>,
+    error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetToolsetEnabledInput {
@@ -184,6 +224,20 @@ struct SaveMcpServerInput {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoveMcpServerInput {
+    profile: Option<String>,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestMcpServerInput {
+    profile: Option<String>,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallMcpCatalogInput {
     profile: Option<String>,
     name: String,
 }
@@ -1276,6 +1330,87 @@ async fn remove_hermes_mcp_server(
     fs::write(&path, ensure_trailing_newline(&next))
         .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
     list_hermes_mcp_servers(input.profile).await
+}
+
+#[tauri::command]
+async fn test_hermes_mcp_server(input: TestMcpServerInput) -> Result<McpOperationResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let name = input.name.trim();
+    if !is_valid_mcp_name(name) {
+        return Err(format!("无效 MCP server 名称：{name}"));
+    }
+    let args = hermes_profile_args(profile.as_deref(), &["mcp", "test", name]);
+    match run_hermes_cli(&args, Duration::from_secs(45)) {
+        Ok(output) => Ok(McpOperationResult {
+            success: true,
+            error: None,
+            tools: parse_mcp_test_tools(&output),
+            output: truncate(output.trim(), 12_000),
+            background: false,
+            action: Some("test".to_string()),
+        }),
+        Err(error) => Ok(McpOperationResult {
+            success: false,
+            error: Some(error.clone()),
+            tools: Vec::new(),
+            output: truncate(&error, 12_000),
+            background: false,
+            action: Some("test".to_string()),
+        }),
+    }
+}
+
+#[tauri::command]
+async fn list_hermes_mcp_catalog(profile: Option<String>) -> Result<McpCatalogResult, String> {
+    let profile = normalize_profile(profile.as_deref());
+    let servers = list_hermes_mcp_servers(profile.clone()).await?;
+    let installed = configured_mcp_lookup(&servers);
+    let args = hermes_profile_args(profile.as_deref(), &["mcp", "catalog"]);
+    match run_hermes_cli(&args, Duration::from_secs(45)) {
+        Ok(output) => Ok(McpCatalogResult {
+            entries: parse_mcp_catalog_output(&output, &installed),
+            diagnostics: catalog_diagnostics(&output),
+            error: None,
+        }),
+        Err(error) => Ok(McpCatalogResult {
+            entries: Vec::new(),
+            diagnostics: vec![format!(
+                "hermes mcp catalog 执行失败：{}",
+                truncate(&error, 600)
+            )],
+            error: Some(error),
+        }),
+    }
+}
+
+#[tauri::command]
+async fn install_hermes_mcp_catalog_entry(
+    input: InstallMcpCatalogInput,
+) -> Result<McpOperationResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let name = input.name.trim();
+    if !is_valid_mcp_name(name) {
+        return Err(format!("无效 MCP catalog 名称：{name}"));
+    }
+    let args = hermes_profile_args(profile.as_deref(), &["mcp", "install", name]);
+    match run_hermes_cli(&args, Duration::from_secs(120)) {
+        Ok(output) => Ok(McpOperationResult {
+            success: true,
+            error: None,
+            tools: Vec::new(),
+            output: truncate(output.trim(), 12_000),
+            background: false,
+            action: Some("install".to_string()),
+        }),
+        Err(error) => Ok(McpOperationResult {
+            success: false,
+            error: Some(error.clone()),
+            tools: Vec::new(),
+            output: truncate(&error, 12_000),
+            background: false,
+            action: Some("install".to_string()),
+        }),
+    }
 }
 
 #[tauri::command]
@@ -8615,6 +8750,259 @@ fn is_valid_mcp_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
+fn hermes_profile_args(profile: Option<&str>, args: &[&str]) -> Vec<String> {
+    let mut output = Vec::new();
+    if let Some(profile) = profile {
+        output.push("--profile".to_string());
+        output.push(profile.to_string());
+    }
+    output.extend(args.iter().map(|arg| (*arg).to_string()));
+    output
+}
+
+fn configured_mcp_lookup(servers: &[McpServerInfo]) -> HashMap<String, bool> {
+    servers
+        .iter()
+        .map(|server| (server.name.clone(), server.enabled))
+        .collect()
+}
+
+fn parse_mcp_test_tools(output: &str) -> Vec<McpTestTool> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(output) {
+        let tools = if value.is_array() {
+            value.as_array()
+        } else {
+            value
+                .get("tools")
+                .and_then(|item| item.as_array())
+                .or_else(|| {
+                    value
+                        .pointer("/result/tools")
+                        .and_then(|item| item.as_array())
+                })
+        };
+        if let Some(tools) = tools {
+            return tools
+                .iter()
+                .filter_map(|tool| {
+                    let name = json_string(tool.get("name"))
+                        .or_else(|| json_string(tool.get("id")))
+                        .unwrap_or_default();
+                    if name.trim().is_empty() {
+                        return None;
+                    }
+                    Some(McpTestTool {
+                        name: name.trim().to_string(),
+                        description: json_string(tool.get("description")).unwrap_or_default(),
+                    })
+                })
+                .collect();
+        }
+    }
+
+    output
+        .lines()
+        .filter_map(|line| parse_mcp_tool_line(line))
+        .collect()
+}
+
+fn parse_mcp_tool_line(line: &str) -> Option<McpTestTool> {
+    let cleaned = line
+        .trim()
+        .trim_start_matches(|ch| matches!(ch, '-' | '*' | '•'))
+        .trim()
+        .trim_start_matches("tool:")
+        .trim();
+    if cleaned.is_empty()
+        || cleaned.eq_ignore_ascii_case("tools")
+        || cleaned.to_ascii_lowercase().starts_with("available tools")
+    {
+        return None;
+    }
+    let (name, description) = split_name_description(cleaned);
+    let name = name.trim().trim_matches('`');
+    if name.is_empty() || name.contains(' ') || name.len() > 128 {
+        return None;
+    }
+    Some(McpTestTool {
+        name: name.to_string(),
+        description: description.trim().to_string(),
+    })
+}
+
+fn parse_mcp_catalog_output(
+    output: &str,
+    installed: &HashMap<String, bool>,
+) -> Vec<McpCatalogEntry> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(output) {
+        let entries = if value.is_array() {
+            value.as_array()
+        } else {
+            value
+                .get("entries")
+                .and_then(|item| item.as_array())
+                .or_else(|| value.get("catalog").and_then(|item| item.as_array()))
+                .or_else(|| {
+                    value
+                        .pointer("/result/entries")
+                        .and_then(|item| item.as_array())
+                })
+        };
+        if let Some(entries) = entries {
+            return entries
+                .iter()
+                .filter_map(|entry| catalog_entry_from_json(entry, installed))
+                .collect();
+        }
+    }
+
+    let mut entries = output
+        .lines()
+        .filter_map(|line| catalog_entry_from_line(line, installed))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries.dedup_by(|left, right| left.name == right.name);
+    entries
+}
+
+fn catalog_entry_from_json(
+    entry: &serde_json::Value,
+    installed: &HashMap<String, bool>,
+) -> Option<McpCatalogEntry> {
+    let name = json_string(entry.get("name"))
+        .or_else(|| json_string(entry.get("id")))
+        .unwrap_or_default();
+    let name = name.trim();
+    if !is_valid_mcp_name(name) {
+        return None;
+    }
+    let enabled = installed.get(name).copied().unwrap_or(false);
+    let installed_flag = installed.contains_key(name)
+        || entry
+            .get("installed")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    Some(McpCatalogEntry {
+        name: name.to_string(),
+        description: json_string(entry.get("description"))
+            .or_else(|| json_string(entry.get("summary")))
+            .unwrap_or_default(),
+        source: json_string(entry.get("source")).unwrap_or_else(|| "catalog".to_string()),
+        transport: json_string(entry.get("transport")).unwrap_or_else(|| "unknown".to_string()),
+        auth_type: json_string(entry.get("authType"))
+            .or_else(|| json_string(entry.get("auth_type")))
+            .unwrap_or_default(),
+        required_env: json_string_array(entry.get("requiredEnv"))
+            .or_else(|| json_string_array(entry.get("required_env")))
+            .unwrap_or_default(),
+        needs_install: !installed_flag,
+        installed: installed_flag,
+        enabled,
+    })
+}
+
+fn catalog_entry_from_line(
+    line: &str,
+    installed: &HashMap<String, bool>,
+) -> Option<McpCatalogEntry> {
+    let cleaned = line
+        .trim()
+        .trim_start_matches(|ch| matches!(ch, '-' | '*' | '•'))
+        .trim()
+        .trim_matches('|')
+        .trim();
+    if cleaned.is_empty()
+        || cleaned.starts_with("---")
+        || cleaned.to_ascii_lowercase().starts_with("name")
+        || cleaned.to_ascii_lowercase().contains("mcp catalog")
+        || cleaned.to_ascii_lowercase().starts_with("install:")
+    {
+        return None;
+    }
+    let table_columns = split_wide_columns(cleaned);
+    let (name, description, status) = if table_columns.len() >= 2 {
+        (
+            table_columns[0].as_str(),
+            table_columns.get(2).map(String::as_str).unwrap_or(""),
+            table_columns[1].as_str(),
+        )
+    } else {
+        let first_cell = cleaned.split('|').next().unwrap_or(cleaned).trim();
+        let (name, description) = split_name_description(first_cell);
+        (name, description, "")
+    };
+    let name = name.trim().trim_matches('`');
+    if !is_valid_mcp_name(name) {
+        return None;
+    }
+    let enabled = installed.get(name).copied().unwrap_or(false);
+    let installed_flag =
+        installed.contains_key(name) || status.to_ascii_lowercase().contains("custom");
+    let lower = cleaned.to_ascii_lowercase();
+    Some(McpCatalogEntry {
+        name: name.to_string(),
+        description: description.trim().to_string(),
+        source: if status.to_ascii_lowercase().contains("custom") {
+            "custom".to_string()
+        } else {
+            "catalog".to_string()
+        },
+        transport: if lower.contains("stdio") {
+            "stdio".to_string()
+        } else if lower.contains("http") {
+            "http".to_string()
+        } else {
+            "unknown".to_string()
+        },
+        auth_type: String::new(),
+        required_env: Vec::new(),
+        needs_install: !installed_flag,
+        installed: installed_flag,
+        enabled,
+    })
+}
+
+fn split_name_description(value: &str) -> (&str, &str) {
+    for delimiter in [" - ", " – ", " — ", ": "] {
+        if let Some((left, right)) = value.split_once(delimiter) {
+            return (left, right);
+        }
+    }
+    (value, "")
+}
+
+fn split_wide_columns(value: &str) -> Vec<String> {
+    let mut columns = Vec::new();
+    let mut current = String::new();
+    let mut spaces = 0usize;
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            spaces += 1;
+            continue;
+        }
+        if spaces >= 2 && !current.trim().is_empty() {
+            columns.push(current.trim().to_string());
+            current.clear();
+        } else if spaces > 0 && !current.is_empty() {
+            current.push(' ');
+        }
+        spaces = 0;
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        columns.push(current.trim().to_string());
+    }
+    columns
+}
+
+fn catalog_diagnostics(output: &str) -> Vec<String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return vec!["hermes mcp catalog 没有返回内容。".to_string()];
+    }
+    Vec::new()
+}
+
 fn upsert_mcp_server_config(content: &str, input: &SaveMcpServerInput) -> Result<String, String> {
     let rendered = render_mcp_server(input)?;
     let block = mcp_block_bounds(content);
@@ -9304,6 +9692,9 @@ pub fn run() {
             list_hermes_mcp_servers,
             save_hermes_mcp_server,
             remove_hermes_mcp_server,
+            test_hermes_mcp_server,
+            list_hermes_mcp_catalog,
+            install_hermes_mcp_catalog_entry,
             list_hermes_skills,
             list_hermes_bundled_skills,
             read_hermes_skill_content,

@@ -151,6 +151,38 @@ export interface McpServerInfo {
   env: string[];
 }
 
+export interface McpTestTool {
+  name: string;
+  description: string;
+}
+
+export interface McpOperationResult {
+  success: boolean;
+  error?: string | null;
+  tools: McpTestTool[];
+  output: string;
+  background: boolean;
+  action?: string | null;
+}
+
+export interface McpCatalogEntry {
+  name: string;
+  description: string;
+  source: string;
+  transport: string;
+  authType: string;
+  requiredEnv: string[];
+  needsInstall: boolean;
+  installed: boolean;
+  enabled: boolean;
+}
+
+export interface McpCatalogResult {
+  entries: McpCatalogEntry[];
+  diagnostics: string[];
+  error?: string | null;
+}
+
 export interface SaveMcpServerInput {
   profile?: string;
   name: string;
@@ -690,6 +722,31 @@ export async function removeHermesMcpServer(input: {
 }): Promise<McpServerInfo[]> {
   ensureTauriRuntime();
   return invoke<McpServerInfo[]>("remove_hermes_mcp_server", { input });
+}
+
+export async function testHermesMcpServer(input: {
+  profile?: string;
+  name: string;
+}): Promise<McpOperationResult> {
+  ensureTauriRuntime();
+  return invoke<McpOperationResult>("test_hermes_mcp_server", { input });
+}
+
+export async function listHermesMcpCatalog(params: {
+  profile?: string;
+} = {}): Promise<McpCatalogResult> {
+  ensureTauriRuntime();
+  return invoke<McpCatalogResult>("list_hermes_mcp_catalog", {
+    profile: params.profile,
+  });
+}
+
+export async function installHermesMcpCatalogEntry(input: {
+  profile?: string;
+  name: string;
+}): Promise<McpOperationResult> {
+  ensureTauriRuntime();
+  return invoke<McpOperationResult>("install_hermes_mcp_catalog_entry", { input });
 }
 
 export async function listHermesSkills(params: {
