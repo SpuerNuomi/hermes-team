@@ -204,8 +204,8 @@ export function SessionsView({
         <section className="settings-card settings-card-wide">
           <div className="settings-card-head">
             <div>
-              <p className="panel-label">Desktop state.db</p>
-              <h2>Hermes Desktop 历史</h2>
+              <p className="panel-label">state.db</p>
+              <h2>本地历史</h2>
             </div>
             <button className="refresh-runtime" type="button" onClick={onRefreshDesktopSessions} disabled={desktopBusy}>
               <Database size={14} />
@@ -214,7 +214,7 @@ export function SessionsView({
           </div>
           <div className="mini-list">
             {desktopSessions.length === 0 ? (
-              <p className="empty-note">没有读取到 Hermes Desktop state.db 会话。</p>
+              <p className="empty-note">没有读取到本地 state.db 会话。</p>
             ) : (
               desktopSessions.slice(0, 30).map((session) => (
                 <article key={`${session.profile}-${session.id}`}>

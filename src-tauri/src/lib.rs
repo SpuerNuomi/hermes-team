@@ -1213,7 +1213,7 @@ async fn autofix_config_issue(
                     first_api_server_key_source(profile.as_deref()).map(|source| source.value)
                 });
             let Some(token) = token else {
-                return Err("没有可迁移的 API_SERVER_KEY。".to_string());
+                return Err("没有可复制的 API_SERVER_KEY。".to_string());
             };
             upsert_env_value(profile.as_deref(), "API_SERVER_KEY", &token)?;
             append_config_health_log(profile.as_deref(), code, "copied API_SERVER_KEY to .env")?;
@@ -3747,8 +3747,8 @@ async fn run_hermes_agent_stream(
         },
     )?;
 
-    // Prefer Hermes Desktop's native `/v1/runs` events transport (live
-    // reasoning + tool events) when the gateway advertises it, then fall back
+    // Prefer the native `/v1/runs` events transport (live reasoning + tool
+    // events) when the gateway advertises it, then fall back
     // transparently to the OpenAI-compatible `/v1/chat/completions` stream.
     // The runs transport carries a plain-text `input`, so it's only attempted
     // when the user payload has no inline image parts.
@@ -4636,9 +4636,8 @@ enum RunSignal {
     Fallback,
 }
 
-/// Mirrors Hermes Desktop's `supportsHermesRunsTransport`: probe `/v1/capabilities`
-/// and only use the runs transport when the gateway advertises the full feature
-/// set and the canonical endpoint paths.
+/// Probe `/v1/capabilities` and only use the runs transport when the gateway
+/// advertises the full feature set and the canonical endpoint paths.
 fn gateway_supports_runs(base_url: &str, bearer_token: Option<&str>, task_id: &str) -> bool {
     let Ok(response) = http_request_with_cancel(
         base_url,
@@ -4721,8 +4720,8 @@ fn http_stream_runs(
     stream_run_events(app, task_id, base_url, &run_id, bearer_token)
 }
 
-/// Best-effort request to stop a server-side run (mirrors Hermes Desktop's
-/// `postRunStop`). Failures are ignored — the local task is already cancelled.
+/// Best-effort request to stop a server-side run. Failures are ignored — the
+/// local task is already cancelled.
 fn post_run_stop(base_url: &str, run_id: &str, bearer_token: Option<&str>) {
     let path = format!("/v1/runs/{}/stop", encode_path_segment(run_id));
     let _ = http_request(base_url, "POST", &path, None, bearer_token);
@@ -4988,9 +4987,7 @@ fn process_run_sse_text(
     Ok(RunSignal::Continue)
 }
 
-/// Translate a single Hermes `/v1/runs` event into UI stream events. Mirrors
-/// Hermes Desktop's `handleRunEvent` (message.delta / reasoning.available /
-/// tool.* / run.completed / run.failed / run.cancelled / approval.request).
+/// Translate a single Hermes `/v1/runs` event into UI stream events.
 fn handle_run_event(
     app: &AppHandle,
     task_id: &str,
@@ -5155,8 +5152,8 @@ fn handle_run_event(
 
 /// Pull a reasoning/thinking text fragment out of one streamed event.
 ///
-/// Mirrors Hermes Desktop's `extractReasoningDelta` (string `reasoning_content` /
-/// `reasoning`) but also tolerates the object/array shapes some providers emit
+/// Extract string `reasoning_content` / `reasoning` and tolerate the object/array
+/// shapes some providers emit
 /// (`reasoning: { text|content }`, `reasoning_details: [{ text|summary }]`) and
 /// the Hermes Gateway native `reasoning.delta` event (`payload.text`).
 fn extract_reasoning_delta(value: &serde_json::Value) -> String {
@@ -6403,7 +6400,7 @@ fn build_config_health_report(profile: Option<&str>) -> Result<ConfigHealthRepor
                 "API_SERVER_KEY_NON_CANONICAL",
                 "warning",
                 "API_SERVER_KEY 不在当前 profile 的 .env 中。",
-                Some("Hermes Desktop 将 .env 作为本地 Gateway token 的规范位置。"),
+                Some("当前应用使用 profile .env 作为本地 Gateway token 的规范位置。"),
                 sources
                     .iter()
                     .map(|source| source.location.clone())

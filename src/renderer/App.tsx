@@ -1680,7 +1680,7 @@ export function App() {
       const items = await listHermesStateSessions({ profile: targetProfile });
       setDesktopSessions(items);
     } catch (error) {
-      setNotice(`读取 Hermes Desktop state.db 失败：${runtimeErrorMessage(error)}`);
+      setNotice(`读取本地 state.db 历史失败：${runtimeErrorMessage(error)}`);
     } finally {
       setDesktopSessionsBusy(false);
     }
@@ -1708,7 +1708,7 @@ export function App() {
       setDraftAttachments([]);
       setRuntimeEvents([]);
       setActiveView("team");
-      setNotice(`已导入 Hermes Desktop 会话：${session.title}`);
+      setNotice(`已导入本地历史会话：${session.title}`);
       if (isTauriRuntimeAvailable()) {
         void saveHermesTeamState(imported).catch(() => undefined);
         void saveHermesTeamSession(buildSessionSummary(imported))
@@ -1716,7 +1716,7 @@ export function App() {
           .catch(() => undefined);
       }
     } catch (error) {
-      setNotice(`导入 Hermes Desktop 会话失败：${runtimeErrorMessage(error)}`);
+      setNotice(`导入本地历史会话失败：${runtimeErrorMessage(error)}`);
     } finally {
       setDesktopSessionsBusy(false);
     }
@@ -3173,7 +3173,7 @@ export function App() {
           <div className="brand-mark">HT</div>
           <div>
             <strong>Hermes Team</strong>
-            <span>Hermes Desktop 迁移版</span>
+            <span>Hermes Agent 工作台</span>
           </div>
         </div>
 
@@ -3450,7 +3450,7 @@ export function App() {
                     <label className="settings-toggle-row">
                       <span>
                         <strong>Rounded corners</strong>
-                        <small>匹配 Hermes Desktop 的圆角偏好。</small>
+                        <small>控制应用界面的圆角显示。</small>
                       </span>
                       <input
                         checked={appSettings.roundedCorners}
@@ -4979,7 +4979,7 @@ export function App() {
                     <label className="settings-toggle-row">
                       <span>
                         <strong>Auto upgrade</strong>
-                        <small>保存 Hermes Desktop 等价的自动更新偏好；Tauri 版手动更新仍走 hermes update。</small>
+                        <small>保存自动更新偏好；手动更新仍走 hermes update。</small>
                       </span>
                       <input
                         checked={updateStatus.autoUpgrade}
@@ -5461,7 +5461,7 @@ function buildStateFromHermesStateSession(
       ...base.workspace,
       id: importedWorkspaceId,
       name: "Hermes Chat",
-      description: `从 Hermes Desktop state.db 导入：${session.title}`,
+      description: `从本地 state.db 导入：${session.title}`,
     },
     agents: base.agents.map((agent) => ({ ...agent, workspaceId: importedWorkspaceId })),
     messages: rows.map((row, index) => {
