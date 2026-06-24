@@ -926,10 +926,12 @@ struct RuntimeStreamEvent {
 }
 
 #[derive(Debug, Default)]
-struct ParsedStreamDelta {
+struct GatewayStreamEvent {
     message_delta: String,
+    message_complete: String,
     reasoning_delta: String,
     tool_event: Option<ParsedToolEvent>,
+    done: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -4614,27 +4616,30 @@ fn process_sse_text(
         if data == "[DONE]" {
             return Ok(true);
         }
-        let event_type = event
+        let sse_event_type = event
             .lines()
             .filter_map(|line| line.strip_prefix("event:").map(str::trim))
             .last()
             .unwrap_or("")
             .to_string();
-        let delta = parse_stream_delta(&event_type, &data)?;
-        if !delta.reasoning_delta.is_empty() {
-            full_reasoning.push_str(&delta.reasoning_delta);
+        let parsed = parse_gateway_session_event(&sse_event_type, &data)?;
+        if parsed.done {
+            return Ok(true);
+        }
+        if !parsed.reasoning_delta.is_empty() {
+            full_reasoning.push_str(&parsed.reasoning_delta);
             emit_stream_event(
                 app,
                 RuntimeStreamEvent {
                     task_id: task_id.to_string(),
                     kind: "reasoning".to_string(),
-                    delta: delta.reasoning_delta,
+                    delta: parsed.reasoning_delta,
                     content: full_reasoning.clone(),
                     message: String::new(),
                 },
             )?;
         }
-        if let Some(tool_event) = delta.tool_event {
+        if let Some(tool_event) = parsed.tool_event {
             emit_stream_event(
                 app,
                 RuntimeStreamEvent {
@@ -4646,18 +4651,34 @@ fn process_sse_text(
                 },
             )?;
         }
-        if !delta.message_delta.is_empty() {
-            full_content.push_str(&delta.message_delta);
+        if !parsed.message_delta.is_empty() {
+            full_content.push_str(&parsed.message_delta);
             emit_stream_event(
                 app,
                 RuntimeStreamEvent {
                     task_id: task_id.to_string(),
                     kind: "delta".to_string(),
-                    delta: delta.message_delta,
+                    delta: parsed.message_delta,
                     content: full_content.clone(),
                     message: String::new(),
                 },
             )?;
+        }
+        if !parsed.message_complete.is_empty() {
+            let suffix = completion_suffix(full_content, &parsed.message_complete);
+            if !suffix.is_empty() {
+                full_content.push_str(&suffix);
+                emit_stream_event(
+                    app,
+                    RuntimeStreamEvent {
+                        task_id: task_id.to_string(),
+                        kind: "delta".to_string(),
+                        delta: suffix,
+                        content: full_content.clone(),
+                        message: String::new(),
+                    },
+                )?;
+            }
         }
     }
     Ok(false)
@@ -5539,43 +5560,6 @@ fn is_duplicate_process_snapshot(process_text: &str, answer_text: &str) -> bool 
         && (process == answer || process.starts_with(&answer) || answer.starts_with(&process))
 }
 
-/// Pull a reasoning/thinking text fragment out of one streamed event.
-///
-/// Extract string `reasoning_content` / `reasoning` and tolerate the object/array
-/// shapes some providers emit
-/// (`reasoning: { text|content }`, `reasoning_details: [{ text|summary }]`) and
-/// the Hermes Gateway native `reasoning.delta` event (`payload.text`).
-fn extract_reasoning_delta(value: &serde_json::Value) -> String {
-    if value.get("type").and_then(|item| item.as_str()) == Some("reasoning.delta") {
-        if let Some(text) = value
-            .pointer("/payload/text")
-            .and_then(|item| item.as_str())
-        {
-            return text.to_string();
-        }
-    }
-    if let Some(text) = reasoning_string(value.pointer("/choices/0/delta/reasoning_content")) {
-        return text;
-    }
-    if let Some(text) = reasoning_string(value.pointer("/choices/0/delta/reasoning")) {
-        return text;
-    }
-    if let Some(details) = value
-        .pointer("/choices/0/delta/reasoning_details")
-        .and_then(|item| item.as_array())
-    {
-        let joined = details
-            .iter()
-            .filter_map(|entry| reasoning_string(Some(entry)))
-            .collect::<Vec<_>>()
-            .join("");
-        if !joined.is_empty() {
-            return joined;
-        }
-    }
-    String::new()
-}
-
 /// Coerce a JSON reasoning field into text. Accepts a bare string or an object
 /// carrying the text under `text` / `content` / `summary`.
 fn reasoning_string(value: Option<&serde_json::Value>) -> Option<String> {
@@ -5596,100 +5580,108 @@ fn reasoning_string(value: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
-fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta, String> {
+fn parse_gateway_session_event(
+    sse_event_type: &str,
+    data: &str,
+) -> Result<GatewayStreamEvent, String> {
     let value = serde_json::from_str::<serde_json::Value>(data)
-        .map_err(|error| format!("Hermes Runtime 流式事件不是 JSON：{error}"))?;
+        .map_err(|error| format!("Hermes Gateway 流式事件不是 JSON：{error}"))?;
     let gateway_type = value
         .get("type")
         .and_then(|item| item.as_str())
         .or_else(|| value.get("event").and_then(|item| item.as_str()))
-        .unwrap_or("");
-    let gateway_message_delta = match gateway_type {
-        "message.delta" | "assistant.delta" => value
-            .pointer("/payload/text")
-            .and_then(|item| item.as_str())
-            .or_else(|| value.get("delta").and_then(|item| item.as_str()))
-            .unwrap_or("")
-            .to_string(),
-        "message.complete" | "assistant.completed" => value
-            .pointer("/payload/text")
-            .and_then(|item| item.as_str())
-            .or_else(|| {
-                value
-                    .pointer("/payload/rendered")
-                    .and_then(|item| item.as_str())
-            })
-            .or_else(|| value.get("content").and_then(|item| item.as_str()))
-            .unwrap_or("")
-            .to_string(),
-        _ => String::new(),
+        .unwrap_or(sse_event_type);
+
+    let payload = value.get("payload").unwrap_or(&value);
+    let message_delta = if gateway_type == "message.delta" {
+        stream_json_string(payload.get("text"))
+            .or_else(|| stream_json_string(payload.get("delta")))
+            .unwrap_or_default()
+    } else {
+        String::new()
     };
-    let message_delta = value
-        .pointer("/choices/0/delta/content")
-        .and_then(|item| item.as_str())
-        .or_else(|| {
-            value
-                .pointer("/choices/0/message/content")
-                .and_then(|item| item.as_str())
-        })
-        .or_else(|| {
-            value
-                .pointer("/choices/0/text")
-                .and_then(|item| item.as_str())
-        })
-        .unwrap_or("")
-        .to_string();
-    let reasoning_delta = extract_reasoning_delta(&value);
-    Ok(ParsedStreamDelta {
-        message_delta: if message_delta.is_empty() {
-            gateway_message_delta
-        } else {
-            message_delta
-        },
+    let message_complete = if gateway_type == "message.complete" {
+        stream_json_string(payload.get("text"))
+            .or_else(|| stream_json_string(payload.get("rendered")))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let reasoning_delta = if gateway_type == "reasoning.delta" {
+        stream_json_string(payload.get("text"))
+            .or_else(|| stream_json_string(payload.get("delta")))
+            .or_else(|| stream_json_string(payload.get("reasoning")))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let tool_event = gateway_tool_event(gateway_type, &value);
+    Ok(GatewayStreamEvent {
+        message_delta,
+        message_complete,
         reasoning_delta,
-        tool_event: parse_tool_stream_event(event_type, &value),
+        tool_event,
+        done: matches!(
+            gateway_type,
+            "done" | "stream.done" | "message.done" | "run.completed"
+        ),
     })
 }
 
-fn parse_tool_stream_event(event_type: &str, value: &serde_json::Value) -> Option<ParsedToolEvent> {
-    if event_type == "hermes.tool.progress" {
-        return Some(tool_event_from_payload(event_type, value, "running"));
-    }
-
-    if let Some(tool_call) = first_tool_call(value) {
-        let name = stream_json_string(tool_call.pointer("/function/name"))
-            .or_else(|| stream_json_string(tool_call.get("name")))
-            .unwrap_or_else(|| "tool".to_string());
-        let preview = stream_json_string(tool_call.pointer("/function/arguments"))
-            .or_else(|| stream_json_string(tool_call.get("arguments")))
-            .unwrap_or_default();
-        let call_id = stream_json_string(tool_call.get("id"))
-            .unwrap_or_else(|| format!("openai:{name}:{preview}"));
-        return Some(ParsedToolEvent {
-            call_id,
-            name,
-            status: "running".to_string(),
-            preview,
-            result: String::new(),
-        });
-    }
-
-    let event_name = stream_json_string(value.get("type"))
-        .or_else(|| stream_json_string(value.get("event")))
-        .unwrap_or_else(|| event_type.to_string());
-    if !is_tool_event_name(&event_name) {
+fn gateway_tool_event(event_type: &str, value: &serde_json::Value) -> Option<ParsedToolEvent> {
+    if !matches!(
+        event_type,
+        "tool.start"
+            | "tool.started"
+            | "tool.progress"
+            | "tool.generating"
+            | "tool.complete"
+            | "tool.completed"
+            | "tool.failed"
+    ) {
         return None;
     }
     let payload = value.get("payload").unwrap_or(value);
-    let status = tool_event_status(&event_name);
-    Some(tool_event_from_payload(&event_name, payload, &status))
-}
-
-fn first_tool_call(value: &serde_json::Value) -> Option<&serde_json::Value> {
-    value
-        .pointer("/choices/0/delta/tool_calls/0")
-        .or_else(|| value.pointer("/choices/0/message/tool_calls/0"))
-        .or_else(|| value.pointer("/tool_calls/0"))
+    let status = tool_event_status(event_type);
+    let name = stream_json_string(payload.get("name"))
+        .or_else(|| stream_json_string(payload.get("tool")))
+        .or_else(|| stream_json_string(payload.get("tool_name")))
+        .unwrap_or_else(|| "tool".to_string());
+    let call_id = stream_json_string(payload.get("tool_id"))
+        .or_else(|| stream_json_string(payload.get("toolCallId")))
+        .or_else(|| stream_json_string(payload.get("tool_call_id")))
+        .or_else(|| stream_json_string(payload.get("callId")))
+        .unwrap_or_else(|| {
+            let session_id = stream_json_string(value.get("session_id")).unwrap_or_default();
+            if session_id.is_empty() {
+                format!("gateway:{name}")
+            } else {
+                format!("{session_id}:{name}")
+            }
+        });
+    let preview = stream_json_string(payload.get("context"))
+        .or_else(|| stream_json_string(payload.get("args_text")))
+        .or_else(|| stream_json_string(payload.get("summary")))
+        .or_else(|| stream_json_string(payload.get("preview")))
+        .or_else(|| stream_json_string(payload.get("label")))
+        .or_else(|| stream_json_string(payload.get("name")))
+        .unwrap_or_default();
+    let result = if status == "completed" || status == "failed" {
+        stream_json_string(payload.get("result_text"))
+            .or_else(|| stream_json_string(payload.get("result")))
+            .or_else(|| stream_json_string(payload.get("output")))
+            .or_else(|| stream_json_string(payload.get("summary")))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Some(ParsedToolEvent {
+        call_id,
+        name,
+        status,
+        preview,
+        result,
+    })
 }
 
 fn is_tool_event_name(value: &str) -> bool {
@@ -10917,5 +10909,45 @@ mod tests {
             "先检查文件，再汇总结论。",
             "最终回答"
         ));
+    }
+
+    #[test]
+    fn parses_gateway_session_sse_reasoning_delta() {
+        let event = parse_gateway_session_event(
+            "message",
+            r#"{"type":"reasoning.delta","payload":{"text":"正在读取配置。"}}"#,
+        )
+        .expect("gateway event parses");
+
+        assert_eq!(event.reasoning_delta, "正在读取配置。");
+        assert!(event.message_delta.is_empty());
+        assert!(event.tool_event.is_none());
+    }
+
+    #[test]
+    fn parses_gateway_session_sse_message_delta() {
+        let event = parse_gateway_session_event(
+            "message",
+            r#"{"type":"message.delta","payload":{"text":"你好"}}"#,
+        )
+        .expect("gateway event parses");
+
+        assert_eq!(event.message_delta, "你好");
+        assert!(event.reasoning_delta.is_empty());
+    }
+
+    #[test]
+    fn parses_gateway_session_sse_tool_progress_from_payload() {
+        let event = parse_gateway_session_event(
+            "message",
+            r#"{"type":"tool.progress","session_id":"api_1","payload":{"name":"search_files","context":"查找配置"}}"#,
+        )
+        .expect("gateway event parses");
+        let tool = event.tool_event.expect("tool event");
+
+        assert_eq!(tool.name, "search_files");
+        assert_eq!(tool.call_id, "api_1:search_files");
+        assert_eq!(tool.status, "running");
+        assert_eq!(tool.preview, "查找配置");
     }
 }
