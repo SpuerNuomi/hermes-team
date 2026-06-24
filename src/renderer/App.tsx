@@ -632,6 +632,28 @@ export function App() {
     };
   }
 
+  function upsertProcessMessageBeforeAnswer(
+    messages: Message[],
+    processMessage: Message,
+    answerPlaceholder: Message,
+    answerMessageId: string,
+  ) {
+    const processExists = messages.some((message) => message.id === processMessage.id);
+    const answerExists = messages.some((message) => message.id === answerMessageId);
+    if (processExists) {
+      return messages.map((message) => (message.id === processMessage.id ? processMessage : message));
+    }
+    if (answerExists) {
+      const nextMessages: Message[] = [];
+      for (const message of messages) {
+        if (message.id === answerMessageId) nextMessages.push(processMessage);
+        nextMessages.push(message);
+      }
+      return nextMessages;
+    }
+    return [...messages, processMessage, answerPlaceholder];
+  }
+
   function handleStreamEvent(event: RuntimeStreamEvent) {
     if (event.kind === "start") {
       addRuntimeEvent({
@@ -681,11 +703,7 @@ export function App() {
           createdAt: existing?.createdAt ?? Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
-        const updatedMessages = existing
-          ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-          : [...current.messages, nextMessage];
         const streamMessageId = `stream-${event.taskId}`;
-        const streamExists = updatedMessages.some((message) => message.id === streamMessageId);
         const streamMessage = {
           id: streamMessageId,
           workspaceId: task.workspaceId,
@@ -696,9 +714,15 @@ export function App() {
           createdAt: Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
+        const updatedMessages = upsertProcessMessageBeforeAnswer(
+          current.messages,
+          nextMessage,
+          streamMessage,
+          streamMessageId,
+        );
         return {
           ...current,
-          messages: streamExists ? updatedMessages : [...updatedMessages, streamMessage],
+          messages: updatedMessages,
         };
       });
       return;
@@ -724,11 +748,7 @@ export function App() {
           createdAt: existing?.createdAt ?? Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
-        const updatedMessages = existing
-          ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-          : [...current.messages, nextMessage];
         const streamMessageId = `stream-${event.taskId}`;
-        const streamExists = updatedMessages.some((message) => message.id === streamMessageId);
         const streamMessage = {
           id: streamMessageId,
           workspaceId: task.workspaceId,
@@ -739,9 +759,15 @@ export function App() {
           createdAt: Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
+        const updatedMessages = upsertProcessMessageBeforeAnswer(
+          current.messages,
+          nextMessage,
+          streamMessage,
+          streamMessageId,
+        );
         return {
           ...current,
-          messages: streamExists ? updatedMessages : [...updatedMessages, streamMessage],
+          messages: updatedMessages,
         };
       });
       return;
