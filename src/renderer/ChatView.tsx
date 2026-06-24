@@ -79,6 +79,8 @@ export function ChatView({
   onOpenModels,
   onSend,
   onStop,
+  onRegenerateMessage,
+  onBranchMessage,
 }: {
   title: string;
   description: string;
@@ -116,6 +118,8 @@ export function ChatView({
   onOpenModels: () => void;
   onSend: (contentOverride?: string) => void;
   onStop: () => void;
+  onRegenerateMessage: (messageId: string) => void;
+  onBranchMessage: (messageId: string) => void;
 }) {
   const canSend = draft.trim().length > 0 || draftAttachments.length > 0;
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -338,6 +342,8 @@ export function ChatView({
                   formatTime={formatTime}
                   onApprove={() => onSend("/approve")}
                   onDeny={() => onSend("/deny")}
+                  onRegenerate={() => onRegenerateMessage(message.id)}
+                  onBranch={() => onBranchMessage(message.id)}
                 />
               );
             })}

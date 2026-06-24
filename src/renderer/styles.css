@@ -870,6 +870,15 @@ button {
   opacity: 1;
 }
 
+.message-actions-dock {
+  top: auto;
+  right: 4px;
+  bottom: -34px;
+  z-index: 4;
+  gap: 8px;
+  opacity: 1;
+}
+
 .message-copy {
   display: inline-flex;
   align-items: center;
@@ -889,6 +898,61 @@ button {
 .message-copy:hover {
   color: #17201c;
   background: #ffffff;
+}
+
+.message-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: #7a837d;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+}
+
+.message-action-button:hover {
+  color: #17201c;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.message-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.message-more-menu {
+  position: absolute;
+  right: -8px;
+  bottom: 34px;
+  z-index: 8;
+  display: grid;
+  min-width: 176px;
+  padding: 7px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #cfd8ef;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(23, 32, 28, 0.14);
+}
+
+.message-more-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 0 9px;
+  color: #4a554d;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+}
+
+.message-more-menu button:hover {
+  color: #17201c;
+  background: #eef2ef;
 }
 
 .message-approval-bar {

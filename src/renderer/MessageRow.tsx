@@ -1,4 +1,4 @@
-import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio, Terminal } from "lucide-react";
+import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, GitBranch, MoreHorizontal, Paperclip, Radio, RefreshCw, Speaker, Terminal } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import type { Message } from "../core/types";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -132,6 +132,8 @@ export const MessageRow = memo(function MessageRow({
   formatTime,
   onApprove,
   onDeny,
+  onRegenerate,
+  onBranch,
 }: {
   message: Message;
   isLast: boolean;
@@ -140,14 +142,18 @@ export const MessageRow = memo(function MessageRow({
   formatTime: (timestamp: number) => string;
   onApprove: () => void;
   onDeny: () => void;
+  onRegenerate: () => void;
+  onBranch: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
   const isReasoning = message.kind === "reasoning";
   const isTool = message.kind === "tool";
   const isRuntime = message.authorName === "Runtime activity";
+  const showAssistantActions = isAgent && !isReasoning && !isTool && !isLoading && message.content.trim().length > 0;
   const showApprovalBar =
     isAgent && !isReasoning && !isTool && !isLoading && isLast && APPROVAL_RE.test(message.content);
 
@@ -159,6 +165,13 @@ export const MessageRow = memo(function MessageRow({
     } catch {
       setCopied(false);
     }
+  }, [message.content]);
+
+  const speakMessage = useCallback(() => {
+    if (!("speechSynthesis" in window) || !message.content.trim()) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(message.content));
+    setMenuOpen(false);
   }, [message.content]);
 
   return (
@@ -223,17 +236,67 @@ export const MessageRow = memo(function MessageRow({
             </div>
             )}
             {message.content && (
-            <div className="message-actions">
-              <button
-                className="message-copy"
-                type="button"
-                onClick={handleCopy}
-                title={copied ? "Copied" : "Copy message"}
-                aria-label={copied ? "Copied" : "Copy message"}
-              >
-                {copied ? <Check size={14} /> : <Copy size={14} />}
-              </button>
-            </div>
+              showAssistantActions ? (
+                <div className="message-actions message-actions-dock">
+                  <button
+                    className="message-action-button"
+                    type="button"
+                    onClick={handleCopy}
+                    title={copied ? "Copied" : "Copy message"}
+                    aria-label={copied ? "Copied" : "Copy message"}
+                  >
+                    {copied ? <Check size={15} /> : <Copy size={15} />}
+                  </button>
+                  <button
+                    className="message-action-button"
+                    type="button"
+                    onClick={onRegenerate}
+                    title="重新生成"
+                    aria-label="重新生成"
+                  >
+                    <RefreshCw size={15} />
+                  </button>
+                  <div className="message-more">
+                    <button
+                      className="message-action-button"
+                      type="button"
+                      onClick={() => setMenuOpen((value) => !value)}
+                      title="更多"
+                      aria-label="更多"
+                      aria-expanded={menuOpen}
+                    >
+                      <MoreHorizontal size={17} />
+                    </button>
+                    {menuOpen && (
+                      <div className="message-more-menu">
+                        <button type="button" onClick={() => {
+                          setMenuOpen(false);
+                          onBranch();
+                        }}>
+                          <GitBranch size={15} />
+                          <span>在新对话中分支</span>
+                        </button>
+                        <button type="button" onClick={speakMessage}>
+                          <Speaker size={15} />
+                          <span>朗读</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="message-actions">
+                  <button
+                    className="message-copy"
+                    type="button"
+                    onClick={handleCopy}
+                    title={copied ? "Copied" : "Copy message"}
+                    aria-label={copied ? "Copied" : "Copy message"}
+                  >
+                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                  </button>
+                </div>
+              )
             )}
           </div>
         )}

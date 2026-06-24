@@ -2970,6 +2970,66 @@ export function App() {
     }
   };
 
+  const regenerateFromMessage = (messageId: string) => {
+    if (hasActiveSessionTasks(state)) {
+      setNotice("当前会话仍有运行中的 Agent，请先停止后再重新生成。");
+      return;
+    }
+    const index = state.messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+    const previousUser = [...state.messages.slice(0, index)]
+      .reverse()
+      .find((message) => message.authorKind === "user");
+    if (!previousUser) {
+      setNotice("没有找到可重新生成的用户消息。");
+      return;
+    }
+    setDraftAttachments([]);
+    sendMessage(previousUser.content);
+  };
+
+  const branchFromMessage = (messageId: string) => {
+    if (hasActiveSessionTasks(state)) {
+      setNotice("当前会话仍有运行中的 Agent，请先停止后再分支。");
+      return;
+    }
+    const index = state.messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return;
+    const baseTime = Date.now();
+    const nextWorkspaceId = `workspace-${baseTime}`;
+    const branchedMessages = state.messages.slice(0, index + 1).map((message) => ({
+      ...message,
+      workspaceId: nextWorkspaceId,
+    }));
+    const nextState: OrchestrationState = {
+      ...state,
+      workspace: {
+        ...state.workspace,
+        id: nextWorkspaceId,
+        name: `${state.workspace.name} branch`,
+      },
+      agents: state.agents.map((agent) => ({ ...agent, workspaceId: nextWorkspaceId })),
+      messages: branchedMessages,
+      tasks: [],
+      logs: [],
+    };
+    parallelTrackerRef.current.clear(state.workspace.id);
+    serialTrackerRef.current.clear(state.workspace.id);
+    cancelledTaskIdsRef.current.clear();
+    setState(nextState);
+    setDraft("");
+    setDraftAttachments([]);
+    setRuntimeEvents([]);
+    setActiveView("team");
+    setNotice("已在新对话中分支。");
+    if (isTauriRuntimeAvailable()) {
+      void saveHermesTeamState(nextState).catch(() => undefined);
+      void saveHermesTeamSession(buildSessionSummary(nextState))
+        .then((items) => setSessions(normalizeLoadedSessions(items)))
+        .catch(() => undefined);
+    }
+  };
+
   const removeQueuedMessage = (id: string) => {
     setQueuedMessages((current) => current.filter((item) => item.id !== id));
   };
@@ -5155,6 +5215,8 @@ export function App() {
           onStop={() => {
             if (activeTask) void cancelTask(activeTask.id);
           }}
+          onRegenerateMessage={regenerateFromMessage}
+          onBranchMessage={branchFromMessage}
         />
         {webPreviewUrl && (
           <WebPreviewPanel
