@@ -266,6 +266,10 @@ struct RemoteConnectionConfig {
     mode: String,
     remote_url: String,
     api_key: String,
+    #[serde(default = "default_remote_chat_transport")]
+    remote_chat_transport: String,
+    #[serde(default = "default_remote_chat_transport")]
+    ssh_chat_transport: String,
     ssh: SshConnectionConfig,
 }
 
@@ -277,6 +281,16 @@ struct RemoteConnectionStatus {
     ssh_tunnel_active: bool,
     ok: bool,
     message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkSettings {
+    profile: Option<String>,
+    force_ipv4: bool,
+    proxy: String,
+    remote_chat_transport: String,
+    ssh_chat_transport: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2572,11 +2586,35 @@ async fn get_remote_connection_config() -> Result<RemoteConnectionConfig, String
 
 #[tauri::command]
 async fn save_remote_connection_config(
-    config: RemoteConnectionConfig,
+    mut config: RemoteConnectionConfig,
 ) -> Result<RemoteConnectionConfig, String> {
+    config.remote_chat_transport = normalize_remote_chat_transport(&config.remote_chat_transport);
+    config.ssh_chat_transport = normalize_remote_chat_transport(&config.ssh_chat_transport);
     validate_connection_config(&config)?;
     write_connection_config(&config)?;
     Ok(config)
+}
+
+#[tauri::command]
+async fn get_network_settings(profile: Option<String>) -> Result<NetworkSettings, String> {
+    let profile = normalize_profile(profile.as_deref());
+    read_network_settings(profile.as_deref())
+}
+
+#[tauri::command]
+async fn save_network_settings(settings: NetworkSettings) -> Result<NetworkSettings, String> {
+    let profile = normalize_profile(settings.profile.as_deref());
+    write_network_config(
+        profile.as_deref(),
+        settings.force_ipv4,
+        settings.proxy.trim(),
+    )?;
+    let mut connection = read_connection_config()?;
+    connection.remote_chat_transport =
+        normalize_remote_chat_transport(&settings.remote_chat_transport);
+    connection.ssh_chat_transport = normalize_remote_chat_transport(&settings.ssh_chat_transport);
+    write_connection_config(&connection)?;
+    read_network_settings(profile.as_deref())
 }
 
 #[tauri::command]
@@ -4470,6 +4508,8 @@ fn default_connection_config() -> RemoteConnectionConfig {
         mode: "local".to_string(),
         remote_url: "http://127.0.0.1:8642".to_string(),
         api_key: String::new(),
+        remote_chat_transport: default_remote_chat_transport(),
+        ssh_chat_transport: default_remote_chat_transport(),
         ssh: SshConnectionConfig {
             host: String::new(),
             port: 22,
@@ -4482,6 +4522,57 @@ fn default_connection_config() -> RemoteConnectionConfig {
             local_port: 18642,
         },
     }
+}
+
+fn default_remote_chat_transport() -> String {
+    "auto".to_string()
+}
+
+fn normalize_remote_chat_transport(value: &str) -> String {
+    match value.trim() {
+        "dashboard" | "legacy" => value.trim().to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn read_network_settings(profile: Option<&str>) -> Result<NetworkSettings, String> {
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    let connection = read_connection_config()?;
+    let force_ipv4 = read_nested_yaml_scalar(&config, &["network", "force_ipv4"])
+        .map(|value| value == "true" || value == "1" || value.eq_ignore_ascii_case("yes"))
+        .unwrap_or(false);
+    Ok(NetworkSettings {
+        profile: profile.map(str::to_string),
+        force_ipv4,
+        proxy: read_nested_yaml_scalar(&config, &["network", "proxy"]).unwrap_or_default(),
+        remote_chat_transport: normalize_remote_chat_transport(&connection.remote_chat_transport),
+        ssh_chat_transport: normalize_remote_chat_transport(&connection.ssh_chat_transport),
+    })
+}
+
+fn write_network_config(
+    profile: Option<&str>,
+    force_ipv4: bool,
+    proxy: &str,
+) -> Result<(), String> {
+    let home = profile_home(profile)?;
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("config.yaml");
+    let mut content = fs::read_to_string(&path).unwrap_or_default();
+    content = upsert_block_child(
+        &content,
+        "network",
+        "force_ipv4",
+        if force_ipv4 { "true" } else { "false" },
+    );
+    if proxy.trim().is_empty() {
+        content = remove_block_child(&content, "network", "proxy");
+    } else {
+        content = upsert_block_child(&content, "network", "proxy", &quote_yaml(proxy.trim()));
+    }
+    fs::write(&path, ensure_trailing_newline(&content))
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
 }
 
 fn default_app_settings() -> AppSettings {
@@ -7921,6 +8012,8 @@ pub fn run() {
             read_hermes_log,
             get_remote_connection_config,
             save_remote_connection_config,
+            get_network_settings,
+            save_network_settings,
             get_remote_connection_status,
             test_remote_connection,
             start_ssh_tunnel,

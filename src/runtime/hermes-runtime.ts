@@ -428,7 +428,17 @@ export interface RemoteConnectionConfig {
   mode: "local" | "remote" | "ssh";
   remoteUrl: string;
   apiKey: string;
+  remoteChatTransport: "auto" | "dashboard" | "legacy";
+  sshChatTransport: "auto" | "dashboard" | "legacy";
   ssh: SshConnectionConfig;
+}
+
+export interface NetworkSettings {
+  profile?: string | null;
+  forceIpv4: boolean;
+  proxy: string;
+  remoteChatTransport: "auto" | "dashboard" | "legacy";
+  sshChatTransport: "auto" | "dashboard" | "legacy";
 }
 
 export interface RemoteConnectionStatus {
@@ -980,6 +990,20 @@ export async function getRemoteConnectionConfig(): Promise<RemoteConnectionConfi
 export async function saveRemoteConnectionConfig(config: RemoteConnectionConfig): Promise<RemoteConnectionConfig> {
   ensureTauriRuntime();
   return invoke<RemoteConnectionConfig>("save_remote_connection_config", { config });
+}
+
+export async function getNetworkSettings(params: {
+  profile?: string;
+} = {}): Promise<NetworkSettings> {
+  ensureTauriRuntime();
+  return invoke<NetworkSettings>("get_network_settings", {
+    profile: params.profile,
+  });
+}
+
+export async function saveNetworkSettings(settings: NetworkSettings): Promise<NetworkSettings> {
+  ensureTauriRuntime();
+  return invoke<NetworkSettings>("save_network_settings", { settings });
 }
 
 export async function getRemoteConnectionStatus(): Promise<RemoteConnectionStatus> {

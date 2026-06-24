@@ -67,6 +67,8 @@ button {
 :root[data-rounded="false"] .status-row,
 :root[data-rounded="false"] .theme-card,
 :root[data-rounded="false"] .config-health-issue,
+:root[data-rounded="false"] .network-field,
+:root[data-rounded="false"] .transport-selector,
 :root[data-rounded="false"] .log-card,
 :root[data-rounded="false"] .capability-card,
 :root[data-rounded="false"] .settings-profile {
@@ -169,7 +171,27 @@ button {
 :root[data-theme="github-dark"] .font-options button,
 :root[data-theme="dracula"] .font-options button,
 :root[data-theme="nord"] .font-options button,
-:root[data-theme="one-dark"] .font-options button {
+:root[data-theme="one-dark"] .font-options button,
+:root[data-theme="dark"] .network-field,
+:root[data-theme="github-dark"] .network-field,
+:root[data-theme="dracula"] .network-field,
+:root[data-theme="nord"] .network-field,
+:root[data-theme="one-dark"] .network-field,
+:root[data-theme="dark"] .network-field input,
+:root[data-theme="github-dark"] .network-field input,
+:root[data-theme="dracula"] .network-field input,
+:root[data-theme="nord"] .network-field input,
+:root[data-theme="one-dark"] .network-field input,
+:root[data-theme="dark"] .transport-selector,
+:root[data-theme="github-dark"] .transport-selector,
+:root[data-theme="dracula"] .transport-selector,
+:root[data-theme="nord"] .transport-selector,
+:root[data-theme="one-dark"] .transport-selector,
+:root[data-theme="dark"] .transport-selector button,
+:root[data-theme="github-dark"] .transport-selector button,
+:root[data-theme="dracula"] .transport-selector button,
+:root[data-theme="nord"] .transport-selector button,
+:root[data-theme="one-dark"] .transport-selector button {
   color: #ecf2ee;
   background: #151917;
   border-color: #39423c;
@@ -2527,6 +2549,7 @@ textarea:focus {
 }
 
 .appearance-panel,
+.network-panel,
 .update-panel {
   display: grid;
   gap: 16px;
@@ -2680,6 +2703,75 @@ textarea:focus {
 }
 
 .font-options button.active {
+  color: #ffffff;
+  background: #17201c;
+  border-color: #17201c;
+}
+
+.network-field {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.network-field span {
+  color: #647067;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.network-field input {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  color: #17201c;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.transport-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.transport-selector {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.transport-selector > strong {
+  color: #17201c;
+  font-size: 13px;
+}
+
+.transport-selector > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.transport-selector button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 7px 8px;
+  color: #17201c;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.transport-selector button.active {
   color: #ffffff;
   background: #17201c;
   border-color: #17201c;

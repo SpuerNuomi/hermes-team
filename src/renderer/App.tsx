@@ -63,6 +63,7 @@ import {
   getAppSettings,
   getConfigHealth,
   getHermesModelConfig,
+  getNetworkSettings,
   getRemoteConnectionConfig,
   getRemoteConnectionStatus,
   getUpdateStatus,
@@ -101,6 +102,7 @@ import {
   saveHermesTeamSession,
   saveHermesTeamState,
   saveHermesModel,
+  saveNetworkSettings,
   saveProviderKey,
   saveRemoteConnectionConfig,
   selectAttachmentFiles,
@@ -143,6 +145,7 @@ import {
   type MemorySummary,
   type MessagingPlatformInfo,
   type MessagingPlatformsResponse,
+  type NetworkSettings,
   type ProviderDiscoveryResult,
   type ProviderKeyInfo,
   type RemoteConnectionConfig,
@@ -154,7 +157,7 @@ import {
 } from "../runtime/hermes-runtime";
 
 type ActiveView = "team" | "sessions" | "settings";
-type SettingsPanel = "overview" | "appearance" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
+type SettingsPanel = "overview" | "appearance" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
   id?: string;
@@ -239,6 +242,17 @@ const defaultAppSettings: AppSettings = {
   roundedCorners: true,
   font: "system",
 };
+const defaultNetworkSettings: NetworkSettings = {
+  forceIpv4: false,
+  proxy: "",
+  remoteChatTransport: "auto",
+  sshChatTransport: "auto",
+};
+const chatTransportOptions: Array<{ id: "auto" | "dashboard" | "legacy"; label: string; detail: string }> = [
+  { id: "auto", label: "Auto", detail: "优先 Dashboard，失败后回退旧传输" },
+  { id: "dashboard", label: "Dashboard", detail: "只使用 Hermes dashboard transport" },
+  { id: "legacy", label: "Legacy", detail: "保持旧 remote/SSH transport" },
+];
 
 const emptyModelForm: ModelForm = {
   name: "",
@@ -287,6 +301,8 @@ const defaultRemoteConnectionConfig: RemoteConnectionConfig = {
   mode: "local",
   remoteUrl: "http://127.0.0.1:8642",
   apiKey: "",
+  remoteChatTransport: "auto",
+  sshChatTransport: "auto",
   ssh: {
     host: "",
     port: 22,
@@ -419,6 +435,7 @@ export function App() {
   const [installStatus, setInstallStatus] = useState<HermesInstallStatus | null>(null);
   const [configHealth, setConfigHealth] = useState<ConfigHealthReport | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings>(defaultAppSettings);
+  const [networkSettings, setNetworkSettings] = useState<NetworkSettings>(defaultNetworkSettings);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateOutput, setUpdateOutput] = useState("");
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
@@ -454,6 +471,7 @@ export function App() {
   const [configHealthBusy, setConfigHealthBusy] = useState(false);
   const [configFixingCode, setConfigFixingCode] = useState<string | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [networkBusy, setNetworkBusy] = useState(false);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [profileBusy, setProfileBusy] = useState(false);
   const [gatewayBusy, setGatewayBusy] = useState(false);
@@ -483,6 +501,7 @@ export function App() {
   const settingsPanels: Array<{ id: SettingsPanel; label: string }> = [
     { id: "overview", label: "概览" },
     { id: "appearance", label: "Appearance" },
+    { id: "network", label: "Network" },
     { id: "profiles", label: "Profiles" },
     { id: "providers", label: "Provider" },
     { id: "models", label: "Models" },
@@ -683,6 +702,51 @@ export function App() {
       setNotice(`保存外观设置失败：${runtimeErrorMessage(error)}`);
     } finally {
       setSettingsBusy(false);
+    }
+  };
+
+  const refreshNetworkSettings = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setNetworkSettings(defaultNetworkSettings);
+      return null;
+    }
+    const targetProfile = currentProfileName(profileName);
+    setNetworkBusy(true);
+    try {
+      const settings = await getNetworkSettings({ profile: targetProfile });
+      setNetworkSettings(settings);
+      return settings;
+    } catch (error) {
+      setNotice(`读取网络设置失败：${runtimeErrorMessage(error)}`);
+      return null;
+    } finally {
+      setNetworkBusy(false);
+    }
+  };
+
+  const updateNetworkSettings = async (patch: Partial<NetworkSettings>) => {
+    const targetProfile = currentProfileName(networkSettings.profile ?? undefined);
+    const next = {
+      ...networkSettings,
+      ...patch,
+      profile: targetProfile,
+    };
+    setNetworkSettings(next);
+    if (!isTauriRuntimeAvailable()) return;
+    setNetworkBusy(true);
+    try {
+      const saved = await saveNetworkSettings(next);
+      setNetworkSettings(saved);
+      setRemoteConfig((current) => ({
+        ...current,
+        remoteChatTransport: saved.remoteChatTransport,
+        sshChatTransport: saved.sshChatTransport,
+      }));
+      setNotice("网络设置已保存。");
+    } catch (error) {
+      setNotice(`保存网络设置失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setNetworkBusy(false);
     }
   };
 
@@ -1283,6 +1347,7 @@ export function App() {
       if (cancelled) return;
       setStateReady(true);
       void refreshAppSettings();
+      void refreshNetworkSettings();
       void refreshUpdateStatus();
       void refreshRemoteConnection();
         void loadHermesTeamSessions()
@@ -1588,6 +1653,7 @@ export function App() {
       await refreshRuntime({ autoStart: true });
       await refreshHermesCapabilities(profileName);
       await refreshConfigHealth(profileName);
+      await refreshNetworkSettings(profileName);
       await refreshMessagingPlatforms(profileName);
       await refreshCronJobs(profileName);
       setNotice(`已切换到 Profile：${profileName}`);
@@ -1643,6 +1709,11 @@ export function App() {
     try {
       const saved = await saveRemoteConnectionConfig(remoteConfig);
       setRemoteConfig(saved);
+      setNetworkSettings((current) => ({
+        ...current,
+        remoteChatTransport: saved.remoteChatTransport,
+        sshChatTransport: saved.sshChatTransport,
+      }));
       const status = await getRemoteConnectionStatus().catch(() => null);
       setRemoteStatus(status);
       setNotice("远程连接配置已保存。");
@@ -2926,6 +2997,65 @@ export function App() {
                         ))}
                       </div>
                     </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className={settingsCardClass("network", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Network</p>
+                    <h2>网络设置</h2>
+                  </div>
+                  <button
+                    className="refresh-runtime"
+                    disabled={networkBusy}
+                    type="button"
+                    onClick={() => void refreshNetworkSettings(installStatus?.activeProfile)}
+                  >
+                    <RefreshCw size={14} />
+                    <span>{networkBusy ? "读取中..." : "刷新"}</span>
+                  </button>
+                </div>
+                <div className="network-panel">
+                  <label className="settings-toggle-row">
+                    <span>
+                      <strong>Force IPv4</strong>
+                      <small>{installStatus?.activeProfile ?? "default"} · network.force_ipv4</small>
+                    </span>
+                    <input
+                      checked={networkSettings.forceIpv4}
+                      type="checkbox"
+                      onChange={(event) => void updateNetworkSettings({ forceIpv4: event.target.checked })}
+                    />
+                  </label>
+                  <label className="network-field">
+                    <span>HTTP Proxy</span>
+                    <input
+                      value={networkSettings.proxy}
+                      onChange={(event) => setNetworkSettings((current) => ({ ...current, proxy: event.target.value }))}
+                      onBlur={() => void updateNetworkSettings({ proxy: networkSettings.proxy })}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void updateNetworkSettings({ proxy: networkSettings.proxy });
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      placeholder="http://127.0.0.1:7890"
+                    />
+                  </label>
+                  <div className="transport-grid">
+                    <TransportSelector
+                      label="Remote chat transport"
+                      value={networkSettings.remoteChatTransport}
+                      onChange={(remoteChatTransport) => void updateNetworkSettings({ remoteChatTransport })}
+                    />
+                    <TransportSelector
+                      label="SSH chat transport"
+                      value={networkSettings.sshChatTransport}
+                      onChange={(sshChatTransport) => void updateNetworkSettings({ sshChatTransport })}
+                    />
                   </div>
                 </div>
               </section>
@@ -4285,6 +4415,35 @@ function StatusRow({ label, value, ok }: { label: string; value: string; ok: boo
       <span>{label}</span>
       <strong title={value}>{value}</strong>
       <em className={ok ? "ok" : "warning"}>{ok ? "OK" : "需要处理"}</em>
+    </div>
+  );
+}
+
+function TransportSelector({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: "auto" | "dashboard" | "legacy";
+  onChange: (value: "auto" | "dashboard" | "legacy") => void;
+}) {
+  return (
+    <div className="transport-selector">
+      <strong>{label}</strong>
+      <div>
+        {chatTransportOptions.map((option) => (
+          <button
+            className={value === option.id ? "active" : ""}
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            title={option.detail}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
