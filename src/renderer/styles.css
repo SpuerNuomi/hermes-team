@@ -3057,7 +3057,7 @@ textarea:focus {
 
 .skill-manager {
   display: grid;
-  grid-template-columns: minmax(280px, 0.75fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(220px, 0.8fr) minmax(220px, 0.8fr) minmax(0, 1.4fr);
   gap: 12px;
   margin-bottom: 12px;
   padding: 14px;
@@ -3096,6 +3096,110 @@ textarea:focus {
 .skill-install-form input:focus {
   border-color: #17201c;
   box-shadow: 0 0 0 3px rgba(23, 32, 28, 0.1);
+}
+
+.toolset-group-list {
+  display: grid;
+  gap: 12px;
+}
+
+.toolset-group {
+  display: grid;
+  gap: 8px;
+}
+
+.toolset-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.toolset-group-head strong {
+  color: #17201c;
+  font-size: 13px;
+}
+
+.toolset-group-head span {
+  padding: 3px 7px;
+  color: #647067;
+  background: #eef2ef;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.skills-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.skills-split h3 {
+  margin: 0 0 8px;
+}
+
+.skills-list {
+  max-height: 390px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.skills-list article.installed {
+  border-color: #9fc8b8;
+  background: #f4faf7;
+}
+
+.skills-list article small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: #8a948b;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-detail-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.skill-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.skill-detail-head strong,
+.skill-detail-head span {
+  display: block;
+}
+
+.skill-detail-head span {
+  color: #647067;
+  font-size: 12px;
+}
+
+.skill-detail-panel pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  color: #17201c;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .mcp-form {
@@ -4313,11 +4417,13 @@ textarea:focus {
   .provider-key-grid,
   .provider-registry-grid,
   .remote-form,
-  .model-form {
+  .model-form,
+  .skills-split {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .skill-install-form,
+  .skill-manager,
   .credential-pool-entry {
     grid-template-columns: minmax(0, 1fr);
   }

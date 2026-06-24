@@ -141,6 +141,8 @@ struct ToolsetInfo {
     key: String,
     label: String,
     description: String,
+    group: String,
+    risk: String,
     enabled: bool,
 }
 
@@ -217,6 +219,26 @@ struct InstalledSkillInfo {
     dir_name: String,
     category: String,
     description: String,
+    path: String,
+    source: String,
+    installed: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BundledSkillInfo {
+    name: String,
+    dir_name: String,
+    category: String,
+    description: String,
+    path: String,
+    source: String,
+    installed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadSkillContentInput {
     path: String,
 }
 
@@ -1180,11 +1202,13 @@ async fn list_hermes_toolsets(profile: Option<String>) -> Result<Vec<ToolsetInfo
     let config = read_profile_file(profile.as_deref(), "config.yaml")?.unwrap_or_default();
     Ok(toolset_defs()
         .into_iter()
-        .map(|(key, label, description)| ToolsetInfo {
-            key: key.to_string(),
-            label: label.to_string(),
-            description: description.to_string(),
-            enabled: toolset_enabled(&config, key),
+        .map(|def| ToolsetInfo {
+            key: def.key.to_string(),
+            label: def.label.to_string(),
+            description: def.description.to_string(),
+            group: def.group.to_string(),
+            risk: def.risk.to_string(),
+            enabled: toolset_enabled(&config, def.key),
         })
         .collect())
 }
@@ -1195,10 +1219,7 @@ async fn set_hermes_toolset_enabled(
 ) -> Result<Vec<ToolsetInfo>, String> {
     let profile = normalize_profile(input.profile.as_deref());
     let key = input.key.trim();
-    if !toolset_defs()
-        .iter()
-        .any(|(item_key, _, _)| *item_key == key)
-    {
+    if !toolset_defs().iter().any(|def| def.key == key) {
         return Err(format!("未知 toolset：{key}"));
     }
     let path = profile_home(profile.as_deref())?.join("config.yaml");
@@ -1299,6 +1320,8 @@ async fn list_hermes_skills(profile: Option<String>) -> Result<Vec<InstalledSkil
                 category: category_name.clone(),
                 description,
                 path: path.to_string_lossy().to_string(),
+                source: "profile".to_string(),
+                installed: true,
             });
         }
     }
@@ -1326,6 +1349,19 @@ async fn search_hermes_skills(input: SearchSkillsInput) -> Result<Vec<InstalledS
                 || skill.description.to_ascii_lowercase().contains(&query)
         })
         .collect())
+}
+
+#[tauri::command]
+async fn list_hermes_bundled_skills(
+    profile: Option<String>,
+) -> Result<Vec<BundledSkillInfo>, String> {
+    let profile = normalize_profile(profile.as_deref());
+    list_bundled_skills(profile.as_deref())
+}
+
+#[tauri::command]
+async fn read_hermes_skill_content(input: ReadSkillContentInput) -> Result<String, String> {
+    read_skill_content(&input.path)
 }
 
 #[tauri::command]
@@ -8303,28 +8339,89 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn toolset_defs() -> Vec<(&'static str, &'static str, &'static str)> {
+#[derive(Clone, Copy)]
+struct ToolsetDef {
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    group: &'static str,
+    risk: &'static str,
+}
+
+fn toolset_defs() -> Vec<ToolsetDef> {
     vec![
-        ("web", "Web", "联网检索与网页内容读取"),
-        ("x_search", "X Search", "X/Twitter 搜索"),
-        ("browser", "Browser", "浏览器自动化"),
-        ("terminal", "Terminal", "终端命令执行"),
-        ("file", "File", "文件读写"),
-        ("code_execution", "Code Execution", "代码执行"),
-        ("computer_use", "Computer Use", "桌面应用操作"),
-        ("vision", "Vision", "图像理解"),
-        ("image_gen", "Image Generation", "图像生成"),
-        ("video_gen", "Video Generation", "视频生成"),
-        ("tts", "TTS", "语音合成"),
-        ("skills", "Skills", "技能调用"),
-        ("memory", "Memory", "长期记忆"),
-        ("session_search", "Session Search", "历史会话检索"),
-        ("clarify", "Clarify", "澄清问题"),
-        ("delegation", "Delegation", "任务委派"),
-        ("cronjob", "Cronjob", "定时任务"),
-        ("moa", "MoA", "多模型协同"),
-        ("todo", "Todo", "任务清单"),
+        toolset_def("web", "Web", "联网检索与网页内容读取", "Research", "normal"),
+        toolset_def(
+            "x_search",
+            "X Search",
+            "X/Twitter 搜索",
+            "Research",
+            "normal",
+        ),
+        toolset_def("browser", "Browser", "浏览器自动化", "Research", "elevated"),
+        toolset_def("terminal", "Terminal", "终端命令执行", "System", "elevated"),
+        toolset_def("file", "File", "文件读写", "System", "elevated"),
+        toolset_def(
+            "code_execution",
+            "Code Execution",
+            "代码执行",
+            "System",
+            "elevated",
+        ),
+        toolset_def(
+            "computer_use",
+            "Computer Use",
+            "桌面应用操作",
+            "System",
+            "elevated",
+        ),
+        toolset_def("vision", "Vision", "图像理解", "Media", "normal"),
+        toolset_def(
+            "image_gen",
+            "Image Generation",
+            "图像生成",
+            "Media",
+            "normal",
+        ),
+        toolset_def(
+            "video_gen",
+            "Video Generation",
+            "视频生成",
+            "Media",
+            "normal",
+        ),
+        toolset_def("tts", "TTS", "语音合成", "Media", "normal"),
+        toolset_def("skills", "Skills", "技能调用", "Agent", "normal"),
+        toolset_def("memory", "Memory", "长期记忆", "Agent", "normal"),
+        toolset_def(
+            "session_search",
+            "Session Search",
+            "历史会话检索",
+            "Agent",
+            "normal",
+        ),
+        toolset_def("clarify", "Clarify", "澄清问题", "Agent", "normal"),
+        toolset_def("delegation", "Delegation", "任务委派", "Agent", "elevated"),
+        toolset_def("cronjob", "Cronjob", "定时任务", "Automation", "elevated"),
+        toolset_def("moa", "MoA", "多模型协同", "Automation", "normal"),
+        toolset_def("todo", "Todo", "任务清单", "Automation", "normal"),
     ]
+}
+
+fn toolset_def(
+    key: &'static str,
+    label: &'static str,
+    description: &'static str,
+    group: &'static str,
+    risk: &'static str,
+) -> ToolsetDef {
+    ToolsetDef {
+        key,
+        label,
+        description,
+        group,
+        risk,
+    }
 }
 
 fn toolset_enabled(config: &str, key: &str) -> bool {
@@ -8387,7 +8484,7 @@ fn set_cli_toolset_enabled(config: &str, key: &str, enabled: bool) -> String {
     let mut current = parse_cli_toolsets(config).unwrap_or_else(|| {
         toolset_defs()
             .into_iter()
-            .map(|(item_key, _, _)| item_key.to_string())
+            .map(|def| def.key.to_string())
             .collect()
     });
     if enabled && !current.iter().any(|item| item == key) {
@@ -8791,6 +8888,144 @@ fn parse_skill_metadata(content: &str) -> (String, String) {
     (name, description)
 }
 
+fn list_bundled_skills(profile: Option<&str>) -> Result<Vec<BundledSkillInfo>, String> {
+    let bundled_root = hermes_home()?.join("hermes-agent").join("skills");
+    if !bundled_root.exists() {
+        return Ok(Vec::new());
+    }
+    let installed = installed_skill_keys(profile)?;
+    let mut skills = Vec::new();
+    for category in fs::read_dir(&bundled_root)
+        .map_err(|error| format!("读取 {} 失败：{error}", bundled_root.to_string_lossy()))?
+        .flatten()
+    {
+        let category_path = category.path();
+        if !category_path.is_dir() {
+            continue;
+        }
+        let category_name = category.file_name().to_string_lossy().to_string();
+        for entry in fs::read_dir(&category_path)
+            .map_err(|error| format!("读取 {} 失败：{error}", category_path.to_string_lossy()))?
+            .flatten()
+        {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let skill_file = path.join("SKILL.md");
+            if !skill_file.exists() {
+                continue;
+            }
+            let content = fs::read_to_string(&skill_file).unwrap_or_default();
+            let (name, description) = parse_skill_metadata(&content);
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            let display_name = if name.is_empty() {
+                dir_name.clone()
+            } else {
+                name
+            };
+            let installed_key = format!(
+                "{}:{}",
+                category_name.to_ascii_lowercase(),
+                dir_name.to_ascii_lowercase()
+            );
+            let installed_name_key = display_name.to_ascii_lowercase();
+            skills.push(BundledSkillInfo {
+                name: display_name,
+                dir_name,
+                category: category_name.clone(),
+                description,
+                path: path.to_string_lossy().to_string(),
+                source: "bundled".to_string(),
+                installed: installed.contains(&installed_key)
+                    || installed.contains(&installed_name_key),
+            });
+        }
+    }
+    skills.sort_by(|left, right| {
+        left.category
+            .cmp(&right.category)
+            .then(left.name.cmp(&right.name))
+    });
+    Ok(skills)
+}
+
+fn installed_skill_keys(profile: Option<&str>) -> Result<HashSet<String>, String> {
+    let root = profile_home(profile)?.join("skills");
+    let mut keys = HashSet::new();
+    if !root.exists() {
+        return Ok(keys);
+    }
+    for category in fs::read_dir(&root)
+        .map_err(|error| format!("读取 {} 失败：{error}", root.to_string_lossy()))?
+        .flatten()
+    {
+        let category_path = category.path();
+        if !category_path.is_dir() {
+            continue;
+        }
+        let category_name = category.file_name().to_string_lossy().to_ascii_lowercase();
+        for entry in fs::read_dir(&category_path)
+            .map_err(|error| format!("读取 {} 失败：{error}", category_path.to_string_lossy()))?
+            .flatten()
+        {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            keys.insert(format!("{category_name}:{dir_name}"));
+            keys.insert(dir_name);
+            let skill_file = path.join("SKILL.md");
+            if skill_file.exists() {
+                let content = fs::read_to_string(&skill_file).unwrap_or_default();
+                let (name, _) = parse_skill_metadata(&content);
+                if !name.trim().is_empty() {
+                    keys.insert(name.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    Ok(keys)
+}
+
+fn read_skill_content(path: &str) -> Result<String, String> {
+    let root = PathBuf::from(path.trim());
+    if root.as_os_str().is_empty() {
+        return Err("Skill path 不能为空。".to_string());
+    }
+    let skill_file = root.join("SKILL.md");
+    if !skill_file.exists() {
+        return Err("未找到 SKILL.md。".to_string());
+    }
+    let real_file = skill_file
+        .canonicalize()
+        .map_err(|error| format!("解析 {} 失败：{error}", skill_file.to_string_lossy()))?;
+    let allowed_roots = skill_content_roots()?;
+    if !allowed_roots.iter().any(|root| real_file.starts_with(root)) {
+        return Err("拒绝读取 skills 目录之外的文件。".to_string());
+    }
+    fs::read_to_string(&real_file)
+        .map_err(|error| format!("读取 {} 失败：{error}", real_file.to_string_lossy()))
+}
+
+fn skill_content_roots() -> Result<Vec<PathBuf>, String> {
+    let home = hermes_home()?;
+    let mut roots = vec![
+        home.join("skills"),
+        home.join("hermes-agent").join("skills"),
+        home.join("profiles"),
+    ];
+    roots.retain(|path| path.exists());
+    roots
+        .into_iter()
+        .map(|path| {
+            path.canonicalize()
+                .map_err(|error| format!("解析 {} 失败：{error}", path.to_string_lossy()))
+        })
+        .collect()
+}
+
 fn is_valid_skill_segment(value: &str) -> bool {
     let mut chars = value.chars();
     match chars.next() {
@@ -9070,6 +9305,8 @@ pub fn run() {
             save_hermes_mcp_server,
             remove_hermes_mcp_server,
             list_hermes_skills,
+            list_hermes_bundled_skills,
+            read_hermes_skill_content,
             search_hermes_skills,
             install_hermes_skill,
             remove_hermes_skill,

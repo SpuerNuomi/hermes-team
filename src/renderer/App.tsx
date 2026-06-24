@@ -74,6 +74,7 @@ import {
   isTauriRuntimeAvailable,
   listAuxiliaryModelConfigs,
   listCredentialPool,
+  listHermesBundledSkills,
   listHermesCronJobs,
   listHermesLogs,
   listHermesStateSessions,
@@ -96,6 +97,7 @@ import {
   readHermesMemoryDetails,
   readHermesLog,
   readHermesMemoryContent,
+  readHermesSkillContent,
   removeCredentialPoolEntry,
   removeHermesMemoryEntry,
   removeHermesCronJob,
@@ -136,6 +138,7 @@ import {
   type ActiveModelConfig,
   type AppSettings,
   type AuxiliaryModelConfig,
+  type BundledSkillInfo,
   type ConfigHealthIssue,
   type ConfigHealthReport,
   type CronJobActionResult,
@@ -456,6 +459,7 @@ export function App() {
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
   const [skills, setSkills] = useState<InstalledSkillInfo[]>([]);
+  const [bundledSkills, setBundledSkills] = useState<BundledSkillInfo[]>([]);
   const [memorySummary, setMemorySummary] = useState<MemorySummary | null>(null);
   const [memoryDetails, setMemoryDetails] = useState<MemoryDetails | null>(null);
   const [memoryContent, setMemoryContent] = useState<MemoryContent | null>(null);
@@ -464,6 +468,9 @@ export function App() {
   const [editingMemoryIndex, setEditingMemoryIndex] = useState<number | null>(null);
   const [editingMemoryDraft, setEditingMemoryDraft] = useState("");
   const [skillQuery, setSkillQuery] = useState("");
+  const [skillCatalogQuery, setSkillCatalogQuery] = useState("");
+  const [skillDetail, setSkillDetail] = useState<InstalledSkillInfo | BundledSkillInfo | null>(null);
+  const [skillDetailContent, setSkillDetailContent] = useState("");
   const [skillInstallForm, setSkillInstallForm] = useState<SkillInstallForm>(emptySkillInstallForm);
   const [models, setModels] = useState<SavedModel[]>([]);
   const [activeModel, setActiveModel] = useState<ActiveModelConfig | null>(null);
@@ -523,6 +530,24 @@ export function App() {
     () => new Map(profiles.map((profile) => [profile.name, profile])),
     [profiles],
   );
+  const toolsetGroups = useMemo(() => {
+    const groups = new Map<string, ToolsetInfo[]>();
+    for (const toolset of toolsets) {
+      const group = toolset.group || "Other";
+      groups.set(group, [...(groups.get(group) ?? []), toolset]);
+    }
+    return Array.from(groups.entries()).map(([group, items]) => ({ group, items }));
+  }, [toolsets]);
+  const filteredBundledSkills = useMemo(() => {
+    const query = skillCatalogQuery.trim().toLowerCase();
+    if (!query) return bundledSkills;
+    return bundledSkills.filter((skill) =>
+      [skill.name, skill.dirName, skill.category, skill.description]
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [bundledSkills, skillCatalogQuery]);
   const settingsPanels: Array<{ id: SettingsPanel; label: string }> = [
     { id: "overview", label: "概览" },
     { id: "appearance", label: "Appearance" },
@@ -887,6 +912,7 @@ export function App() {
       setToolsets([]);
       setMcpServers([]);
       setSkills([]);
+      setBundledSkills([]);
       setMemorySummary(null);
       setMemoryDetails(null);
       setMemoryContent(null);
@@ -909,6 +935,7 @@ export function App() {
         nextToolsets,
         nextMcpServers,
         nextSkills,
+        nextBundledSkills,
         nextMemory,
         nextMemoryDetails,
         nextMemoryContent,
@@ -923,6 +950,7 @@ export function App() {
         listHermesToolsets({ profile: targetProfile }),
         listHermesMcpServers({ profile: targetProfile }),
         listHermesSkills({ profile: targetProfile }),
+        listHermesBundledSkills({ profile: targetProfile }),
         readHermesMemorySummary({ profile: targetProfile }),
         readHermesMemoryDetails({ profile: targetProfile }),
         readHermesMemoryContent({ profile: targetProfile }),
@@ -937,6 +965,7 @@ export function App() {
       setToolsets(nextToolsets);
       setMcpServers(nextMcpServers);
       setSkills(nextSkills);
+      setBundledSkills(nextBundledSkills);
       setMemorySummary(nextMemory);
       setMemoryDetails(nextMemoryDetails);
       setMemoryContent(nextMemoryContent);
@@ -2418,11 +2447,45 @@ export function App() {
         name: skillInstallForm.name,
       });
       setSkills(next);
+      setBundledSkills(await listHermesBundledSkills({ profile: targetProfile }));
       setSkillInstallForm(emptySkillInstallForm);
       setSkillQuery("");
       setNotice(`Skill 已安装到 ${targetProfile}。`);
     } catch (error) {
       setNotice(`安装 Skill 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setSkillBusy(false);
+    }
+  };
+
+  const installBundledSkill = async (skill: BundledSkillInfo) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setSkillBusy(true);
+    try {
+      const next = await installHermesSkill({
+        profile: targetProfile,
+        sourcePath: skill.path,
+        category: skill.category,
+        name: skill.dirName,
+      });
+      setSkills(next);
+      setBundledSkills(await listHermesBundledSkills({ profile: targetProfile }));
+      setNotice(`Skill 已安装：${skill.name}`);
+    } catch (error) {
+      setNotice(`安装 bundled Skill 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setSkillBusy(false);
+    }
+  };
+
+  const openSkillDetail = async (skill: InstalledSkillInfo | BundledSkillInfo) => {
+    setSkillBusy(true);
+    try {
+      const content = await readHermesSkillContent(skill.path);
+      setSkillDetail(skill);
+      setSkillDetailContent(content);
+    } catch (error) {
+      setNotice(`读取 Skill 详情失败：${runtimeErrorMessage(error)}`);
     } finally {
       setSkillBusy(false);
     }
@@ -2438,6 +2501,11 @@ export function App() {
         name: skill.dirName,
       });
       setSkills(next);
+      setBundledSkills(await listHermesBundledSkills({ profile: targetProfile }));
+      if (skillDetail?.path === skill.path) {
+        setSkillDetail(null);
+        setSkillDetailContent("");
+      }
       setNotice(`Skill 已删除：${skill.name}`);
     } catch (error) {
       setNotice(`删除 Skill 失败：${runtimeErrorMessage(error)}`);
@@ -4207,21 +4275,32 @@ export function App() {
                 <div className="capability-split">
                   <div>
                     <h3>Toolsets</h3>
-                    <div className="capability-grid">
-                      {toolsets.length > 0 ? (
-                        toolsets.map((toolset) => (
-                          <article className={`capability-card ${toolset.enabled ? "enabled" : ""}`} key={toolset.key}>
-                            <strong>{toolset.label}</strong>
-                            <span>{toolset.description}</span>
-                            <button
-                              className="inline-action"
-                              disabled={capabilityBusy}
-                              type="button"
-                              onClick={() => void toggleToolset(toolset)}
-                            >
-                              {toolset.enabled ? "关闭" : "开启"}
-                            </button>
-                          </article>
+                    <div className="toolset-group-list">
+                      {toolsetGroups.length > 0 ? (
+                        toolsetGroups.map(({ group, items }) => (
+                          <section className="toolset-group" key={group}>
+                            <div className="toolset-group-head">
+                              <strong>{group}</strong>
+                              <span>{items.filter((item) => item.enabled).length}/{items.length}</span>
+                            </div>
+                            <div className="capability-grid">
+                              {items.map((toolset) => (
+                                <article className={`capability-card ${toolset.enabled ? "enabled" : ""}`} key={toolset.key}>
+                                  <strong>{toolset.label}</strong>
+                                  <span>{toolset.description}</span>
+                                  <small>{toolset.key} · {toolset.risk}</small>
+                                  <button
+                                    className="inline-action"
+                                    disabled={capabilityBusy}
+                                    type="button"
+                                    onClick={() => void toggleToolset(toolset)}
+                                  >
+                                    {toolset.enabled ? "关闭" : "开启"}
+                                  </button>
+                                </article>
+                              ))}
+                            </div>
+                          </section>
                         ))
                       ) : (
                         <p className="empty-note">未读取到 toolset 配置。</p>
@@ -4328,7 +4407,10 @@ export function App() {
                     <p className="panel-label">Skills</p>
                     <h2>Skills 管理</h2>
                   </div>
-                  <span className="count-pill">{skills.length}</span>
+                  <div className="settings-actions">
+                    <span className="count-pill">{skills.length} installed</span>
+                    <span className="count-pill">{bundledSkills.length} bundled</span>
+                  </div>
                 </div>
                 <div className="skill-manager">
                   <div className="skill-search">
@@ -4343,6 +4425,17 @@ export function App() {
                     <button className="refresh-runtime" disabled={skillBusy} type="button" onClick={() => void searchSkills()}>
                       <Search size={14} />
                       <span>搜索</span>
+                    </button>
+                  </div>
+                  <div className="skill-search">
+                    <input
+                      value={skillCatalogQuery}
+                      onChange={(event) => setSkillCatalogQuery(event.target.value)}
+                      placeholder="搜索 bundled skills"
+                    />
+                    <button className="refresh-runtime" disabled={skillBusy} type="button" onClick={() => void refreshHermesCapabilities(installStatus?.activeProfile)}>
+                      <RefreshCw size={14} />
+                      <span>刷新</span>
                     </button>
                   </div>
                   <div className="skill-install-form">
@@ -4367,25 +4460,80 @@ export function App() {
                     </button>
                   </div>
                 </div>
-                <div className="mini-list">
-                  {skills.length > 0 ? (
-                    skills.map((skill) => (
-                      <article key={skill.path}>
-                        <div>
-                          <strong>{skill.name}</strong>
-                          <span>{skill.category}/{skill.dirName}{skill.description ? ` · ${skill.description}` : ""}</span>
-                        </div>
-                        <div className="mini-actions">
-                          <button disabled={skillBusy} type="button" onClick={() => void deleteSkill(skill)}>
-                            删除
-                          </button>
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <p className="empty-note">当前 profile 未发现已安装 Skill。</p>
-                  )}
+
+                <div className="skills-split">
+                  <div>
+                    <h3>Installed Skills</h3>
+                    <div className="mini-list skills-list">
+                      {skills.length > 0 ? (
+                        skills.map((skill) => (
+                          <article key={skill.path}>
+                            <div>
+                              <strong>{skill.name}</strong>
+                              <span>{skill.category}/{skill.dirName}{skill.description ? ` · ${skill.description}` : ""}</span>
+                              <small>{skill.path}</small>
+                            </div>
+                            <div className="mini-actions">
+                              <button disabled={skillBusy} type="button" onClick={() => void openSkillDetail(skill)}>
+                                详情
+                              </button>
+                              <button disabled={skillBusy} type="button" onClick={() => void deleteSkill(skill)}>
+                                删除
+                              </button>
+                            </div>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="empty-note">当前 profile 未发现已安装 Skill。</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3>Bundled Skills</h3>
+                    <div className="mini-list skills-list">
+                      {filteredBundledSkills.length > 0 ? (
+                        filteredBundledSkills.map((skill) => (
+                          <article className={skill.installed ? "installed" : ""} key={skill.path}>
+                            <div>
+                              <strong>{skill.name}</strong>
+                              <span>{skill.category}/{skill.dirName}{skill.description ? ` · ${skill.description}` : ""}</span>
+                              <small>{skill.installed ? "installed" : skill.source}</small>
+                            </div>
+                            <div className="mini-actions">
+                              <button disabled={skillBusy} type="button" onClick={() => void openSkillDetail(skill)}>
+                                详情
+                              </button>
+                              <button disabled={skillBusy || skill.installed} type="button" onClick={() => void installBundledSkill(skill)}>
+                                {skill.installed ? "已安装" : "安装"}
+                              </button>
+                            </div>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="empty-note">未发现 bundled Skill，确认 Hermes Agent 已安装。</p>
+                      )}
+                    </div>
+                  </div>
                 </div>
+
+                {skillDetail && (
+                  <div className="skill-detail-panel">
+                    <div className="skill-detail-head">
+                      <div>
+                        <strong>{skillDetail.name}</strong>
+                        <span>{skillDetail.category}/{skillDetail.dirName}</span>
+                      </div>
+                      <button className="refresh-runtime" type="button" onClick={() => {
+                        setSkillDetail(null);
+                        setSkillDetailContent("");
+                      }}>
+                        <span>关闭</span>
+                      </button>
+                    </div>
+                    <pre>{skillDetailContent || "未读取到 SKILL.md 内容。"}</pre>
+                  </div>
+                  )}
               </section>
 
               <section className={settingsCardClass("memory", "settings-card-wide")}>

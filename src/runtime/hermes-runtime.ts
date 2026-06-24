@@ -135,6 +135,8 @@ export interface ToolsetInfo {
   key: string;
   label: string;
   description: string;
+  group: string;
+  risk: string;
   enabled: boolean;
 }
 
@@ -167,6 +169,18 @@ export interface InstalledSkillInfo {
   category: string;
   description: string;
   path: string;
+  source: string;
+  installed: boolean;
+}
+
+export interface BundledSkillInfo {
+  name: string;
+  dirName: string;
+  category: string;
+  description: string;
+  path: string;
+  source: string;
+  installed: boolean;
 }
 
 export interface InstallSkillInput {
@@ -685,6 +699,20 @@ export async function listHermesSkills(params: {
   return invoke<InstalledSkillInfo[]>("list_hermes_skills", {
     profile: params.profile,
   });
+}
+
+export async function listHermesBundledSkills(params: {
+  profile?: string;
+} = {}): Promise<BundledSkillInfo[]> {
+  ensureTauriRuntime();
+  return invoke<BundledSkillInfo[]>("list_hermes_bundled_skills", {
+    profile: params.profile,
+  });
+}
+
+export async function readHermesSkillContent(path: string): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("read_hermes_skill_content", { input: { path } });
 }
 
 export async function searchHermesSkills(params: {
