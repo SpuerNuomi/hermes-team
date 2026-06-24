@@ -635,23 +635,27 @@ button {
 }
 
 .message-reasoning {
-  background: #ffffff;
-  border-color: #dce3df;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  background: transparent;
+  border-color: transparent;
 }
 
 .message-tool {
-  background: #fbfcfb;
-  border-color: #d7e0dc;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  background: transparent;
+  border-color: transparent;
 }
 
 .message-reasoning .message-avatar {
   color: #4a554d;
-  background: #e9efeb;
+  background: transparent;
 }
 
 .message-tool .message-avatar {
   color: #335044;
-  background: #dcece5;
+  background: transparent;
 }
 
 .message.system {
@@ -738,12 +742,12 @@ button {
   gap: 7px;
   width: 100%;
   min-height: 30px;
-  color: #4a554d;
+  color: #6b746e;
   background: transparent;
   border: 0;
   text-align: left;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .reasoning-summary small {
@@ -754,7 +758,7 @@ button {
 }
 
 .tool-content .reasoning-summary {
-  color: #335044;
+  color: #6b746e;
 }
 
 .reasoning-chevron {

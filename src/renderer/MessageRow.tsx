@@ -1,4 +1,4 @@
-import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio, Wrench } from "lucide-react";
+import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, Paperclip, Radio, Terminal } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import type { Message } from "../core/types";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -27,6 +27,16 @@ function formatAttachmentSize(size?: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatToolSummary(content: string): string {
+  const first = content
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!first) return "Ran";
+  const compact = first.replace(/\s+/g, " ");
+  return compact.length > 160 ? `${compact.slice(0, 157)}...` : compact;
 }
 
 export const TypingIndicator = memo(function TypingIndicator({
@@ -116,7 +126,6 @@ export const RuntimeActivityGroup = memo(function RuntimeActivityGroup({
 
 export const MessageRow = memo(function MessageRow({
   message,
-  processMessages = [],
   isLast,
   isLoading,
   showMeta,
@@ -125,7 +134,6 @@ export const MessageRow = memo(function MessageRow({
   onDeny,
 }: {
   message: Message;
-  processMessages?: Message[];
   isLast: boolean;
   isLoading: boolean;
   showMeta: boolean;
@@ -134,15 +142,14 @@ export const MessageRow = memo(function MessageRow({
   onDeny: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [reasoningOpen, setReasoningOpen] = useState(true);
-  const [processOpen, setProcessOpen] = useState(true);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
   const isReasoning = message.kind === "reasoning";
   const isTool = message.kind === "tool";
+  const isRuntime = message.authorName === "Runtime activity";
   const showApprovalBar =
     isAgent && !isReasoning && !isTool && !isLoading && isLast && APPROVAL_RE.test(message.content);
-  const shouldShowProcess = !isReasoning && !isTool && processMessages.length > 0;
 
   const handleCopy = useCallback(async () => {
     try {
@@ -171,48 +178,8 @@ export const MessageRow = memo(function MessageRow({
       <div className="message-body">
         {showMeta && (
           <div className="message-meta">
-            <span>{isReasoning ? "思考过程" : isTool ? "工具调用" : message.authorName}</span>
+            <span>{isReasoning ? "Thinking" : isRuntime ? "Runtime activity" : isTool ? "Ran" : message.authorName}</span>
             <time>{formatTime(message.createdAt)}</time>
-          </div>
-        )}
-        {shouldShowProcess && (
-          <div className="message-process">
-            <button
-              className="reasoning-summary message-process-summary"
-              type="button"
-              aria-expanded={processOpen}
-              onClick={() => setProcessOpen((value) => !value)}
-            >
-              <ChevronRight
-                size={14}
-                className={`reasoning-chevron ${processOpen ? "reasoning-chevron-open" : ""}`}
-              />
-              <Brain size={14} />
-              <span>{isLoading ? "正在思考与执行" : "思考与执行过程"}</span>
-              <small>
-                {processMessages.filter((item) => item.kind === "reasoning").length} thinking ·{" "}
-                {processMessages.filter((item) => item.kind === "tool" && item.authorName !== "Runtime activity").length} tools ·{" "}
-                {processMessages.filter((item) => item.authorName === "Runtime activity").length} runtime
-              </small>
-            </button>
-            {processOpen && (
-              <div className="message-process-list">
-                {processMessages.map((item) => {
-                  const itemIsTool = item.kind === "tool";
-                  const itemIsRuntime = item.authorName === "Runtime activity";
-                  return (
-                    <section className={`message-process-item ${itemIsTool ? "tool" : "reasoning"} ${itemIsRuntime ? "runtime" : ""}`} key={item.id}>
-                      <div className="message-process-item-head">
-                        {itemIsRuntime ? <Radio size={13} /> : itemIsTool ? <Wrench size={13} /> : <Brain size={13} />}
-                        <strong>{itemIsRuntime ? "Runtime activity" : itemIsTool ? "工具调用" : "Thinking"}</strong>
-                        <time>{formatTime(item.createdAt)}</time>
-                      </div>
-                      <pre>{item.content}</pre>
-                    </section>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
         {isReasoning || isTool ? (
@@ -227,8 +194,8 @@ export const MessageRow = memo(function MessageRow({
                 size={14}
                 className={`reasoning-chevron ${reasoningOpen ? "reasoning-chevron-open" : ""}`}
               />
-              {isTool ? <Wrench size={14} /> : <Brain size={14} />}
-              <span>{isTool ? "工具调用" : isLoading ? "正在思考..." : "思考过程"}</span>
+              {isRuntime ? <Radio size={14} /> : isTool ? <Terminal size={14} /> : <Brain size={14} />}
+              <span>{isRuntime ? "Runtime activity" : isTool ? formatToolSummary(message.content) : isLoading ? "Thinking..." : "Thought"}</span>
               <small>{message.content.split("\n").length} lines</small>
             </button>
             {reasoningOpen && <pre className="reasoning-pre">{message.content}</pre>}

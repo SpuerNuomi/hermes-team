@@ -158,25 +158,10 @@ export function ChatView({
         : [],
     [slashMenuOpen, slashFilter],
   );
-  const processMessagesByReply = useMemo(() => {
-    const groups = new Map<string, Message[]>();
-    for (const message of messages) {
-      if ((message.kind !== "reasoning" && message.kind !== "tool") || !message.replyToMessageId) continue;
-      groups.set(message.replyToMessageId, [...(groups.get(message.replyToMessageId) ?? []), message]);
-    }
-    return groups;
-  }, [messages]);
   const visibleMessages = useMemo(() => {
-    const replyIdsWithAgentAnswer = new Set(
-      messages
-        .filter((message) => message.authorKind === "agent" && message.kind !== "reasoning" && message.kind !== "tool")
-        .map((message) => message.replyToMessageId)
-        .filter((id): id is string => Boolean(id)),
-    );
     return messages.filter((message) => {
-      if (message.kind !== "reasoning" && message.kind !== "tool") return true;
-      if (!message.replyToMessageId) return true;
-      return !replyIdsWithAgentAnswer.has(message.replyToMessageId);
+      if (message.kind === "reasoning" || message.kind === "tool") return true;
+      return message.content.trim().length > 0;
     });
   }, [messages]);
 
@@ -339,15 +324,10 @@ export function ChatView({
             {visibleMessages.map((message, index) => {
               const previous = visibleMessages[index - 1];
               const isLast = index === visibleMessages.length - 1;
-              const processMessages =
-                message.authorKind === "agent" && message.kind !== "reasoning" && message.kind !== "tool" && message.replyToMessageId
-                  ? processMessagesByReply.get(message.replyToMessageId) ?? []
-                  : [];
               return (
                 <MessageRow
                   key={message.id}
                   message={message}
-                  processMessages={processMessages}
                   isLast={isLast}
                   isLoading={isLoading && isLast && message.authorKind === "agent"}
                   showMeta={

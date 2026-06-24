@@ -636,9 +636,8 @@ export function App() {
     const task = current.tasks.find((item) => item.id === taskId);
     if (!task || task.status === "cancelled") return current;
     const agent = current.agents.find((item) => item.id === task.agentId);
-    const withAnswer = ensureTaskAnswerMessage(current, taskId);
     const messageId = `runtime-${taskId}`;
-    const existing = withAnswer.messages.find((message) => message.id === messageId);
+    const existing = current.messages.find((message) => message.id === messageId);
     const nextContent = existing?.content
       ? existing.content.includes(line)
         ? existing.content
@@ -656,10 +655,10 @@ export function App() {
       replyToMessageId: task.triggerMessageId,
     };
     return {
-      ...withAnswer,
+      ...current,
       messages: existing
-        ? withAnswer.messages.map((message) => (message.id === messageId ? nextMessage : message))
-        : [...withAnswer.messages, nextMessage],
+        ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+        : [...current.messages, nextMessage],
     };
   }
 
@@ -671,9 +670,6 @@ export function App() {
         detail: "Hermes Gateway 已进入流式输出。",
         level: "info",
       });
-      setState((current) =>
-        appendTaskProcessMessage(current, event.taskId, "stream · Hermes Gateway 已进入流式输出。"),
-      );
       return;
     }
     if (event.kind === "error") {
@@ -817,9 +813,6 @@ export function App() {
         detail: "Hermes token 流式输出已完成。",
         level: "ok",
       });
-      setState((current) =>
-        appendTaskProcessMessage(current, event.taskId, "stream done · Hermes token 流式输出已完成。"),
-      );
     }
   }
 
