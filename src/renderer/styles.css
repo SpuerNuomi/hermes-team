@@ -615,6 +615,7 @@ button {
   position: relative;
   display: flex;
   gap: 10px;
+  min-width: 0;
   max-width: 720px;
   padding: 16px 18px;
   background: #f9faf7;
@@ -722,7 +723,9 @@ button {
 
 .message-content {
   position: relative;
+  max-width: 100%;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .reasoning-content {
@@ -1032,7 +1035,11 @@ button {
 }
 
 .message-markdown {
+  max-width: 100%;
+  min-width: 0;
   line-height: 1.65;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .message-markdown > *:first-child {
@@ -1061,10 +1068,16 @@ button {
   margin-top: 4px;
 }
 
+.message-markdown li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .message-markdown a {
   color: #0f766e;
   font-weight: 700;
   text-decoration: none;
+  overflow-wrap: anywhere;
 }
 
 .message-markdown a:hover {
@@ -1100,11 +1113,17 @@ button {
   border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .message-markdown pre code {
   padding: 0;
   background: transparent;
+  white-space: inherit;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .chat-code-block {
