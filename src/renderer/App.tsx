@@ -702,13 +702,15 @@ export function App() {
         const task = current.tasks.find((item) => item.id === event.taskId);
         if (!task || task.status === "cancelled") return current;
         const agent = current.agents.find((item) => item.id === task.agentId);
-        const messageId = `reasoning-${event.taskId}`;
+        const isThinkingProgress = event.message === "thinking";
+        const messageId = isThinkingProgress ? `reasoning-${event.taskId}-thinking` : `reasoning-${event.taskId}`;
         const existing = current.messages.find((message) => message.id === messageId);
         const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
         if (!nextContent.trim()) return current;
         const streamMessageId = `stream-${event.taskId}`;
         const streamExisting = current.messages.find((message) => message.id === streamMessageId);
         if (
+          !isThinkingProgress &&
           streamExisting &&
           streamExisting.content !== "正在生成..." &&
           isDuplicateProcessSnapshot(nextContent, streamExisting.content)
@@ -817,12 +819,13 @@ export function App() {
       const nextMessages = existing
         ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
         : [...current.messages, nextMessage];
-      const filteredMessages =
+        const filteredMessages =
         event.kind === "done"
           ? nextMessages.filter(
               (message) =>
                 !(
                   message.kind === "reasoning" &&
+                  message.id === `reasoning-${event.taskId}` &&
                   message.replyToMessageId === task.triggerMessageId &&
                   isDuplicateProcessSnapshot(message.content, nextMessage.content)
                 ),

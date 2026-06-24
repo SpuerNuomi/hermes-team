@@ -5422,7 +5422,7 @@ fn handle_run_event(
                                 kind: "reasoning".to_string(),
                                 delta: text,
                                 content: full_reasoning.clone(),
-                                message: String::new(),
+                                message: "thinking".to_string(),
                             },
                         )?;
                     }
