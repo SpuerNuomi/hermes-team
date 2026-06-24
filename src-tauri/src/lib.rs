@@ -3752,17 +3752,6 @@ async fn run_hermes_agent_stream(
     // may produce structured user content, so only use runs for plain text.
     if let Some(runs_input) = user_content.as_str() {
         if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
-            emit_stream_event(
-                &app,
-                RuntimeStreamEvent {
-                    task_id: task_id.clone(),
-                    kind: "tool".to_string(),
-                    delta: "running".to_string(),
-                    content: "running · transport\nHermes /v1/runs event stream".to_string(),
-                    message: format!("transport-{task_id}"),
-                },
-            )?;
-
             let mut instructions = input.system_prompt.clone();
             if let Some(content) = context_message
                 .as_ref()
@@ -3826,17 +3815,6 @@ async fn run_hermes_agent_stream(
             }
         }
     }
-
-    emit_stream_event(
-        &app,
-        RuntimeStreamEvent {
-            task_id: task_id.clone(),
-            kind: "tool".to_string(),
-            delta: "running".to_string(),
-            content: "running · transport\nHermes /v1/chat/completions SSE fallback".to_string(),
-            message: format!("transport-chat-{task_id}"),
-        },
-    )?;
 
     match http_stream_chat_completion(
         &app,
@@ -4968,6 +4946,12 @@ fn process_run_sse_text(
     while let Some(index) = sse_buffer.find("\n\n") {
         let event = sse_buffer[..index].to_string();
         *sse_buffer = sse_buffer[index + 2..].to_string();
+        let event_type = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("event:").map(str::trim))
+            .last()
+            .unwrap_or("")
+            .to_string();
         let data = event
             .lines()
             .filter_map(|line| line.strip_prefix("data:").map(str::trim))
@@ -4979,9 +4963,14 @@ fn process_run_sse_text(
         if data == "[DONE]" {
             return Ok(RunSignal::Completed);
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&data) else {
             continue;
         };
+        if let Some(object) = value.as_object_mut() {
+            if !event_type.is_empty() && object.get("event").is_none() {
+                object.insert("event".to_string(), json!(event_type));
+            }
+        }
         match handle_run_event(
             app,
             task_id,
@@ -5070,25 +5059,15 @@ fn handle_run_event(
             Ok(RunSignal::Continue)
         }
         "reasoning.available" | "reasoning.delta" | "reasoning.summary" => {
-            let text = value
-                .get("text")
-                .and_then(|item| item.as_str())
-                .or_else(|| value.get("delta").and_then(|item| item.as_str()))
-                .or_else(|| {
-                    value
-                        .pointer("/payload/text")
-                        .and_then(|item| item.as_str())
-                })
-                .or_else(|| value.get("summary").and_then(|item| item.as_str()))
-                .unwrap_or("");
+            let text = run_reasoning_text(value);
             if !text.is_empty() {
-                full_reasoning.push_str(text);
+                full_reasoning.push_str(&text);
                 emit_stream_event(
                     app,
                     RuntimeStreamEvent {
                         task_id: task_id.to_string(),
                         kind: "reasoning".to_string(),
-                        delta: text.to_string(),
+                        delta: text,
                         content: full_reasoning.clone(),
                         message: String::new(),
                     },
@@ -5160,6 +5139,43 @@ fn handle_run_event(
             Ok(RunSignal::Continue)
         }
     }
+}
+
+#[allow(dead_code)]
+fn run_reasoning_text(value: &serde_json::Value) -> String {
+    for pointer in [
+        "/text",
+        "/delta",
+        "/summary",
+        "/content",
+        "/reasoning",
+        "/reasoning_content",
+        "/payload/text",
+        "/payload/delta",
+        "/payload/summary",
+        "/payload/content",
+        "/payload/reasoning",
+        "/payload/reasoning_content",
+    ] {
+        if let Some(text) = reasoning_string(value.pointer(pointer)) {
+            return text;
+        }
+    }
+    if let Some(details) = value
+        .pointer("/payload/reasoning_details")
+        .or_else(|| value.get("reasoning_details"))
+        .and_then(|item| item.as_array())
+    {
+        let joined = details
+            .iter()
+            .filter_map(|entry| reasoning_string(Some(entry)))
+            .collect::<Vec<_>>()
+            .join("");
+        if !joined.is_empty() {
+            return joined;
+        }
+    }
+    String::new()
 }
 
 /// Pull a reasoning/thinking text fragment out of one streamed event.

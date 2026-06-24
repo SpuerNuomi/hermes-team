@@ -146,7 +146,9 @@ export const MessageRow = memo(function MessageRow({
   onBranch: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(
+    message.kind === "reasoning" || message.kind === "tool",
+  );
   const [menuOpen, setMenuOpen] = useState(false);
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
@@ -191,7 +193,7 @@ export const MessageRow = memo(function MessageRow({
       <div className="message-body">
         {showMeta && (
           <div className="message-meta">
-            <span>{isReasoning ? "Thinking" : isRuntime ? "Runtime activity" : isTool ? "Ran" : message.authorName}</span>
+            <span>{isReasoning ? "思考过程" : isRuntime ? "Runtime activity" : isTool ? "执行过程" : message.authorName}</span>
             <time>{formatTime(message.createdAt)}</time>
           </div>
         )}
@@ -208,7 +210,7 @@ export const MessageRow = memo(function MessageRow({
                 className={`reasoning-chevron ${reasoningOpen ? "reasoning-chevron-open" : ""}`}
               />
               {isRuntime ? <Radio size={14} /> : isTool ? <Terminal size={14} /> : <Brain size={14} />}
-              <span>{isRuntime ? "Runtime activity" : isTool ? formatToolSummary(message.content) : isLoading ? "Thinking..." : "Thought"}</span>
+              <span>{isRuntime ? "Runtime activity" : isTool ? formatToolSummary(message.content) : isLoading ? "正在思考" : "思考过程"}</span>
               <small>{message.content.split("\n").length} lines</small>
             </button>
             {reasoningOpen && <pre className="reasoning-pre">{message.content}</pre>}
