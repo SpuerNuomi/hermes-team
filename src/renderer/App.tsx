@@ -654,6 +654,20 @@ export function App() {
     return [...messages, processMessage, answerPlaceholder];
   }
 
+  function normalizeProcessText(value: string) {
+    return value.replace(/\s+/g, " ").trim();
+  }
+
+  function isDuplicateProcessSnapshot(processText: string, answerText: string) {
+    const process = normalizeProcessText(processText);
+    const answer = normalizeProcessText(answerText);
+    return Boolean(
+      process &&
+        answer &&
+        (process === answer || process.startsWith(answer) || answer.startsWith(process)),
+    );
+  }
+
   function handleStreamEvent(event: RuntimeStreamEvent) {
     if (event.kind === "start") {
       addRuntimeEvent({
@@ -692,6 +706,18 @@ export function App() {
         const existing = current.messages.find((message) => message.id === messageId);
         const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
         if (!nextContent.trim()) return current;
+        const streamMessageId = `stream-${event.taskId}`;
+        const streamExisting = current.messages.find((message) => message.id === streamMessageId);
+        if (
+          streamExisting &&
+          streamExisting.content !== "正在生成..." &&
+          isDuplicateProcessSnapshot(nextContent, streamExisting.content)
+        ) {
+          return {
+            ...current,
+            messages: current.messages.filter((message) => message.id !== messageId),
+          };
+        }
         const nextMessage = {
           id: messageId,
           workspaceId: task.workspaceId,
@@ -703,7 +729,6 @@ export function App() {
           createdAt: existing?.createdAt ?? Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
-        const streamMessageId = `stream-${event.taskId}`;
         const streamMessage = {
           id: streamMessageId,
           workspaceId: task.workspaceId,
@@ -779,7 +804,7 @@ export function App() {
       const messageId = `stream-${event.taskId}`;
       const existing = current.messages.find((message) => message.id === messageId);
       const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-      const nextMessage = {
+      const nextMessage: Message = {
         id: messageId,
         workspaceId: task.workspaceId,
         authorKind: "agent" as const,
@@ -789,11 +814,23 @@ export function App() {
         createdAt: existing?.createdAt ?? Date.now(),
         replyToMessageId: task.triggerMessageId,
       };
+      const nextMessages = existing
+        ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+        : [...current.messages, nextMessage];
+      const filteredMessages =
+        event.kind === "done"
+          ? nextMessages.filter(
+              (message) =>
+                !(
+                  message.kind === "reasoning" &&
+                  message.replyToMessageId === task.triggerMessageId &&
+                  isDuplicateProcessSnapshot(message.content, nextMessage.content)
+                ),
+            )
+          : nextMessages;
       return {
         ...current,
-        messages: existing
-          ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-          : [...current.messages, nextMessage],
+        messages: filteredMessages,
         tasks: event.kind === "done"
           ? current.tasks.map((item) =>
               item.id === task.id ? { ...item, status: "completed" as const, completedAt: Date.now() } : item,

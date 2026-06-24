@@ -3747,10 +3747,68 @@ async fn run_hermes_agent_stream(
         },
     )?;
 
-    // Prefer the native run event stream so Hermes can surface reasoning,
-    // tool progress, approvals, and final output under one answer. Attachments
-    // may produce structured user content, so only use runs for plain text.
+    // Match Hermes Desktop first: use the session chat stream so events carry
+    // a stable session id and can be reconciled with state.db history.
     if let Some(runs_input) = user_content.as_str() {
+        if gateway_supports_session_chat_stream(
+            &endpoint.base_url,
+            endpoint.auth.as_deref(),
+            &task_id,
+        ) {
+            let mut session_body = json!({
+                "title": truncate(runs_input, 80),
+            });
+            if let Some(context_folder) = input.context_folder.as_deref() {
+                if let Some(object) = session_body.as_object_mut() {
+                    object.insert("cwd".to_string(), json!(context_folder));
+                }
+            }
+            if let Ok(Some(session_id)) = http_create_gateway_session(
+                &endpoint.base_url,
+                &session_body.to_string(),
+                endpoint.auth.as_deref(),
+                Some(&task_id),
+            ) {
+                match http_stream_session_chat(
+                    &app,
+                    &task_id,
+                    &endpoint.base_url,
+                    &session_id,
+                    runs_input,
+                    endpoint.auth.as_deref(),
+                ) {
+                    Ok(Some(content)) => {
+                        emit_stream_event(
+                            &app,
+                            RuntimeStreamEvent {
+                                task_id,
+                                kind: "done".to_string(),
+                                delta: String::new(),
+                                content: content.clone(),
+                                message: "Hermes session stream completed".to_string(),
+                            },
+                        )?;
+                        return Ok(RunHermesAgentOutput { content });
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = emit_stream_event(
+                            &app,
+                            RuntimeStreamEvent {
+                                task_id,
+                                kind: "error".to_string(),
+                                delta: String::new(),
+                                content: String::new(),
+                                message: error.clone(),
+                            },
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        // Fallback: native run event stream for gateways without session chat.
         if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
             let mut instructions = input.system_prompt.clone();
             if let Some(content) = context_message
@@ -4659,6 +4717,221 @@ fn gateway_supports_runs(base_url: &str, bearer_token: Option<&str>, task_id: &s
         && endpoint("run_stop") == "/v1/runs/{run_id}/stop"
 }
 
+#[allow(dead_code)]
+fn gateway_supports_session_chat_stream(
+    base_url: &str,
+    bearer_token: Option<&str>,
+    task_id: &str,
+) -> bool {
+    let Ok(response) = http_request_with_cancel(
+        base_url,
+        "GET",
+        "/v1/capabilities",
+        None,
+        bearer_token,
+        Some(task_id),
+    ) else {
+        return false;
+    };
+    if !(200..300).contains(&response.status) {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&response.body) else {
+        return false;
+    };
+    let feature = |name: &str| {
+        value
+            .pointer(&format!("/features/{name}"))
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false)
+    };
+    let endpoint = |name: &str| {
+        value
+            .pointer(&format!("/endpoints/{name}/path"))
+            .and_then(|item| item.as_str())
+            .unwrap_or_default()
+    };
+    feature("session_chat_streaming")
+        && endpoint("session_create") == "/api/sessions"
+        && endpoint("session_chat_stream") == "/api/sessions/{session_id}/chat/stream"
+}
+
+#[allow(dead_code)]
+fn http_create_gateway_session(
+    base_url: &str,
+    body: &str,
+    bearer_token: Option<&str>,
+    task_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let response = http_request_with_cancel(
+        base_url,
+        "POST",
+        "/api/sessions",
+        Some(body),
+        bearer_token,
+        task_id,
+    )?;
+    if !(200..300).contains(&response.status) {
+        return Ok(None);
+    }
+    let value = serde_json::from_str::<serde_json::Value>(&response.body)
+        .map_err(|error| format!("解析 Hermes session 创建响应失败：{error}"))?;
+    Ok(value
+        .pointer("/session/id")
+        .and_then(|item| item.as_str())
+        .or_else(|| value.get("id").and_then(|item| item.as_str()))
+        .or_else(|| value.get("session_id").and_then(|item| item.as_str()))
+        .map(|item| item.to_string()))
+}
+
+#[allow(dead_code)]
+fn http_stream_session_chat(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    session_id: &str,
+    text: &str,
+    bearer_token: Option<&str>,
+) -> Result<Option<String>, String> {
+    let body = json!({
+        "message": text,
+        "stream": true,
+    })
+    .to_string();
+    let path = format!(
+        "/api/sessions/{}/chat/stream",
+        encode_path_segment(session_id)
+    );
+    stream_gateway_sse_post(app, task_id, base_url, &path, &body, bearer_token)
+}
+
+#[allow(dead_code)]
+fn stream_gateway_sse_post(
+    app: &AppHandle,
+    task_id: &str,
+    base_url: &str,
+    path: &str,
+    body: &str,
+    bearer_token: Option<&str>,
+) -> Result<Option<String>, String> {
+    let target = parse_http_base(base_url)?;
+    let request_path = format!("{}{}", target.path_prefix, path);
+    let mut stream = TcpStream::connect((&*target.host, target.port))
+        .map_err(|error| format!("连接 {}:{} 失败：{error}", target.host, target.port))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|error| format!("设置读取超时失败：{error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(30)))
+        .map_err(|error| format!("设置写入超时失败：{error}"))?;
+
+    let auth_header = bearer_token
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("Authorization: Bearer {}\r\n", value.trim()))
+        .unwrap_or_default();
+    let length = body.len();
+    let request = format!(
+        "POST {request_path} HTTP/1.1\r\nHost: {host}\r\n{auth_header}Content-Type: application/json\r\nAccept: text/event-stream\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}",
+        host = target.host_header,
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("写入 HTTP 请求失败：{error}"))?;
+
+    let mut raw = Vec::new();
+    let mut headers: Option<String> = None;
+    let mut status = 0_u16;
+    let mut is_chunked = false;
+    let mut pending_body = Vec::new();
+    let mut plain_body = Vec::new();
+    let mut sse_buffer = String::new();
+    let mut full_content = String::new();
+    let mut full_reasoning = String::new();
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        if is_task_cancelled(Some(task_id)) {
+            return Err("任务已取消。".to_string());
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => {
+                if headers.is_none() {
+                    raw.extend_from_slice(&buffer[..size]);
+                    if let Some(index) = find_header_end(&raw) {
+                        let head = String::from_utf8_lossy(&raw[..index]).to_string();
+                        status = parse_http_status(&head)?;
+                        is_chunked = head.lines().any(|line| {
+                            line.to_ascii_lowercase().starts_with("transfer-encoding:")
+                                && line.to_ascii_lowercase().contains("chunked")
+                        });
+                        pending_body.extend_from_slice(&raw[index + 4..]);
+                        headers = Some(head);
+                    }
+                } else {
+                    pending_body.extend_from_slice(&buffer[..size]);
+                }
+
+                if headers.is_some() {
+                    if !(200..300).contains(&status) {
+                        return Ok(None);
+                    }
+                    if is_chunked {
+                        match drain_chunked_run_sse(
+                            app,
+                            task_id,
+                            base_url,
+                            bearer_token,
+                            &mut pending_body,
+                            &mut sse_buffer,
+                            &mut full_content,
+                            &mut full_reasoning,
+                        )? {
+                            RunSignal::Continue => {}
+                            RunSignal::Completed => return Ok(runs_result(full_content)),
+                            RunSignal::Fallback => {
+                                return Ok(if full_content.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(full_content)
+                                })
+                            }
+                        }
+                    } else {
+                        plain_body.extend_from_slice(&pending_body);
+                        pending_body.clear();
+                    }
+                }
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                continue
+            }
+            Err(error) => return Err(format!("读取 HTTP 响应失败：{error}")),
+        }
+    }
+
+    if headers.is_none() || !(200..300).contains(&status) {
+        return Ok(None);
+    }
+    if !is_chunked {
+        let body = String::from_utf8_lossy(&plain_body).to_string();
+        match process_run_sse_text(
+            app,
+            task_id,
+            base_url,
+            bearer_token,
+            &(body + "\n\n"),
+            &mut sse_buffer,
+            &mut full_content,
+            &mut full_reasoning,
+        )? {
+            RunSignal::Fallback if full_content.trim().is_empty() => return Ok(None),
+            _ => {}
+        }
+    }
+    Ok(runs_result(full_content))
+}
+
 /// Submit a run to `/v1/runs` and stream `/v1/runs/{run_id}/events`.
 ///
 /// Returns `Ok(Some(content))` on a completed run, `Ok(None)` when the run
@@ -5004,7 +5277,7 @@ fn handle_run_event(
         .unwrap_or("");
 
     match event_name {
-        "message.delta" => {
+        "message.delta" | "assistant.delta" => {
             let delta = value
                 .get("delta")
                 .and_then(|item| item.as_str())
@@ -5029,7 +5302,7 @@ fn handle_run_event(
             }
             Ok(RunSignal::Continue)
         }
-        "message.complete" => {
+        "message.complete" | "assistant.completed" => {
             let text = value
                 .pointer("/payload/text")
                 .and_then(|item| item.as_str())
@@ -5039,6 +5312,7 @@ fn handle_run_event(
                         .and_then(|item| item.as_str())
                 })
                 .or_else(|| value.get("text").and_then(|item| item.as_str()))
+                .or_else(|| value.get("content").and_then(|item| item.as_str()))
                 .unwrap_or("");
             if !text.is_empty() {
                 let suffix = completion_suffix(full_content, text);
@@ -5079,6 +5353,14 @@ fn handle_run_event(
             let output = value
                 .get("output")
                 .and_then(|item| item.as_str())
+                .or_else(|| {
+                    value
+                        .get("messages")
+                        .and_then(|item| item.as_array())
+                        .and_then(|items| items.last())
+                        .and_then(|item| item.get("content"))
+                        .and_then(|item| item.as_str())
+                })
                 .unwrap_or("");
             if !output.is_empty() && full_content.trim().is_empty() {
                 full_content.push_str(output);
@@ -5125,6 +5407,27 @@ fn handle_run_event(
             if is_tool_event_name(event_name) {
                 let status = tool_event_status(event_name);
                 let tool_event = tool_event_from_payload(event_name, value, &status);
+                if tool_event.name == "_thinking" {
+                    let text = if !tool_event.result.trim().is_empty() {
+                        tool_event.result.clone()
+                    } else {
+                        tool_event.preview.clone()
+                    };
+                    if !text.trim().is_empty() {
+                        full_reasoning.push_str(&text);
+                        emit_stream_event(
+                            app,
+                            RuntimeStreamEvent {
+                                task_id: task_id.to_string(),
+                                kind: "reasoning".to_string(),
+                                delta: text,
+                                content: full_reasoning.clone(),
+                                message: String::new(),
+                            },
+                        )?;
+                    }
+                    return Ok(RunSignal::Continue);
+                }
                 emit_stream_event(
                     app,
                     RuntimeStreamEvent {
@@ -5241,14 +5544,16 @@ fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta,
     let gateway_type = value
         .get("type")
         .and_then(|item| item.as_str())
+        .or_else(|| value.get("event").and_then(|item| item.as_str()))
         .unwrap_or("");
     let gateway_message_delta = match gateway_type {
-        "message.delta" => value
+        "message.delta" | "assistant.delta" => value
             .pointer("/payload/text")
             .and_then(|item| item.as_str())
+            .or_else(|| value.get("delta").and_then(|item| item.as_str()))
             .unwrap_or("")
             .to_string(),
-        "message.complete" => value
+        "message.complete" | "assistant.completed" => value
             .pointer("/payload/text")
             .and_then(|item| item.as_str())
             .or_else(|| {
@@ -5256,6 +5561,7 @@ fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta,
                     .pointer("/payload/rendered")
                     .and_then(|item| item.as_str())
             })
+            .or_else(|| value.get("content").and_then(|item| item.as_str()))
             .unwrap_or("")
             .to_string(),
         _ => String::new(),
@@ -5375,6 +5681,7 @@ fn tool_event_from_payload(
     let preview = stream_json_string(payload.get("preview"))
         .or_else(|| stream_json_string(payload.get("label")))
         .or_else(|| stream_json_string(payload.get("context")))
+        .or_else(|| stream_json_string(payload.get("delta")))
         .or_else(|| stream_json_string(payload.get("args_text")))
         .or_else(|| stream_json_string(payload.get("summary")))
         .or_else(|| stream_json_string(payload.get("input")))
@@ -5382,6 +5689,7 @@ fn tool_event_from_payload(
         .or_else(|| stream_json_string(payload.get("args")))
         .unwrap_or_default();
     let result = stream_json_string(payload.get("result_text"))
+        .or_else(|| stream_json_string(payload.get("delta")))
         .or_else(|| stream_json_string(payload.get("summary")))
         .or_else(|| stream_json_string(payload.get("output")))
         .or_else(|| stream_json_string(payload.get("result")))
