@@ -3754,6 +3754,16 @@ async fn run_hermes_agent_stream(
     // when the user payload has no inline image parts.
     if let Some(runs_input) = user_content.as_str() {
         if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
+            emit_stream_event(
+                &app,
+                RuntimeStreamEvent {
+                    task_id: task_id.clone(),
+                    kind: "tool".to_string(),
+                    delta: "running".to_string(),
+                    content: "running · transport\nHermes /v1/runs event stream".to_string(),
+                    message: format!("transport-{task_id}"),
+                },
+            )?;
             let mut instructions = input.system_prompt.clone();
             if let Some(content) = context_message
                 .as_ref()
@@ -3815,6 +3825,17 @@ async fn run_hermes_agent_stream(
             }
         }
     }
+
+    emit_stream_event(
+        &app,
+        RuntimeStreamEvent {
+            task_id: task_id.clone(),
+            kind: "tool".to_string(),
+            delta: "running".to_string(),
+            content: "running · transport\nHermes /v1/chat/completions SSE fallback".to_string(),
+            message: format!("transport-chat-{task_id}"),
+        },
+    )?;
 
     match http_stream_chat_completion(
         &app,
@@ -4862,6 +4883,22 @@ fn runs_result(content: String) -> Option<String> {
     }
 }
 
+fn completion_suffix(streamed: &str, final_text: &str) -> String {
+    if final_text.is_empty() {
+        return String::new();
+    }
+    if streamed.trim().is_empty() {
+        return final_text.to_string();
+    }
+    if final_text == streamed || final_text.trim() == streamed.trim() {
+        return String::new();
+    }
+    if let Some(suffix) = final_text.strip_prefix(streamed) {
+        return suffix.to_string();
+    }
+    String::new()
+}
+
 fn drain_chunked_run_sse(
     app: &AppHandle,
     task_id: &str,
@@ -4973,6 +5010,11 @@ fn handle_run_event(
             let delta = value
                 .get("delta")
                 .and_then(|item| item.as_str())
+                .or_else(|| {
+                    value
+                        .pointer("/payload/text")
+                        .and_then(|item| item.as_str())
+                })
                 .unwrap_or("");
             if !delta.is_empty() {
                 full_content.push_str(delta);
@@ -4986,6 +5028,35 @@ fn handle_run_event(
                         message: String::new(),
                     },
                 )?;
+            }
+            Ok(RunSignal::Continue)
+        }
+        "message.complete" => {
+            let text = value
+                .pointer("/payload/text")
+                .and_then(|item| item.as_str())
+                .or_else(|| {
+                    value
+                        .pointer("/payload/rendered")
+                        .and_then(|item| item.as_str())
+                })
+                .or_else(|| value.get("text").and_then(|item| item.as_str()))
+                .unwrap_or("");
+            if !text.is_empty() {
+                let suffix = completion_suffix(full_content, text);
+                if !suffix.is_empty() {
+                    full_content.push_str(&suffix);
+                    emit_stream_event(
+                        app,
+                        RuntimeStreamEvent {
+                            task_id: task_id.to_string(),
+                            kind: "delta".to_string(),
+                            delta: suffix,
+                            content: full_content.clone(),
+                            message: String::new(),
+                        },
+                    )?;
+                }
             }
             Ok(RunSignal::Continue)
         }
@@ -5089,6 +5160,14 @@ fn handle_run_event(
 /// (`reasoning: { text|content }`, `reasoning_details: [{ text|summary }]`) and
 /// the Hermes Gateway native `reasoning.delta` event (`payload.text`).
 fn extract_reasoning_delta(value: &serde_json::Value) -> String {
+    if value.get("type").and_then(|item| item.as_str()) == Some("reasoning.delta") {
+        if let Some(text) = value
+            .pointer("/payload/text")
+            .and_then(|item| item.as_str())
+        {
+            return text.to_string();
+        }
+    }
     if let Some(text) = reasoning_string(value.pointer("/choices/0/delta/reasoning_content")) {
         return text;
     }
@@ -5106,14 +5185,6 @@ fn extract_reasoning_delta(value: &serde_json::Value) -> String {
             .join("");
         if !joined.is_empty() {
             return joined;
-        }
-    }
-    if value.get("type").and_then(|item| item.as_str()) == Some("reasoning.delta") {
-        if let Some(text) = value
-            .pointer("/payload/text")
-            .and_then(|item| item.as_str())
-        {
-            return text.to_string();
         }
     }
     String::new()
@@ -5142,6 +5213,28 @@ fn reasoning_string(value: Option<&serde_json::Value>) -> Option<String> {
 fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta, String> {
     let value = serde_json::from_str::<serde_json::Value>(data)
         .map_err(|error| format!("Hermes Runtime 流式事件不是 JSON：{error}"))?;
+    let gateway_type = value
+        .get("type")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let gateway_message_delta = match gateway_type {
+        "message.delta" => value
+            .pointer("/payload/text")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "message.complete" => value
+            .pointer("/payload/text")
+            .and_then(|item| item.as_str())
+            .or_else(|| {
+                value
+                    .pointer("/payload/rendered")
+                    .and_then(|item| item.as_str())
+            })
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    };
     let message_delta = value
         .pointer("/choices/0/delta/content")
         .and_then(|item| item.as_str())
@@ -5158,16 +5251,6 @@ fn parse_stream_delta(event_type: &str, data: &str) -> Result<ParsedStreamDelta,
         .unwrap_or("")
         .to_string();
     let reasoning_delta = extract_reasoning_delta(&value);
-    let gateway_message_delta =
-        if value.get("type").and_then(|item| item.as_str()) == Some("message.delta") {
-            value
-                .pointer("/payload/text")
-                .and_then(|item| item.as_str())
-                .unwrap_or("")
-                .to_string()
-        } else {
-            String::new()
-        };
     Ok(ParsedStreamDelta {
         message_delta: if message_delta.is_empty() {
             gateway_message_delta
@@ -5226,13 +5309,27 @@ fn is_tool_event_name(value: &str) -> bool {
         || name.starts_with("tool_")
         || name.contains(".tool.")
         || name.contains("_tool_")
+        || matches!(
+            name.as_str(),
+            "tool.start"
+                | "tool.started"
+                | "tool.progress"
+                | "tool.generating"
+                | "tool.complete"
+                | "tool.completed"
+                | "tool.failed"
+        )
 }
 
 fn tool_event_status(event_name: &str) -> String {
     let name = event_name.to_ascii_lowercase();
     if name.contains("fail") || name.contains("error") {
         "failed".to_string()
-    } else if name.contains("complete") || name.contains("done") || name.contains("result") {
+    } else if name.contains("complete")
+        || name.contains("completed")
+        || name.contains("done")
+        || name.contains("result")
+    {
         "completed".to_string()
     } else {
         "running".to_string()
@@ -5252,11 +5349,15 @@ fn tool_event_from_payload(
         .unwrap_or_else(|| "tool".to_string());
     let preview = stream_json_string(payload.get("preview"))
         .or_else(|| stream_json_string(payload.get("label")))
+        .or_else(|| stream_json_string(payload.get("context")))
+        .or_else(|| stream_json_string(payload.get("args_text")))
+        .or_else(|| stream_json_string(payload.get("summary")))
         .or_else(|| stream_json_string(payload.get("input")))
         .or_else(|| stream_json_string(payload.get("arguments")))
         .or_else(|| stream_json_string(payload.get("args")))
         .unwrap_or_default();
     let result = stream_json_string(payload.get("result_text"))
+        .or_else(|| stream_json_string(payload.get("summary")))
         .or_else(|| stream_json_string(payload.get("output")))
         .or_else(|| stream_json_string(payload.get("result")))
         .or_else(|| stream_json_string(payload.get("content")))
@@ -5268,7 +5369,14 @@ fn tool_event_from_payload(
         .or_else(|| stream_json_string(payload.get("callId")))
         .or_else(|| stream_json_string(payload.get("id")));
     ParsedToolEvent {
-        call_id: explicit_call_id.unwrap_or_else(|| format!("{event_name}:{name}:{preview}")),
+        call_id: explicit_call_id.unwrap_or_else(|| {
+            let run_id = stream_json_string(payload.get("run_id")).unwrap_or_default();
+            if run_id.is_empty() {
+                format!("{event_name}:{name}:{preview}")
+            } else {
+                format!("{run_id}:{name}")
+            }
+        }),
         name,
         status: stream_json_string(payload.get("status"))
             .unwrap_or_else(|| fallback_status.to_string()),

@@ -3046,8 +3046,17 @@ export function App() {
             content,
           });
         }
+        const shouldReplacePlaceholder = content.trim().length > 0;
         return {
           ...current,
+          messages: current.messages.map((message) =>
+            message.id === streamMessageId && shouldReplacePlaceholder
+              ? {
+                  ...message,
+                  content: message.content === "正在生成..." || message.content.trim().length === 0 ? content : message.content,
+                }
+              : message,
+          ),
           tasks: current.tasks.map((item) =>
             item.id === taskId ? { ...item, status: "completed", completedAt: Date.now() } : item,
           ),
