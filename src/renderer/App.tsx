@@ -45,6 +45,7 @@ import { SidebarRecentSessions } from "./SidebarRecentSessions";
 import { WebPreviewPanel } from "./WebPreviewPanel";
 import { useReasoningEffort } from "./useReasoningEffort";
 import {
+  addHermesMemoryEntry,
   addCredentialPoolEntry,
   activateHermesModel,
   autofixConfigIssue,
@@ -92,9 +93,11 @@ import {
   loadHermesTeamState,
   probeHermesGateway,
   readHermesMemorySummary,
+  readHermesMemoryDetails,
   readHermesLog,
   readHermesMemoryContent,
   removeCredentialPoolEntry,
+  removeHermesMemoryEntry,
   removeHermesCronJob,
   removeHermesMcpServer,
   removeHermesSkill,
@@ -126,6 +129,7 @@ import {
   testMessagingPlatform,
   triggerHermesCronJob,
   updateMessagingPlatform,
+  updateHermesMemoryEntry,
   updateHermesTeamSessionTitle,
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
@@ -149,6 +153,7 @@ import {
   type InstalledSkillInfo,
   type McpServerInfo,
   type MemoryContent,
+  type MemoryDetails,
   type MemorySummary,
   type MessagingPlatformInfo,
   type MessagingPlatformsResponse,
@@ -452,8 +457,12 @@ export function App() {
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
   const [skills, setSkills] = useState<InstalledSkillInfo[]>([]);
   const [memorySummary, setMemorySummary] = useState<MemorySummary | null>(null);
+  const [memoryDetails, setMemoryDetails] = useState<MemoryDetails | null>(null);
   const [memoryContent, setMemoryContent] = useState<MemoryContent | null>(null);
   const [memoryDraft, setMemoryDraft] = useState({ memory: "", user: "" });
+  const [newMemoryEntry, setNewMemoryEntry] = useState("");
+  const [editingMemoryIndex, setEditingMemoryIndex] = useState<number | null>(null);
+  const [editingMemoryDraft, setEditingMemoryDraft] = useState("");
   const [skillQuery, setSkillQuery] = useState("");
   const [skillInstallForm, setSkillInstallForm] = useState<SkillInstallForm>(emptySkillInstallForm);
   const [models, setModels] = useState<SavedModel[]>([]);
@@ -879,8 +888,12 @@ export function App() {
       setMcpServers([]);
       setSkills([]);
       setMemorySummary(null);
+      setMemoryDetails(null);
       setMemoryContent(null);
       setMemoryDraft({ memory: "", user: "" });
+      setNewMemoryEntry("");
+      setEditingMemoryIndex(null);
+      setEditingMemoryDraft("");
       setModels([]);
       setActiveModel(null);
       setAuxiliaryModels([]);
@@ -897,6 +910,7 @@ export function App() {
         nextMcpServers,
         nextSkills,
         nextMemory,
+        nextMemoryDetails,
         nextMemoryContent,
         nextModels,
         nextActiveModel,
@@ -910,6 +924,7 @@ export function App() {
         listHermesMcpServers({ profile: targetProfile }),
         listHermesSkills({ profile: targetProfile }),
         readHermesMemorySummary({ profile: targetProfile }),
+        readHermesMemoryDetails({ profile: targetProfile }),
         readHermesMemoryContent({ profile: targetProfile }),
         listHermesModels(),
         getHermesModelConfig({ profile: targetProfile }),
@@ -923,6 +938,7 @@ export function App() {
       setMcpServers(nextMcpServers);
       setSkills(nextSkills);
       setMemorySummary(nextMemory);
+      setMemoryDetails(nextMemoryDetails);
       setMemoryContent(nextMemoryContent);
       setMemoryDraft({
         memory: nextMemoryContent.memory,
@@ -2297,6 +2313,78 @@ export function App() {
       setNotice(`${kind === "memory" ? "MEMORY.md" : "USER.md"} 已保存。`);
     } catch (error) {
       setNotice(`保存 Memory 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCapabilityBusy(false);
+    }
+  };
+
+  const addMemoryEntryFromDraft = async () => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setCapabilityBusy(true);
+    try {
+      const result = await addHermesMemoryEntry({
+        profile: targetProfile,
+        content: newMemoryEntry,
+      });
+      if (!result.success) {
+        setNotice(result.error || "新增 Memory 失败。");
+        return;
+      }
+      setNewMemoryEntry("");
+      await refreshHermesCapabilities(targetProfile);
+      setNotice("Memory 条目已新增。");
+    } catch (error) {
+      setNotice(`新增 Memory 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCapabilityBusy(false);
+    }
+  };
+
+  const saveEditingMemoryEntry = async () => {
+    if (editingMemoryIndex === null) return;
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setCapabilityBusy(true);
+    try {
+      const result = await updateHermesMemoryEntry({
+        profile: targetProfile,
+        index: editingMemoryIndex,
+        content: editingMemoryDraft,
+      });
+      if (!result.success) {
+        setNotice(result.error || "更新 Memory 失败。");
+        return;
+      }
+      setEditingMemoryIndex(null);
+      setEditingMemoryDraft("");
+      await refreshHermesCapabilities(targetProfile);
+      setNotice("Memory 条目已更新。");
+    } catch (error) {
+      setNotice(`更新 Memory 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCapabilityBusy(false);
+    }
+  };
+
+  const deleteMemoryEntry = async (index: number) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setCapabilityBusy(true);
+    try {
+      const result = await removeHermesMemoryEntry({
+        profile: targetProfile,
+        index,
+      });
+      if (!result.success) {
+        setNotice(result.error || "删除 Memory 失败。");
+        return;
+      }
+      if (editingMemoryIndex === index) {
+        setEditingMemoryIndex(null);
+        setEditingMemoryDraft("");
+      }
+      await refreshHermesCapabilities(targetProfile);
+      setNotice("Memory 条目已删除。");
+    } catch (error) {
+      setNotice(`删除 Memory 失败：${runtimeErrorMessage(error)}`);
     } finally {
       setCapabilityBusy(false);
     }
@@ -4304,31 +4392,119 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Memory</p>
-                    <h2>记忆编辑</h2>
+                    <h2>记忆管理</h2>
                   </div>
                 </div>
-                {memorySummary ? (
+                {memoryDetails && memorySummary ? (
                   <div className="memory-editor">
-                    <StatusRow label="MEMORY.md" value={`${memorySummary.memoryEntries} 条 · ${memorySummary.memoryChars} chars`} ok={memorySummary.memoryExists} />
-                    <textarea
-                      value={memoryDraft.memory}
-                      onChange={(event) => setMemoryDraft((current) => ({ ...current, memory: event.target.value }))}
-                      placeholder="MEMORY.md"
-                    />
-                    <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMemoryDraft("memory")}>
-                      <Save size={14} />
-                      <span>保存 MEMORY</span>
-                    </button>
-                    <StatusRow label="USER.md" value={`${memorySummary.userChars} chars`} ok={memorySummary.userExists} />
-                    <textarea
-                      value={memoryDraft.user}
-                      onChange={(event) => setMemoryDraft((current) => ({ ...current, user: event.target.value }))}
-                      placeholder="USER.md"
-                    />
-                    <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMemoryDraft("user")}>
-                      <Save size={14} />
-                      <span>保存 USER</span>
-                    </button>
+                    <div className="settings-rows memory-summary-grid">
+                      <StatusRow label="MEMORY.md" value={`${memorySummary.memoryEntries} 条 · ${memoryDetails.memory.charCount}/${memoryDetails.memory.charLimit} chars`} ok={memorySummary.memoryExists} />
+                      <StatusRow label="USER.md" value={`${memoryDetails.user.charCount}/${memoryDetails.user.charLimit} chars`} ok={memorySummary.userExists} />
+                      <StatusRow label="state.db" value={`${memoryDetails.stats.totalSessions} sessions · ${memoryDetails.stats.totalMessages} messages`} ok />
+                    </div>
+
+                    <div className="memory-entry-compose">
+                      <textarea
+                        value={newMemoryEntry}
+                        onChange={(event) => setNewMemoryEntry(event.target.value)}
+                        placeholder="新增一条长期记忆..."
+                      />
+                      <div className="memory-entry-compose-actions">
+                        <span>{newMemoryEntry.length} chars</span>
+                        <button
+                          className="refresh-runtime"
+                          disabled={capabilityBusy || !newMemoryEntry.trim()}
+                          type="button"
+                          onClick={() => void addMemoryEntryFromDraft()}
+                        >
+                          <Plus size={14} />
+                          <span>新增 Memory</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="memory-entry-list">
+                      {(memoryDetails.memory.entries ?? []).length > 0 ? (
+                        (memoryDetails.memory.entries ?? []).map((entry) => {
+                          const editing = editingMemoryIndex === entry.index;
+                          return (
+                            <article className="memory-entry-card" key={entry.index}>
+                              {editing ? (
+                                <>
+                                  <textarea
+                                    value={editingMemoryDraft}
+                                    onChange={(event) => setEditingMemoryDraft(event.target.value)}
+                                  />
+                                  <div className="memory-entry-actions">
+                                    <span>{editingMemoryDraft.length} chars</span>
+                                    <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveEditingMemoryEntry()}>
+                                      <Save size={14} />
+                                      <span>保存</span>
+                                    </button>
+                                    <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => {
+                                      setEditingMemoryIndex(null);
+                                      setEditingMemoryDraft("");
+                                    }}>
+                                      <span>取消</span>
+                                    </button>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <p>{entry.content}</p>
+                                  <div className="memory-entry-actions">
+                                    <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => {
+                                      setEditingMemoryIndex(entry.index);
+                                      setEditingMemoryDraft(entry.content);
+                                    }}>
+                                      <Settings size={14} />
+                                      <span>编辑</span>
+                                    </button>
+                                    <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => {
+                                      if (window.confirm("删除这条 Memory？")) {
+                                        void deleteMemoryEntry(entry.index);
+                                      }
+                                    }}>
+                                      <Trash2 size={14} />
+                                      <span>删除</span>
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </article>
+                          );
+                        })
+                      ) : (
+                        <p className="empty-note">当前 MEMORY.md 还没有条目。</p>
+                      )}
+                    </div>
+
+                    <div className="memory-raw-grid">
+                      <label>
+                        <span>MEMORY.md 原始内容</span>
+                        <textarea
+                          value={memoryDraft.memory}
+                          onChange={(event) => setMemoryDraft((current) => ({ ...current, memory: event.target.value }))}
+                          placeholder="MEMORY.md"
+                        />
+                        <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMemoryDraft("memory")}>
+                          <Save size={14} />
+                          <span>保存 MEMORY</span>
+                        </button>
+                      </label>
+                      <label>
+                        <span>USER.md Profile</span>
+                        <textarea
+                          value={memoryDraft.user}
+                          onChange={(event) => setMemoryDraft((current) => ({ ...current, user: event.target.value }))}
+                          placeholder="USER.md"
+                        />
+                        <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMemoryDraft("user")}>
+                          <Save size={14} />
+                          <span>保存 USER</span>
+                        </button>
+                      </label>
+                    </div>
                     {memoryContent && <p className="empty-note">{memoryContent.memoryPath}</p>}
                   </div>
                 ) : (

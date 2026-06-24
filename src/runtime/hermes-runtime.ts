@@ -186,6 +186,37 @@ export interface MemorySummary {
   userPath: string;
 }
 
+export interface MemoryEntry {
+  index: number;
+  content: string;
+}
+
+export interface MemoryFileInfo {
+  content: string;
+  exists: boolean;
+  lastModified?: number | null;
+  entries?: MemoryEntry[];
+  charCount: number;
+  charLimit: number;
+  path: string;
+}
+
+export interface MemoryStats {
+  totalSessions: number;
+  totalMessages: number;
+}
+
+export interface MemoryDetails {
+  memory: MemoryFileInfo;
+  user: MemoryFileInfo;
+  stats: MemoryStats;
+}
+
+export interface MemoryActionResult {
+  success: boolean;
+  error?: string | null;
+}
+
 export interface MemoryContent {
   memory: string;
   user: string;
@@ -687,6 +718,15 @@ export async function readHermesMemorySummary(params: {
   });
 }
 
+export async function readHermesMemoryDetails(params: {
+  profile?: string;
+} = {}): Promise<MemoryDetails> {
+  ensureTauriRuntime();
+  return invoke<MemoryDetails>("read_hermes_memory_details", {
+    profile: params.profile,
+  });
+}
+
 export async function readHermesMemoryContent(params: {
   profile?: string;
 } = {}): Promise<MemoryContent> {
@@ -703,6 +743,31 @@ export async function writeHermesMemoryContent(input: {
 }): Promise<MemoryContent> {
   ensureTauriRuntime();
   return invoke<MemoryContent>("write_hermes_memory_content", { input });
+}
+
+export async function addHermesMemoryEntry(input: {
+  profile?: string;
+  content: string;
+}): Promise<MemoryActionResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryActionResult>("add_hermes_memory_entry", { input });
+}
+
+export async function updateHermesMemoryEntry(input: {
+  profile?: string;
+  index: number;
+  content: string;
+}): Promise<MemoryActionResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryActionResult>("update_hermes_memory_entry", { input });
+}
+
+export async function removeHermesMemoryEntry(input: {
+  profile?: string;
+  index: number;
+}): Promise<MemoryActionResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryActionResult>("remove_hermes_memory_entry", { input });
 }
 
 export async function getHermesModelConfig(params: {

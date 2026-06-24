@@ -232,6 +232,47 @@ struct MemorySummary {
     user_path: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MemoryEntry {
+    index: usize,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryFileInfo {
+    content: String,
+    exists: bool,
+    last_modified: Option<u64>,
+    entries: Option<Vec<MemoryEntry>>,
+    char_count: usize,
+    char_limit: usize,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryStats {
+    total_sessions: u64,
+    total_messages: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryDetails {
+    memory: MemoryFileInfo,
+    user: MemoryFileInfo,
+    stats: MemoryStats,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryActionResult {
+    success: bool,
+    error: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MemoryContent {
@@ -247,6 +288,28 @@ struct WriteMemoryInput {
     profile: Option<String>,
     kind: String,
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryEntryInput {
+    profile: Option<String>,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateMemoryEntryInput {
+    profile: Option<String>,
+    index: usize,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoveMemoryEntryInput {
+    profile: Option<String>,
+    index: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1381,10 +1444,16 @@ async fn read_hermes_memory_summary(profile: Option<String>) -> Result<MemorySum
         user_exists: user_path.exists(),
         memory_chars: memory.chars().count(),
         user_chars: user.chars().count(),
-        memory_entries: parse_memory_entries(&memory),
+        memory_entries: parse_memory_entry_count(&memory),
         memory_path: memory_path.to_string_lossy().to_string(),
         user_path: user_path.to_string_lossy().to_string(),
     })
+}
+
+#[tauri::command]
+async fn read_hermes_memory_details(profile: Option<String>) -> Result<MemoryDetails, String> {
+    let profile = normalize_profile(profile.as_deref());
+    read_memory_details(profile.as_deref())
 }
 
 #[tauri::command]
@@ -1419,6 +1488,28 @@ async fn write_hermes_memory_content(input: WriteMemoryInput) -> Result<MemoryCo
     fs::write(&path, ensure_trailing_newline(&input.content))
         .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
     read_hermes_memory_content(input.profile).await
+}
+
+#[tauri::command]
+async fn add_hermes_memory_entry(input: MemoryEntryInput) -> Result<MemoryActionResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    add_memory_entry(profile.as_deref(), &input.content)
+}
+
+#[tauri::command]
+async fn update_hermes_memory_entry(
+    input: UpdateMemoryEntryInput,
+) -> Result<MemoryActionResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    update_memory_entry(profile.as_deref(), input.index, &input.content)
+}
+
+#[tauri::command]
+async fn remove_hermes_memory_entry(
+    input: RemoveMemoryEntryInput,
+) -> Result<MemoryActionResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    remove_memory_entry(profile.as_deref(), input.index)
 }
 
 #[tauri::command]
@@ -8737,15 +8828,217 @@ fn frontmatter_value(content: &str, key: &str) -> Option<String> {
     None
 }
 
-fn parse_memory_entries(content: &str) -> usize {
+const MEMORY_ENTRY_DELIMITER: &str = "\n§\n";
+const DEFAULT_MEMORY_CHAR_LIMIT: usize = 2200;
+const DEFAULT_USER_CHAR_LIMIT: usize = 1375;
+
+fn parse_memory_entry_count(content: &str) -> usize {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return 0;
     }
     trimmed
-        .split("\n§\n")
+        .split(MEMORY_ENTRY_DELIMITER)
         .filter(|entry| !entry.trim().is_empty())
         .count()
+}
+
+fn parse_memory_entry_list(content: &str) -> Vec<MemoryEntry> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+    content
+        .split(MEMORY_ENTRY_DELIMITER)
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let content = entry.trim();
+            if content.is_empty() {
+                None
+            } else {
+                Some(MemoryEntry {
+                    index,
+                    content: content.to_string(),
+                })
+            }
+        })
+        .collect()
+}
+
+fn serialize_memory_entries(entries: &[MemoryEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| entry.content.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>()
+        .join(MEMORY_ENTRY_DELIMITER)
+}
+
+fn memory_paths(profile: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
+    let memories_dir = profile_home(profile)?.join("memories");
+    Ok((memories_dir.join("MEMORY.md"), memories_dir.join("USER.md")))
+}
+
+fn memory_limits(profile: Option<&str>) -> Result<(usize, usize), String> {
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    let memory_limit = read_nested_yaml_scalar(&config, &["memory", "memory_char_limit"])
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MEMORY_CHAR_LIMIT);
+    let user_limit = read_nested_yaml_scalar(&config, &["memory", "user_char_limit"])
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_USER_CHAR_LIMIT);
+    Ok((memory_limit, user_limit))
+}
+
+fn read_memory_file_info(path: &Path, char_limit: usize, include_entries: bool) -> MemoryFileInfo {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    let last_modified = fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+    MemoryFileInfo {
+        char_count: content.chars().count(),
+        entries: include_entries.then(|| parse_memory_entry_list(&content)),
+        content,
+        exists: path.exists(),
+        last_modified,
+        char_limit,
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+fn read_memory_details(profile: Option<&str>) -> Result<MemoryDetails, String> {
+    let (memory_path, user_path) = memory_paths(profile)?;
+    let (memory_limit, user_limit) = memory_limits(profile)?;
+    Ok(MemoryDetails {
+        memory: read_memory_file_info(&memory_path, memory_limit, true),
+        user: read_memory_file_info(&user_path, user_limit, false),
+        stats: memory_stats(profile),
+    })
+}
+
+fn add_memory_entry(profile: Option<&str>, content: &str) -> Result<MemoryActionResult, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Ok(memory_action_error("Memory 内容不能为空。"));
+    }
+    let (memory_path, _) = memory_paths(profile)?;
+    let (memory_limit, _) = memory_limits(profile)?;
+    let existing = fs::read_to_string(&memory_path).unwrap_or_default();
+    let mut entries = parse_memory_entry_list(&existing);
+    entries.push(MemoryEntry {
+        index: entries.len(),
+        content: content.to_string(),
+    });
+    write_memory_entries(&memory_path, &entries, memory_limit)
+}
+
+fn update_memory_entry(
+    profile: Option<&str>,
+    index: usize,
+    content: &str,
+) -> Result<MemoryActionResult, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Ok(memory_action_error("Memory 内容不能为空。"));
+    }
+    let (memory_path, _) = memory_paths(profile)?;
+    let (memory_limit, _) = memory_limits(profile)?;
+    let existing = fs::read_to_string(&memory_path).unwrap_or_default();
+    let mut entries = parse_memory_entry_list(&existing);
+    let Some(entry) = entries.get_mut(index) else {
+        return Ok(memory_action_error("未找到 Memory 条目。"));
+    };
+    entry.content = content.to_string();
+    write_memory_entries(&memory_path, &entries, memory_limit)
+}
+
+fn remove_memory_entry(profile: Option<&str>, index: usize) -> Result<MemoryActionResult, String> {
+    let (memory_path, _) = memory_paths(profile)?;
+    let existing = fs::read_to_string(&memory_path).unwrap_or_default();
+    let mut entries = parse_memory_entry_list(&existing);
+    if index >= entries.len() {
+        return Ok(memory_action_error("未找到 Memory 条目。"));
+    }
+    entries.remove(index);
+    let serialized = serialize_memory_entries(&entries);
+    if let Some(parent) = memory_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    }
+    fs::write(&memory_path, serialized)
+        .map_err(|error| format!("写入 {} 失败：{error}", memory_path.to_string_lossy()))?;
+    Ok(MemoryActionResult {
+        success: true,
+        error: None,
+    })
+}
+
+fn write_memory_entries(
+    path: &Path,
+    entries: &[MemoryEntry],
+    char_limit: usize,
+) -> Result<MemoryActionResult, String> {
+    let serialized = serialize_memory_entries(entries);
+    let char_count = serialized.chars().count();
+    if char_count > char_limit {
+        return Ok(memory_action_error(&format!(
+            "超过 Memory 限制：{char_count}/{char_limit} chars"
+        )));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 {} 失败：{error}", parent.to_string_lossy()))?;
+    }
+    fs::write(path, serialized)
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
+    Ok(MemoryActionResult {
+        success: true,
+        error: None,
+    })
+}
+
+fn memory_action_error(message: &str) -> MemoryActionResult {
+    MemoryActionResult {
+        success: false,
+        error: Some(message.to_string()),
+    }
+}
+
+fn memory_stats(profile: Option<&str>) -> MemoryStats {
+    let profile_name = profile.unwrap_or("default");
+    let Ok(db_path) = state_db_path_for_profile(profile_name) else {
+        return MemoryStats {
+            total_sessions: 0,
+            total_messages: 0,
+        };
+    };
+    if !db_path.exists() {
+        return MemoryStats {
+            total_sessions: 0,
+            total_messages: 0,
+        };
+    }
+    let sql = "SELECT (SELECT COUNT(*) FROM sessions) AS total_sessions, (SELECT COUNT(*) FROM messages) AS total_messages";
+    let Ok(rows) = sqlite_json_rows(&db_path, sql) else {
+        return MemoryStats {
+            total_sessions: 0,
+            total_messages: 0,
+        };
+    };
+    let row = rows.first();
+    MemoryStats {
+        total_sessions: row
+            .and_then(|item| item.get("total_sessions"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        total_messages: row
+            .and_then(|item| item.get("total_messages"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+    }
 }
 
 fn unquote(value: &str) -> &str {
@@ -8781,8 +9074,12 @@ pub fn run() {
             install_hermes_skill,
             remove_hermes_skill,
             read_hermes_memory_summary,
+            read_hermes_memory_details,
             read_hermes_memory_content,
             write_hermes_memory_content,
+            add_hermes_memory_entry,
+            update_hermes_memory_entry,
+            remove_hermes_memory_entry,
             get_app_settings,
             save_app_settings,
             get_update_status,
