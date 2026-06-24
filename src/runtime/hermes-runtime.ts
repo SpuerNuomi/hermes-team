@@ -211,6 +211,16 @@ export interface ActiveModelConfig {
   contextLength?: number;
 }
 
+export interface AuxiliaryModelConfig {
+  task: string;
+  label: string;
+  hint: string;
+  provider: string;
+  model: string;
+  baseUrl: string;
+  contextLength?: number;
+}
+
 export interface SaveModelInput {
   id?: string;
   name: string;
@@ -280,6 +290,26 @@ export interface ProviderDiscoveryResult {
   freeModels: string[];
   modelCount: number;
   models: DiscoveredModel[];
+}
+
+export interface RegistryLibraryModel {
+  id: string;
+  label: string;
+  contextLength?: number;
+  source: string;
+  saved: boolean;
+  free: boolean;
+}
+
+export interface RegistryLibraryProvider {
+  provider: string;
+  label: string;
+  authType: string;
+  baseUrl: string;
+  discoverable: boolean;
+  status: string;
+  message: string;
+  models: RegistryLibraryModel[];
 }
 
 export interface CronRepeat {
@@ -727,6 +757,27 @@ export async function activateHermesModel(input: {
   return invoke<ActiveModelConfig>("activate_hermes_model", { input });
 }
 
+export async function listAuxiliaryModelConfigs(params: {
+  profile?: string;
+} = {}): Promise<AuxiliaryModelConfig[]> {
+  ensureTauriRuntime();
+  return invoke<AuxiliaryModelConfig[]>("list_auxiliary_model_configs", {
+    profile: params.profile,
+  });
+}
+
+export async function saveAuxiliaryModelConfig(input: {
+  profile?: string;
+  task: string;
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  contextLength?: number;
+}): Promise<AuxiliaryModelConfig[]> {
+  ensureTauriRuntime();
+  return invoke<AuxiliaryModelConfig[]>("save_auxiliary_model_config", { input });
+}
+
 export async function listProviderKeys(params: {
   profile?: string;
 } = {}): Promise<ProviderKeyInfo[]> {
@@ -741,6 +792,15 @@ export async function listProviderRegistry(params: {
 } = {}): Promise<ProviderRegistryEntry[]> {
   ensureTauriRuntime();
   return invoke<ProviderRegistryEntry[]>("list_provider_registry", {
+    profile: params.profile,
+  });
+}
+
+export async function listRegistryModelLibrary(params: {
+  profile?: string;
+} = {}): Promise<RegistryLibraryProvider[]> {
+  ensureTauriRuntime();
+  return invoke<RegistryLibraryProvider[]>("list_registry_model_library", {
     profile: params.profile,
   });
 }

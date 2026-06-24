@@ -19,6 +19,7 @@ import {
   StopCircle,
   TerminalSquare,
   Trash2,
+  WandSparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { classifyAssistantHandoff } from "../core/handoff";
@@ -70,6 +71,7 @@ import {
   inspectHermesInstall,
   installHermesSkill,
   isTauriRuntimeAvailable,
+  listAuxiliaryModelConfigs,
   listCredentialPool,
   listHermesCronJobs,
   listHermesLogs,
@@ -82,6 +84,7 @@ import {
   listMessagingPlatforms,
   listProviderKeys,
   listProviderRegistry,
+  listRegistryModelLibrary,
   listenHermesAgentStream,
   loadHermesTeamSessions,
   loadHermesStateSession,
@@ -99,6 +102,7 @@ import {
   runHermesUpdate,
   runHermesTaskStream,
   saveAppSettings,
+  saveAuxiliaryModelConfig,
   saveHermesMcpServer,
   saveHermesTeamSession,
   saveHermesTeamState,
@@ -127,6 +131,7 @@ import {
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
   type AppSettings,
+  type AuxiliaryModelConfig,
   type ConfigHealthIssue,
   type ConfigHealthReport,
   type CronJobActionResult,
@@ -151,6 +156,8 @@ import {
   type ProviderDiscoveryResult,
   type ProviderKeyInfo,
   type ProviderRegistryEntry,
+  type RegistryLibraryModel,
+  type RegistryLibraryProvider,
   type RemoteConnectionConfig,
   type RemoteConnectionStatus,
   type RuntimeStreamEvent,
@@ -451,6 +458,8 @@ export function App() {
   const [skillInstallForm, setSkillInstallForm] = useState<SkillInstallForm>(emptySkillInstallForm);
   const [models, setModels] = useState<SavedModel[]>([]);
   const [activeModel, setActiveModel] = useState<ActiveModelConfig | null>(null);
+  const [auxiliaryModels, setAuxiliaryModels] = useState<AuxiliaryModelConfig[]>([]);
+  const [registryLibrary, setRegistryLibrary] = useState<RegistryLibraryProvider[]>([]);
   const [modelForm, setModelForm] = useState<ModelForm>(emptyModelForm);
   const [providerKeys, setProviderKeys] = useState<ProviderKeyInfo[]>([]);
   const [providerRegistry, setProviderRegistry] = useState<ProviderRegistryEntry[]>([]);
@@ -465,6 +474,8 @@ export function App() {
   const [messagingEnvDrafts, setMessagingEnvDrafts] = useState<MessagingEnvDrafts>({});
   const [providerDiscovery, setProviderDiscovery] = useState<ProviderDiscoveryResult | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
+  const [auxiliaryBusyTask, setAuxiliaryBusyTask] = useState<string | null>(null);
+  const [registryBusy, setRegistryBusy] = useState(false);
   const [providerBusy, setProviderBusy] = useState(false);
   const [oauthBusyProvider, setOauthBusyProvider] = useState<string | null>(null);
   const [capabilityBusy, setCapabilityBusy] = useState(false);
@@ -872,6 +883,8 @@ export function App() {
       setMemoryDraft({ memory: "", user: "" });
       setModels([]);
       setActiveModel(null);
+      setAuxiliaryModels([]);
+      setRegistryLibrary([]);
       setProviderKeys([]);
       setProviderRegistry([]);
       setCredentialPool([]);
@@ -887,6 +900,8 @@ export function App() {
         nextMemoryContent,
         nextModels,
         nextActiveModel,
+        nextAuxiliaryModels,
+        nextRegistryLibrary,
         nextProviderKeys,
         nextProviderRegistry,
         nextCredentialPool,
@@ -898,6 +913,8 @@ export function App() {
         readHermesMemoryContent({ profile: targetProfile }),
         listHermesModels(),
         getHermesModelConfig({ profile: targetProfile }),
+        listAuxiliaryModelConfigs({ profile: targetProfile }),
+        listRegistryModelLibrary({ profile: targetProfile }),
         listProviderKeys({ profile: targetProfile }),
         listProviderRegistry({ profile: targetProfile }),
         listCredentialPool({ profile: targetProfile }),
@@ -913,6 +930,8 @@ export function App() {
       });
       setModels(nextModels);
       setActiveModel(nextActiveModel);
+      setAuxiliaryModels(nextAuxiliaryModels);
+      setRegistryLibrary(nextRegistryLibrary);
       setProviderKeys(nextProviderKeys);
       setProviderRegistry(nextProviderRegistry);
       setCredentialPool(nextCredentialPool);
@@ -2129,6 +2148,72 @@ export function App() {
       baseUrl,
       contextLength: contextLength ? String(contextLength) : current.contextLength,
     }));
+  };
+
+  const updateAuxiliaryModelDraft = (
+    task: string,
+    patch: Partial<Pick<AuxiliaryModelConfig, "provider" | "model" | "baseUrl" | "contextLength">>,
+  ) => {
+    setAuxiliaryModels((current) =>
+      current.map((item) => (item.task === task ? { ...item, ...patch } : item)),
+    );
+  };
+
+  const saveAuxiliaryModel = async (item: AuxiliaryModelConfig) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setAuxiliaryBusyTask(item.task);
+    try {
+      const next = await saveAuxiliaryModelConfig({
+        profile: targetProfile,
+        task: item.task,
+        provider: item.provider || "auto",
+        model: item.model,
+        baseUrl: item.baseUrl,
+        contextLength: item.contextLength,
+      });
+      setAuxiliaryModels(next);
+      setNotice(`${item.label} 辅助模型已保存到 ${targetProfile}。`);
+      await refreshConfigHealth(targetProfile);
+    } catch (error) {
+      setNotice(`保存辅助模型失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setAuxiliaryBusyTask(null);
+    }
+  };
+
+  const resetAuxiliaryDraftToAuto = (task: string) => {
+    updateAuxiliaryModelDraft(task, {
+      provider: "auto",
+      model: "",
+      baseUrl: "",
+      contextLength: undefined,
+    });
+  };
+
+  const refreshRegistryLibrary = async () => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setRegistryBusy(true);
+    try {
+      const next = await listRegistryModelLibrary({ profile: targetProfile });
+      setRegistryLibrary(next);
+      setNotice("模型库已刷新。");
+    } catch (error) {
+      setNotice(`刷新模型库失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setRegistryBusy(false);
+    }
+  };
+
+  const pickRegistryModel = (provider: RegistryLibraryProvider, model: RegistryLibraryModel) => {
+    setModelForm((current) => ({
+      ...current,
+      name: current.name || model.label || model.id,
+      provider: provider.provider,
+      model: model.id,
+      baseUrl: provider.baseUrl,
+      contextLength: model.contextLength ? String(model.contextLength) : current.contextLength,
+    }));
+    setNotice(`已填入 ${provider.label} · ${model.id}，确认后保存。`);
   };
 
   const toggleToolset = async (toolset: ToolsetInfo) => {
@@ -3480,6 +3565,128 @@ export function App() {
                         <Plus size={14} />
                         <span>新建</span>
                       </button>
+                    </div>
+                  </div>
+
+                  <div className="model-subpanel">
+                    <div className="model-subpanel-head">
+                      <div>
+                        <strong>辅助模型</strong>
+                        <span>为 Hermes 的标题、压缩、图片理解等后台任务单独指定模型。</span>
+                      </div>
+                    </div>
+                    <div className="auxiliary-model-grid">
+                      {auxiliaryModels.map((item) => {
+                        const contextValue = item.contextLength ? String(item.contextLength) : "";
+                        const busy = auxiliaryBusyTask === item.task;
+                        return (
+                          <article className="auxiliary-model-card" key={item.task}>
+                            <div className="auxiliary-model-title">
+                              <WandSparkles size={15} />
+                              <strong>{item.label}</strong>
+                              <em>{item.provider || "auto"}</em>
+                            </div>
+                            <p>{item.hint}</p>
+                            <div className="auxiliary-model-fields">
+                              <label>
+                                <span>Provider</span>
+                                <input
+                                  value={item.provider}
+                                  onChange={(event) => updateAuxiliaryModelDraft(item.task, { provider: event.target.value })}
+                                  placeholder="auto"
+                                />
+                              </label>
+                              <label>
+                                <span>Model</span>
+                                <input
+                                  value={item.model}
+                                  onChange={(event) => updateAuxiliaryModelDraft(item.task, { model: event.target.value })}
+                                  placeholder="auto 使用主模型"
+                                />
+                              </label>
+                              <label>
+                                <span>Base URL</span>
+                                <input
+                                  value={item.baseUrl}
+                                  onChange={(event) => updateAuxiliaryModelDraft(item.task, { baseUrl: event.target.value })}
+                                  placeholder="可选"
+                                />
+                              </label>
+                              <label>
+                                <span>Context</span>
+                                <input
+                                  value={contextValue}
+                                  onChange={(event) => {
+                                    const value = Number.parseInt(event.target.value.trim(), 10);
+                                    updateAuxiliaryModelDraft(item.task, {
+                                      contextLength: Number.isFinite(value) && value > 0 ? value : undefined,
+                                    });
+                                  }}
+                                  placeholder="可选"
+                                />
+                              </label>
+                            </div>
+                            <div className="model-card-actions">
+                              <button disabled={busy} type="button" onClick={() => void saveAuxiliaryModel(item)}>
+                                <Save size={14} />
+                                <span>{busy ? "保存中..." : "保存"}</span>
+                              </button>
+                              <button disabled={busy} type="button" onClick={() => resetAuxiliaryDraftToAuto(item.task)}>
+                                <RefreshCw size={14} />
+                                <span>Auto</span>
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="model-subpanel">
+                    <div className="model-subpanel-head">
+                      <div>
+                        <strong>Registry Model Library</strong>
+                        <span>从 Hermes provider registry、默认模型、本地模型和 OAuth registry 聚合。</span>
+                      </div>
+                      <button className="refresh-runtime" disabled={registryBusy} type="button" onClick={() => void refreshRegistryLibrary()}>
+                        <RefreshCw size={14} />
+                        <span>{registryBusy ? "刷新中..." : "刷新模型库"}</span>
+                      </button>
+                    </div>
+                    <div className="registry-library-grid">
+                      {registryLibrary.some((provider) => provider.models.length > 0) ? (
+                        registryLibrary
+                          .filter((provider) => provider.models.length > 0)
+                          .map((provider) => (
+                            <article className="registry-library-provider" key={provider.provider}>
+                              <div className="registry-library-provider-head">
+                                <div>
+                                  <strong>{provider.label}</strong>
+                                  <span>{provider.provider} · {provider.status}</span>
+                                </div>
+                                <em>{provider.models.length}</em>
+                              </div>
+                              <small>{provider.baseUrl || provider.authType}</small>
+                              <div className="registry-library-models">
+                                {provider.models.slice(0, 12).map((model) => (
+                                  <button
+                                    className={model.saved ? "saved" : ""}
+                                    key={`${provider.provider}:${model.id}`}
+                                    type="button"
+                                    title={`${model.source}${model.contextLength ? ` · ${model.contextLength} tokens` : ""}`}
+                                    onClick={() => pickRegistryModel(provider, model)}
+                                  >
+                                    <span>{model.label || model.id}</span>
+                                    {model.free && <em>free</em>}
+                                    {model.saved && <em>saved</em>}
+                                  </button>
+                                ))}
+                              </div>
+                            </article>
+                          ))
+                      ) : (
+                        <p className="empty-note">模型库暂无可显示模型。可以先刷新 Provider 或保存一个模型。</p>
+                      )}
                     </div>
                   </div>
 

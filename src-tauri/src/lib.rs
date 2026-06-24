@@ -350,6 +350,18 @@ struct ActiveModelConfig {
     context_length: Option<u64>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AuxiliaryModelConfig {
+    task: String,
+    label: String,
+    hint: String,
+    provider: String,
+    model: String,
+    base_url: String,
+    context_length: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveModelInput {
@@ -366,6 +378,17 @@ struct SaveModelInput {
 #[serde(rename_all = "camelCase")]
 struct ActivateModelInput {
     profile: Option<String>,
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+    context_length: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveAuxiliaryModelInput {
+    profile: Option<String>,
+    task: String,
     provider: String,
     model: String,
     base_url: Option<String>,
@@ -509,6 +532,30 @@ struct ProviderDiscoveryResult {
     free_models: Vec<String>,
     model_count: usize,
     models: Vec<DiscoveredModel>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryLibraryModel {
+    id: String,
+    label: String,
+    context_length: Option<u64>,
+    source: String,
+    saved: bool,
+    free: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryLibraryProvider {
+    provider: String,
+    label: String,
+    auth_type: String,
+    base_url: String,
+    discoverable: bool,
+    status: String,
+    message: String,
+    models: Vec<RegistryLibraryModel>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1567,6 +1614,30 @@ async fn activate_hermes_model(input: ActivateModelInput) -> Result<ActiveModelC
 }
 
 #[tauri::command]
+async fn list_auxiliary_model_configs(
+    profile: Option<String>,
+) -> Result<Vec<AuxiliaryModelConfig>, String> {
+    let profile = normalize_profile(profile.as_deref());
+    read_auxiliary_model_configs(profile.as_deref())
+}
+
+#[tauri::command]
+async fn save_auxiliary_model_config(
+    input: SaveAuxiliaryModelInput,
+) -> Result<Vec<AuxiliaryModelConfig>, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    write_auxiliary_model_config(
+        profile.as_deref(),
+        &input.task,
+        &input.provider,
+        &input.model,
+        input.base_url.as_deref().unwrap_or(""),
+        input.context_length.filter(|value| *value > 0),
+    )?;
+    read_auxiliary_model_configs(profile.as_deref())
+}
+
+#[tauri::command]
 async fn list_provider_keys(profile: Option<String>) -> Result<Vec<ProviderKeyInfo>, String> {
     let profile = normalize_profile(profile.as_deref());
     let env = read_profile_file(profile.as_deref(), ".env")?.unwrap_or_default();
@@ -1618,6 +1689,15 @@ async fn list_provider_registry(
             }
         })
         .collect())
+}
+
+#[tauri::command]
+async fn list_registry_model_library(
+    profile: Option<String>,
+) -> Result<Vec<RegistryLibraryProvider>, String> {
+    let _profile = normalize_profile(profile.as_deref());
+    let saved_models = read_models()?;
+    Ok(build_registry_model_library(&saved_models))
 }
 
 #[tauri::command]
@@ -5861,6 +5941,111 @@ fn read_model_config(profile: Option<&str>) -> Result<ActiveModelConfig, String>
     })
 }
 
+const AUXILIARY_MODEL_TASKS: &[(&str, &str, &str)] = &[
+    ("vision", "Vision", "图片与截图理解"),
+    ("web_extract", "Web Extract", "网页内容抽取"),
+    ("compression", "Compression", "上下文压缩"),
+    ("skills_hub", "Skills Hub", "技能检索与选择"),
+    ("approval", "Approval", "审批与确认判断"),
+    ("mcp", "MCP", "工具与 MCP 调用规划"),
+    ("title_generation", "Title Generation", "会话标题生成"),
+    ("triage_specifier", "Triage Specifier", "任务分流与规格化"),
+    ("kanban_decomposer", "Kanban Decomposer", "任务板拆解"),
+    ("profile_describer", "Profile Describer", "Profile 摘要描述"),
+    ("curator", "Curator", "内容整理与策展"),
+];
+
+fn read_auxiliary_model_configs(
+    profile: Option<&str>,
+) -> Result<Vec<AuxiliaryModelConfig>, String> {
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    Ok(AUXILIARY_MODEL_TASKS
+        .iter()
+        .map(|(task, label, hint)| AuxiliaryModelConfig {
+            task: (*task).to_string(),
+            label: (*label).to_string(),
+            hint: (*hint).to_string(),
+            provider: read_nested_yaml_scalar(&config, &["auxiliary", task, "provider"])
+                .unwrap_or_else(|| "auto".to_string()),
+            model: read_nested_yaml_scalar(&config, &["auxiliary", task, "model"])
+                .unwrap_or_default(),
+            base_url: read_nested_yaml_scalar(&config, &["auxiliary", task, "base_url"])
+                .unwrap_or_default(),
+            context_length: read_nested_yaml_scalar(
+                &config,
+                &["auxiliary", task, "context_length"],
+            )
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0),
+        })
+        .collect())
+}
+
+fn write_auxiliary_model_config(
+    profile: Option<&str>,
+    task: &str,
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    context_length: Option<u64>,
+) -> Result<(), String> {
+    if !AUXILIARY_MODEL_TASKS
+        .iter()
+        .any(|(known_task, _, _)| *known_task == task.trim())
+    {
+        return Err(format!("未知辅助模型任务：{}", task.trim()));
+    }
+    let provider = if provider.trim().is_empty() {
+        "auto"
+    } else {
+        provider.trim()
+    };
+    let home = profile_home(profile)?;
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("config.yaml");
+    let mut content = if path.exists() {
+        fs::read_to_string(&path)
+            .map_err(|error| format!("读取 {} 失败：{error}", path.to_string_lossy()))?
+    } else {
+        String::new()
+    };
+    content = set_nested_yaml_field(
+        &content,
+        "auxiliary",
+        task.trim(),
+        "provider",
+        &quote_yaml(provider),
+    );
+    content = set_nested_yaml_field(
+        &content,
+        "auxiliary",
+        task.trim(),
+        "model",
+        &quote_yaml(model.trim()),
+    );
+    content = set_nested_yaml_field(
+        &content,
+        "auxiliary",
+        task.trim(),
+        "base_url",
+        &quote_yaml(base_url.trim()),
+    );
+    content = if let Some(value) = context_length {
+        set_nested_yaml_field(
+            &content,
+            "auxiliary",
+            task.trim(),
+            "context_length",
+            &value.to_string(),
+        )
+    } else {
+        remove_nested_yaml_field(&content, "auxiliary", task.trim(), "context_length")
+    };
+    fs::write(&path, ensure_trailing_newline(&content))
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
 fn normalize_reasoning_effort(value: &str) -> String {
     match value.trim().to_lowercase().as_str() {
         "minimal" => "minimal".to_string(),
@@ -6011,6 +6196,138 @@ fn remove_block_child(content: &str, block: &str, key: &str) -> String {
 
 fn quote_yaml(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn set_nested_yaml_field(
+    content: &str,
+    parent: &str,
+    child: &str,
+    field: &str,
+    rendered_value: &str,
+) -> String {
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let parent_header = format!("{parent}:");
+    let parent_idx = lines
+        .iter()
+        .position(|line| line.trim_end() == parent_header && !line.starts_with(' '));
+    let Some(parent_idx) = parent_idx else {
+        if !content.is_empty() && !content.ends_with('\n') {
+            lines.push(String::new());
+        }
+        lines.push(format!("{parent}:"));
+        lines.push(format!("  {child}:"));
+        lines.push(format!("    {field}: {rendered_value}"));
+        return lines.join("\n");
+    };
+
+    let parent_end = top_level_block_end(&lines, parent_idx);
+    let child_idx = lines[parent_idx + 1..parent_end]
+        .iter()
+        .position(|line| {
+            line.trim_end() == format!("{child}:")
+                && line.starts_with(' ')
+                && !line.starts_with("    ")
+        })
+        .map(|index| parent_idx + 1 + index);
+    let Some(child_idx) = child_idx else {
+        lines.insert(parent_idx + 1, format!("    {field}: {rendered_value}"));
+        lines.insert(parent_idx + 1, format!("  {child}:"));
+        return lines.join("\n");
+    };
+
+    let child_indent = lines[child_idx].chars().take_while(|ch| *ch == ' ').count();
+    let child_end = nested_block_end(&lines, child_idx, parent_end, child_indent);
+    let field_idx = lines[child_idx + 1..child_end]
+        .iter()
+        .position(|line| {
+            line.trim_start().starts_with(&format!("{field}:"))
+                && line.chars().take_while(|ch| *ch == ' ').count() > child_indent
+        })
+        .map(|index| child_idx + 1 + index);
+    if let Some(field_idx) = field_idx {
+        let indent = lines[field_idx]
+            .chars()
+            .take_while(|ch| *ch == ' ')
+            .collect::<String>();
+        lines[field_idx] = format!("{indent}{field}: {rendered_value}");
+    } else {
+        lines.insert(
+            child_idx + 1,
+            format!("{}  {field}: {rendered_value}", " ".repeat(child_indent)),
+        );
+    }
+    lines.join("\n")
+}
+
+fn remove_nested_yaml_field(content: &str, parent: &str, child: &str, field: &str) -> String {
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let parent_header = format!("{parent}:");
+    let Some(parent_idx) = lines
+        .iter()
+        .position(|line| line.trim_end() == parent_header && !line.starts_with(' '))
+    else {
+        return content.to_string();
+    };
+    let parent_end = top_level_block_end(&lines, parent_idx);
+    let Some(child_idx) = lines[parent_idx + 1..parent_end]
+        .iter()
+        .position(|line| {
+            line.trim_end() == format!("{child}:")
+                && line.starts_with(' ')
+                && !line.starts_with("    ")
+        })
+        .map(|index| parent_idx + 1 + index)
+    else {
+        return content.to_string();
+    };
+    let child_indent = lines[child_idx].chars().take_while(|ch| *ch == ' ').count();
+    let child_end = nested_block_end(&lines, child_idx, parent_end, child_indent);
+    if let Some(field_idx) = lines[child_idx + 1..child_end]
+        .iter()
+        .position(|line| {
+            line.trim_start().starts_with(&format!("{field}:"))
+                && line.chars().take_while(|ch| *ch == ' ').count() > child_indent
+        })
+        .map(|index| child_idx + 1 + index)
+    {
+        lines.remove(field_idx);
+    }
+    lines.join("\n")
+}
+
+fn top_level_block_end(lines: &[String], start: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find_map(|(index, line)| {
+            if !line.trim().is_empty() && !line.starts_with(' ') {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(lines.len())
+}
+
+fn nested_block_end(lines: &[String], start: usize, limit: usize, indent: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .take(limit)
+        .skip(start + 1)
+        .find_map(|(index, line)| {
+            if line.trim().is_empty() {
+                return None;
+            }
+            let line_indent = line.chars().take_while(|ch| *ch == ' ').count();
+            if line_indent <= indent {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(limit)
 }
 
 fn ensure_trailing_newline(content: &str) -> String {
@@ -6205,6 +6522,121 @@ fn provider_is_discoverable(provider: &str, base_url: &str) -> bool {
     provider_is_oauth(provider)
         || (!provider_discovery_unsupported(provider)
             && (!base_url.trim().is_empty() || canonical_provider_base_url(provider).is_some()))
+}
+
+fn build_registry_model_library(saved_models: &[SavedModel]) -> Vec<RegistryLibraryProvider> {
+    let defs = provider_registry_defs();
+    let defaults = default_models();
+    let mut provider_ids = defs
+        .iter()
+        .map(|def| def.id.to_string())
+        .collect::<Vec<_>>();
+    for model in saved_models.iter().chain(defaults.iter()) {
+        if !provider_ids
+            .iter()
+            .any(|provider| provider == &model.provider)
+        {
+            provider_ids.push(model.provider.clone());
+        }
+    }
+    provider_ids.sort();
+    provider_ids
+        .into_iter()
+        .map(|provider| {
+            let def = defs.iter().find(|item| item.id == provider.as_str());
+            let label = def
+                .map(|item| item.label.to_string())
+                .unwrap_or_else(|| provider.to_string());
+            let base_url = def
+                .map(|item| item.base_url.to_string())
+                .or_else(|| canonical_provider_base_url(&provider).map(str::to_string))
+                .or_else(|| {
+                    saved_models
+                        .iter()
+                        .chain(defaults.iter())
+                        .find(|model| model.provider == provider && !model.base_url.is_empty())
+                        .map(|model| model.base_url.clone())
+                })
+                .unwrap_or_default();
+            let auth_type = def
+                .map(|item| item.auth_type.to_string())
+                .unwrap_or_else(|| "api_key".to_string());
+            let mut seen = HashSet::new();
+            let mut models = Vec::new();
+            for model in saved_models
+                .iter()
+                .filter(|model| model.provider == provider)
+            {
+                if seen.insert(model.model.clone()) {
+                    models.push(RegistryLibraryModel {
+                        id: model.model.clone(),
+                        label: model.name.clone(),
+                        context_length: model.context_length,
+                        source: "local".to_string(),
+                        saved: true,
+                        free: false,
+                    });
+                }
+            }
+            for model in defaults.iter().filter(|model| model.provider == provider) {
+                if seen.insert(model.model.clone()) {
+                    models.push(RegistryLibraryModel {
+                        id: model.model.clone(),
+                        label: model.name.clone(),
+                        context_length: model.context_length,
+                        source: "hermes-default".to_string(),
+                        saved: saved_models
+                            .iter()
+                            .any(|saved| saved.provider == provider && saved.model == model.model),
+                        free: false,
+                    });
+                }
+            }
+            if provider_is_oauth(&provider) {
+                let oauth_models = discover_oauth_provider_models(&provider);
+                let free_models = oauth_free_models(&provider, &oauth_models);
+                for id in oauth_models {
+                    if seen.insert(id.clone()) {
+                        models.push(RegistryLibraryModel {
+                            id: id.clone(),
+                            label: id.clone(),
+                            context_length: None,
+                            source: "oauth-registry".to_string(),
+                            saved: saved_models
+                                .iter()
+                                .any(|saved| saved.provider == provider && saved.model == id),
+                            free: free_models.iter().any(|item| item == &id),
+                        });
+                    }
+                }
+            }
+            models.sort_by(|left, right| left.id.cmp(&right.id));
+            let status = if provider_is_oauth(&provider) && !models.is_empty() {
+                "registry"
+            } else if models.is_empty() {
+                "empty"
+            } else {
+                "local"
+            };
+            let message = if provider_is_oauth(&provider) {
+                format!("{} 个 OAuth registry 模型", models.len())
+            } else if models.is_empty() {
+                "当前本地模型库没有该 provider 的模型".to_string()
+            } else {
+                format!("{} 个本地/默认模型", models.len())
+            };
+            RegistryLibraryProvider {
+                provider: provider.clone(),
+                label,
+                auth_type,
+                base_url: base_url.clone(),
+                discoverable: provider_is_discoverable(&provider, &base_url),
+                status: status.to_string(),
+                message,
+                models,
+            }
+        })
+        .collect()
 }
 
 fn discover_oauth_provider_models(provider: &str) -> Vec<String> {
@@ -8364,7 +8796,10 @@ pub fn run() {
             save_hermes_model,
             remove_hermes_model,
             activate_hermes_model,
+            list_auxiliary_model_configs,
+            save_auxiliary_model_config,
             list_provider_registry,
+            list_registry_model_library,
             run_oauth_provider_login,
             list_provider_keys,
             save_provider_key,

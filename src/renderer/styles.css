@@ -3347,6 +3347,10 @@ textarea:focus {
   grid-column: 1;
 }
 
+.model-panel > .model-subpanel {
+  grid-column: 1 / -1;
+}
+
 .model-panel > .model-list {
   grid-column: 2;
   grid-row: 1 / span 3;
@@ -3494,6 +3498,155 @@ textarea:focus {
 
 .model-form-actions .refresh-runtime {
   margin-top: 0;
+  white-space: nowrap;
+}
+
+.model-subpanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.model-subpanel-head,
+.auxiliary-model-title,
+.registry-library-provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-subpanel-head strong,
+.model-subpanel-head span {
+  display: block;
+}
+
+.model-subpanel-head span {
+  color: #647067;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.auxiliary-model-grid,
+.registry-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  max-height: 380px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.auxiliary-model-card,
+.registry-library-provider {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  background: #f9faf7;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+}
+
+.auxiliary-model-title {
+  justify-content: flex-start;
+}
+
+.auxiliary-model-title strong,
+.registry-library-provider-head strong,
+.registry-library-provider-head span,
+.registry-library-provider small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auxiliary-model-title em,
+.registry-library-provider-head em,
+.registry-library-models button em {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: #4a554d;
+  background: #eef2ef;
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.auxiliary-model-card p,
+.registry-library-provider small {
+  margin: 0;
+  color: #647067;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.auxiliary-model-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.auxiliary-model-fields label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.auxiliary-model-fields label span {
+  color: #647067;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.auxiliary-model-fields input {
+  min-width: 0;
+  height: 32px;
+  padding: 6px 8px;
+  color: #17201c;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  outline: none;
+}
+
+.registry-library-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.registry-library-models button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 5px 7px;
+  color: #17201c;
+  background: #ffffff;
+  border: 1px solid #d9ded6;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.registry-library-models button.saved {
+  border-color: #9fc8b8;
+  background: #f4faf7;
+}
+
+.registry-library-models button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
