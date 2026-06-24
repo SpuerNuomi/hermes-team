@@ -871,11 +871,11 @@ button {
 }
 
 .message-actions-dock {
-  top: auto;
-  right: 4px;
-  bottom: -34px;
+  position: static;
   z-index: 4;
+  justify-content: flex-end;
   gap: 8px;
+  margin-top: 12px;
   opacity: 1;
 }
 
@@ -924,8 +924,8 @@ button {
 
 .message-more-menu {
   position: absolute;
-  right: -8px;
-  bottom: 34px;
+  right: 0;
+  bottom: 32px;
   z-index: 8;
   display: grid;
   min-width: 176px;
