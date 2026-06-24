@@ -608,6 +608,61 @@ export function App() {
     ].slice(0, 20));
   }
 
+  function ensureTaskAnswerMessage(current: OrchestrationState, taskId: string, content = "正在生成...") {
+    const task = current.tasks.find((item) => item.id === taskId);
+    if (!task || task.status === "cancelled") return current;
+    const agent = current.agents.find((item) => item.id === task.agentId);
+    const messageId = `stream-${taskId}`;
+    const existing = current.messages.find((message) => message.id === messageId);
+    const nextMessage = {
+      id: messageId,
+      workspaceId: task.workspaceId,
+      authorKind: "agent" as const,
+      authorId: agent?.id,
+      authorName: agent?.name ?? "Hermes",
+      content: existing?.content && existing.content !== "正在生成..." ? existing.content : content,
+      createdAt: existing?.createdAt ?? Date.now(),
+      replyToMessageId: task.triggerMessageId,
+    };
+    return {
+      ...current,
+      messages: existing
+        ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+        : [...current.messages, nextMessage],
+    };
+  }
+
+  function appendTaskProcessMessage(current: OrchestrationState, taskId: string, line: string) {
+    const task = current.tasks.find((item) => item.id === taskId);
+    if (!task || task.status === "cancelled") return current;
+    const agent = current.agents.find((item) => item.id === task.agentId);
+    const withAnswer = ensureTaskAnswerMessage(current, taskId);
+    const messageId = `runtime-${taskId}`;
+    const existing = withAnswer.messages.find((message) => message.id === messageId);
+    const nextContent = existing?.content
+      ? existing.content.includes(line)
+        ? existing.content
+        : `${existing.content}\n${line}`
+      : line;
+    const nextMessage = {
+      id: messageId,
+      workspaceId: task.workspaceId,
+      kind: "tool" as const,
+      authorKind: "agent" as const,
+      authorId: agent?.id,
+      authorName: "Runtime activity",
+      content: nextContent,
+      createdAt: existing?.createdAt ?? Date.now(),
+      replyToMessageId: task.triggerMessageId,
+    };
+    return {
+      ...withAnswer,
+      messages: existing
+        ? withAnswer.messages.map((message) => (message.id === messageId ? nextMessage : message))
+        : [...withAnswer.messages, nextMessage],
+    };
+  }
+
   function handleStreamEvent(event: RuntimeStreamEvent) {
     if (event.kind === "start") {
       addRuntimeEvent({
@@ -616,6 +671,9 @@ export function App() {
         detail: "Hermes Gateway 已进入流式输出。",
         level: "info",
       });
+      setState((current) =>
+        appendTaskProcessMessage(current, event.taskId, "stream · Hermes Gateway 已进入流式输出。"),
+      );
       return;
     }
     if (event.kind === "error") {
@@ -627,10 +685,11 @@ export function App() {
         level: "warning",
       });
       setState((current) => {
+        const withProcess = appendTaskProcessMessage(current, event.taskId, `stream error · ${message}`);
         const task = current.tasks.find((item) => item.id === event.taskId);
         if (!task || task.status === "failed" || task.status === "cancelled") return current;
         return failTaskWithSystemMessage({
-          state: current,
+          state: withProcess,
           taskId: event.taskId,
           error: message,
         });
@@ -758,6 +817,9 @@ export function App() {
         detail: "Hermes token 流式输出已完成。",
         level: "ok",
       });
+      setState((current) =>
+        appendTaskProcessMessage(current, event.taskId, "stream done · Hermes token 流式输出已完成。"),
+      );
     }
   }
 
@@ -2936,6 +2998,9 @@ export function App() {
       detail: `${agent.name} 已开始调用 Hermes Gateway。`,
       level: "info",
     });
+    setState((current) =>
+      appendTaskProcessMessage(current, taskId, `running · ${agent.name} 已开始调用 Hermes Gateway。`),
+    );
 
     try {
       if (profiles.length > 0 && !selectedProfile) {
@@ -2994,6 +3059,9 @@ export function App() {
         detail: `${agent.name} 已完成流式 Hermes 输出。`,
         level: "ok",
       });
+      setState((current) =>
+        appendTaskProcessMessage(current, taskId, `completed · ${agent.name} 已完成流式 Hermes 输出。`),
+      );
       setNotice(`${agent.name} 已返回真实 Hermes 输出。`);
       settleCompletedTask(taskId);
     } catch (error) {
@@ -3014,6 +3082,9 @@ export function App() {
           detail: `${agent.name} 的运行请求已取消。`,
           level: "warning",
         });
+        setState((current) =>
+          appendTaskProcessMessage(current, taskId, `aborted · ${agent.name} 的运行请求已取消。`),
+        );
         return;
       }
       setState((current) =>
@@ -3031,6 +3102,9 @@ export function App() {
         detail: message,
         level: "warning",
       });
+      setState((current) =>
+        appendTaskProcessMessage(current, taskId, `failed · ${message}`),
+      );
       setNotice("Hermes Runtime 调用失败。");
     }
   };

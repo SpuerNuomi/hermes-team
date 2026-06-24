@@ -810,6 +810,11 @@ button {
   border-color: #d4e5dc;
 }
 
+.message-process-item.runtime {
+  background: #fbfcfb;
+  border-color: #d9ded6;
+}
+
 .message-process-item-head {
   display: flex;
   align-items: center;

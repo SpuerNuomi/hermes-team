@@ -364,7 +364,7 @@ export function ChatView({
             {isLoading && visibleMessages.at(-1)?.authorKind !== "agent" && (
               <TypingIndicator detail={activityText} />
             )}
-            {isLoading && activityEvents && activityEvents.length > 0 && (
+            {isLoading && visibleMessages.at(-1)?.authorKind !== "agent" && activityEvents && activityEvents.length > 0 && (
               <RuntimeActivityGroup
                 items={activityEvents}
                 active={isLoading}

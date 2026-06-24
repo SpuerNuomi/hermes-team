@@ -256,18 +256,20 @@ export const MessageRow = memo(function MessageRow({
               <span>{isLoading ? "正在思考与执行" : "思考与执行过程"}</span>
               <small>
                 {processMessages.filter((item) => item.kind === "reasoning").length} thinking ·{" "}
-                {processMessages.filter((item) => item.kind === "tool").length} tools
+                {processMessages.filter((item) => item.kind === "tool" && item.authorName !== "Runtime activity").length} tools ·{" "}
+                {processMessages.filter((item) => item.authorName === "Runtime activity").length} runtime
               </small>
             </button>
             {processOpen && (
               <div className="message-process-list">
                 {processMessages.map((item) => {
                   const itemIsTool = item.kind === "tool";
+                  const itemIsRuntime = item.authorName === "Runtime activity";
                   return (
-                    <section className={`message-process-item ${itemIsTool ? "tool" : "reasoning"}`} key={item.id}>
+                    <section className={`message-process-item ${itemIsTool ? "tool" : "reasoning"} ${itemIsRuntime ? "runtime" : ""}`} key={item.id}>
                       <div className="message-process-item-head">
-                        {itemIsTool ? <Wrench size={13} /> : <Brain size={13} />}
-                        <strong>{itemIsTool ? "工具调用" : "Thinking"}</strong>
+                        {itemIsRuntime ? <Radio size={13} /> : itemIsTool ? <Wrench size={13} /> : <Brain size={13} />}
+                        <strong>{itemIsRuntime ? "Runtime activity" : itemIsTool ? "工具调用" : "Thinking"}</strong>
                         <time>{formatTime(item.createdAt)}</time>
                       </div>
                       <pre>{item.content}</pre>
