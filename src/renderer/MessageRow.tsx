@@ -1,7 +1,107 @@
-import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, GitBranch, MoreHorizontal, Paperclip, Radio, RefreshCw, Speaker, Terminal } from "lucide-react";
+import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, GitBranch, Loader2, MoreHorizontal, Paperclip, Radio, RefreshCw, Speaker, Terminal, XCircle } from "lucide-react";
 import { memo, useCallback, useState } from "react";
 import type { Message } from "../core/types";
 import { AgentMarkdown } from "./AgentMarkdown";
+
+type ToolStatus = "completed" | "failed" | "running";
+
+interface ParsedToolEvent {
+  status: ToolStatus;
+  title: string;
+  detail: string;
+}
+
+function normalizeToolText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function splitToolTitle(title: string): { label: string; head: string } {
+  const colon = title.match(/^([A-Za-z][\w .-]*?):\s+(.+)$/);
+  if (colon) {
+    return { label: `${colon[1]}:`, head: colon[2].trim() };
+  }
+  const mid = title.indexOf(" · ");
+  if (mid >= 0) {
+    return { label: title.slice(0, mid).trim(), head: title.slice(mid + 3).trim() };
+  }
+  return { label: title, head: "" };
+}
+
+function parseToolEvent(content: string): ParsedToolEvent {
+  const lines = content.split("\n");
+  const firstRaw = (lines[0] ?? "").trim();
+  let status: ToolStatus = "completed";
+  let titleRaw = firstRaw;
+  const sep = firstRaw.indexOf(" · ");
+  if (sep >= 0) {
+    const maybeStatus = firstRaw.slice(0, sep).trim();
+    if (maybeStatus === "completed" || maybeStatus === "failed" || maybeStatus === "running") {
+      status = maybeStatus;
+      titleRaw = firstRaw.slice(sep + 3).trim();
+    }
+  }
+  const { label, head } = splitToolTitle(titleRaw);
+  const labelNorm = normalizeToolText(label);
+  const seen: string[] = [];
+  const detailParts: string[] = [];
+  const candidates = head ? [head, ...lines.slice(1)] : lines.slice(1);
+  for (const raw of candidates) {
+    const line = raw.trim();
+    if (!line) continue;
+    const lineNorm = normalizeToolText(line);
+    if (!lineNorm || labelNorm.includes(lineNorm)) continue;
+    if (seen.some((existing) => existing.includes(lineNorm) || lineNorm.includes(existing))) continue;
+    seen.push(lineNorm);
+    detailParts.push(line);
+  }
+  return { status, title: label || "工具调用", detail: detailParts.join("\n") };
+}
+
+function ToolStatusIcon({ status }: { status: ToolStatus }) {
+  if (status === "failed") return <XCircle size={15} />;
+  if (status === "running") return <Loader2 size={15} className="tool-call-spin" />;
+  return <CheckCircle2 size={15} />;
+}
+
+export const ToolCallGroup = memo(function ToolCallGroup({
+  messages,
+}: {
+  messages: Message[];
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (messages.length === 0) return null;
+  return (
+    <article className="message agent tool-call-group">
+      <div className="tool-call-card">
+        {messages.map((message) => {
+          const { status, title, detail } = parseToolEvent(message.content);
+          const open = openId === message.id;
+          const expandable = detail.length > 0;
+          return (
+            <button
+              className={`tool-call-row ${open ? "tool-call-row-open" : ""}`}
+              type="button"
+              key={message.id}
+              aria-expanded={open}
+              disabled={!expandable}
+              onClick={() => setOpenId((current) => (current === message.id ? null : message.id))}
+            >
+              <span className={`tool-call-icon tool-call-${status}`}>
+                <ToolStatusIcon status={status} />
+              </span>
+              <span className="tool-call-text">
+                <span className="tool-call-name">{title}</span>
+                {detail && (
+                  <span className={`tool-call-detail ${open ? "tool-call-detail-open" : ""}`}>{detail}</span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </article>
+  );
+});
 
 const APPROVAL_RE =
   /⚠️.*dangerous|requires? (your )?approval|\/approve.*\/deny|do you want (me )?to (proceed|continue|run|execute)/i;

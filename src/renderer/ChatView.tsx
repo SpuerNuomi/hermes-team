@@ -17,7 +17,7 @@ import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
 import { useInputHistory } from "./chatInput/useInputHistory";
 import { ChatControls } from "./ChatControls";
-import { MessageRow, TypingIndicator } from "./MessageRow";
+import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
 import { WorktreePanel } from "./WorktreePanel";
 import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtime/hermes-runtime";
 
@@ -168,6 +168,39 @@ export function ChatView({
     });
   }, [messages]);
 
+  type RenderItem =
+    | { type: "message"; key: string; message: Message; showMeta: boolean; isLast: boolean }
+    | { type: "tool-group"; key: string; messages: Message[] };
+
+  const renderItems = useMemo<RenderItem[]>(() => {
+    const items: RenderItem[] = [];
+    for (let index = 0; index < visibleMessages.length; index += 1) {
+      const message = visibleMessages[index];
+      if (message.kind === "tool") {
+        const group = [message];
+        let cursor = index;
+        while (cursor + 1 < visibleMessages.length && visibleMessages[cursor + 1].kind === "tool") {
+          cursor += 1;
+          group.push(visibleMessages[cursor]);
+        }
+        items.push({ type: "tool-group", key: message.id, messages: group });
+        index = cursor;
+        continue;
+      }
+      const previous = visibleMessages[index - 1];
+      const showMeta =
+        !previous || previous.authorKind !== message.authorKind || previous.kind !== message.kind;
+      items.push({
+        type: "message",
+        key: message.id,
+        message,
+        showMeta,
+        isLast: index === visibleMessages.length - 1,
+      });
+    }
+    return items;
+  }, [visibleMessages]);
+
   useEffect(() => {
     if (!isLoading) inputRef.current?.focus();
   }, [isLoading]);
@@ -299,14 +332,13 @@ export function ChatView({
   return (
     <>
       <header className="workspace-header chat-header">
-        <div>
-          <p className="panel-label">Chat</p>
+        <div className="chat-header-titles">
           <h1>{title}</h1>
-          <p>{description}</p>
+          {description && <span className="chat-header-sub">{description}</span>}
         </div>
         <div className="workspace-header-right">
           <div className="status-card">
-            <Activity size={18} />
+            <Activity size={15} />
             <span>{notice}</span>
           </div>
           <button className="refresh-runtime" type="button" onClick={onNewChat}>
@@ -324,20 +356,18 @@ export function ChatView({
           </section>
         ) : (
           <>
-            {visibleMessages.map((message, index) => {
-              const previous = visibleMessages[index - 1];
-              const isLast = index === visibleMessages.length - 1;
+            {renderItems.map((item) => {
+              if (item.type === "tool-group") {
+                return <ToolCallGroup key={item.key} messages={item.messages} />;
+              }
+              const { message, isLast, showMeta } = item;
               return (
                 <MessageRow
-                  key={message.id}
+                  key={item.key}
                   message={message}
                   isLast={isLast}
                   isLoading={isLoading && isLast && message.authorKind === "agent"}
-                  showMeta={
-                    !previous ||
-                    previous.authorKind !== message.authorKind ||
-                    previous.kind !== message.kind
-                  }
+                  showMeta={showMeta}
                   formatTime={formatTime}
                   onApprove={() => onSend("/approve")}
                   onDeny={() => onSend("/deny")}

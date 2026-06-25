@@ -8,6 +8,8 @@ import {
   FolderPlus,
   History,
   MessageSquareText,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Power,
   Plug,
@@ -433,6 +435,7 @@ export function App() {
   const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
   const [worktreeVisible, setWorktreeVisible] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webPreviewUrl, setWebPreviewUrl] = useState<string | null>(null);
   const [notice, setNotice] = useState("Hermes Chat 已就绪。");
   const [sessions, setSessions] = useState<HermesTeamSessionSummary[]>([]);
@@ -527,6 +530,7 @@ export function App() {
   const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
   const parallelTrackerRef = useRef(new ParallelBatchTracker());
   const serialTrackerRef = useRef(new SerialChainTracker());
+  const streamEventHandlerRef = useRef<(event: RuntimeStreamEvent) => void>(() => undefined);
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
 
   const agents = state.agents;
@@ -668,6 +672,18 @@ export function App() {
     );
   }
 
+  function mergeToolEventContent(existingContent: string | undefined, nextContent: string) {
+    if (!existingContent?.trim()) return nextContent;
+    if (!nextContent.trim()) return existingContent;
+    const existingLines = existingContent.split("\n").filter((line) => line.trim());
+    const nextLines = nextContent.split("\n").filter((line) => line.trim());
+    if (nextLines.length < existingLines.length) return existingContent;
+    if (nextLines.length === existingLines.length && nextContent.length < existingContent.length) {
+      return existingContent;
+    }
+    return nextContent;
+  }
+
   function handleStreamEvent(event: RuntimeStreamEvent) {
     if (event.kind === "start") {
       addRuntimeEvent({
@@ -762,7 +778,8 @@ export function App() {
         const callId = event.message || "tool";
         const messageId = `tool-${event.taskId}-${callId}`;
         const existing = current.messages.find((message) => message.id === messageId);
-        const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
+        const nextRawContent = event.content || `${existing?.content ?? ""}${event.delta}`;
+        const nextContent = mergeToolEventContent(existing?.content, nextRawContent);
         if (!nextContent.trim()) return current;
         const nextMessage = {
           id: messageId,
@@ -849,6 +866,126 @@ export function App() {
         level: "ok",
       });
     }
+  }
+
+  streamEventHandlerRef.current = handleStreamEvent;
+
+  function applyStreamEventSnapshot(current: OrchestrationState, event: RuntimeStreamEvent): OrchestrationState {
+    if (event.kind === "start" || event.kind === "error") return current;
+    const task = current.tasks.find((item) => item.id === event.taskId);
+    if (!task || task.status === "cancelled") return current;
+    const agent = current.agents.find((item) => item.id === task.agentId);
+    if (event.kind === "reasoning") {
+      const isThinkingProgress = event.message === "thinking";
+      const messageId = isThinkingProgress ? `reasoning-${event.taskId}-thinking` : `reasoning-${event.taskId}`;
+      const existing = current.messages.find((message) => message.id === messageId);
+      const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
+      if (!nextContent.trim()) return current;
+      const streamMessageId = `stream-${event.taskId}`;
+      const streamExisting = current.messages.find((message) => message.id === streamMessageId);
+      if (
+        !isThinkingProgress &&
+        streamExisting &&
+        streamExisting.content !== "正在生成..." &&
+        isDuplicateProcessSnapshot(nextContent, streamExisting.content)
+      ) {
+        return {
+          ...current,
+          messages: current.messages.filter((message) => message.id !== messageId),
+        };
+      }
+      const nextMessage: Message = {
+        id: messageId,
+        workspaceId: task.workspaceId,
+        kind: "reasoning",
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: nextContent,
+        createdAt: existing?.createdAt ?? Date.now(),
+        replyToMessageId: task.triggerMessageId,
+      };
+      const streamMessage: Message = {
+        id: streamMessageId,
+        workspaceId: task.workspaceId,
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: "正在生成...",
+        createdAt: Date.now(),
+        replyToMessageId: task.triggerMessageId,
+      };
+      return {
+        ...current,
+        messages: upsertProcessMessageBeforeAnswer(current.messages, nextMessage, streamMessage, streamMessageId),
+      };
+    }
+    if (event.kind === "tool") {
+      const callId = event.message || "tool";
+      const messageId = `tool-${event.taskId}-${callId}`;
+      const existing = current.messages.find((message) => message.id === messageId);
+      const nextRawContent = event.content || `${existing?.content ?? ""}${event.delta}`;
+      const nextContent = mergeToolEventContent(existing?.content, nextRawContent);
+      if (!nextContent.trim()) return current;
+      const streamMessageId = `stream-${event.taskId}`;
+      const nextMessage: Message = {
+        id: messageId,
+        workspaceId: task.workspaceId,
+        kind: "tool",
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: nextContent,
+        createdAt: existing?.createdAt ?? Date.now(),
+        replyToMessageId: task.triggerMessageId,
+      };
+      const streamMessage: Message = {
+        id: streamMessageId,
+        workspaceId: task.workspaceId,
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: "正在生成...",
+        createdAt: Date.now(),
+        replyToMessageId: task.triggerMessageId,
+      };
+      return {
+        ...current,
+        messages: upsertProcessMessageBeforeAnswer(current.messages, nextMessage, streamMessage, streamMessageId),
+      };
+    }
+
+    const messageId = `stream-${event.taskId}`;
+    const existing = current.messages.find((message) => message.id === messageId);
+    const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
+    const nextMessage: Message = {
+      id: messageId,
+      workspaceId: task.workspaceId,
+      authorKind: "agent",
+      authorId: agent?.id,
+      authorName: agent?.name ?? "Hermes",
+      content: nextContent || "正在生成...",
+      createdAt: existing?.createdAt ?? Date.now(),
+      replyToMessageId: task.triggerMessageId,
+    };
+    const messages = existing
+      ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
+      : [...current.messages, nextMessage];
+    return {
+      ...current,
+      messages:
+        event.kind === "done"
+          ? messages.filter(
+              (message) =>
+                !(
+                  message.kind === "reasoning" &&
+                  message.id === `reasoning-${event.taskId}` &&
+                  message.replyToMessageId === task.triggerMessageId &&
+                  isDuplicateProcessSnapshot(message.content, nextMessage.content)
+                ),
+            )
+          : messages,
+    };
   }
 
   const applyAppSettings = (settings: AppSettings) => {
@@ -1603,7 +1740,7 @@ export function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listenHermesAgentStream((event) => {
-      if (!disposed) handleStreamEvent(event);
+      if (!disposed) streamEventHandlerRef.current(event);
     })
       .then((cleanup) => {
         if (disposed) {
@@ -3000,9 +3137,7 @@ export function App() {
         assignments: latestDecision.assignments,
       });
     }
-    for (const taskId of result.createdTaskIds) {
-      void runDispatchedTask(result.state, taskId);
-    }
+    scheduleDispatchedTasks(result.state, result.createdTaskIds);
   };
 
   const regenerateFromMessage = (messageId: string) => {
@@ -3069,6 +3204,14 @@ export function App() {
     setQueuedMessages((current) => current.filter((item) => item.id !== id));
   };
 
+  const scheduleDispatchedTasks = (nextState: OrchestrationState, taskIds: string[]) => {
+    window.setTimeout(() => {
+      for (const taskId of taskIds) {
+        void runDispatchedTask(nextState, taskId);
+      }
+    }, 0);
+  };
+
   const runDispatchedTask = async (baseState: OrchestrationState, taskId: string) => {
     const task = baseState.tasks.find((item) => item.id === taskId);
     if (!task) return;
@@ -3106,12 +3249,13 @@ export function App() {
           throw new Error("Hermes Gateway 未就绪，无法执行真实 Agent 任务。");
         }
       }
-      const content = await runHermesTaskStream({
+      const output = await runHermesTaskStream({
         task,
         agent,
         binding,
         messages: baseState.messages,
       });
+      const content = output.content;
       if (cancelledTaskIdsRef.current.has(taskId)) {
         addRuntimeEvent({
           taskId,
@@ -3125,6 +3269,27 @@ export function App() {
         const streamMessageId = `stream-${taskId}`;
         const hasStreamMessage = current.messages.some((message) => message.id === streamMessageId);
         if (!hasStreamMessage) {
+          const replayedState = (output.events ?? []).reduce(
+            (nextState, event) => applyStreamEventSnapshot(nextState, event),
+            current,
+          );
+          if (replayedState.messages.some((message) => message.id === streamMessageId)) {
+            const shouldReplacePlaceholder = content.trim().length > 0;
+            return {
+              ...replayedState,
+              messages: replayedState.messages.map((message) =>
+                message.id === streamMessageId && shouldReplacePlaceholder
+                  ? {
+                      ...message,
+                      content: message.content === "正在生成..." || message.content.trim().length === 0 ? content : message.content,
+                    }
+                  : message,
+              ),
+              tasks: replayedState.tasks.map((item) =>
+                item.id === taskId ? { ...item, status: "completed", completedAt: Date.now() } : item,
+              ),
+            };
+          }
           return completeTaskWithAgentMessage({
             state: current,
             taskId,
@@ -3202,9 +3367,7 @@ export function App() {
     const result = handleUserMessage(state, next.text, next.attachments);
     setState(result.state);
     setNotice("正在发送队列中的下一条消息。");
-    for (const taskId of result.createdTaskIds) {
-      void runDispatchedTask(result.state, taskId);
-    }
+    scheduleDispatchedTasks(result.state, result.createdTaskIds);
   }, [queuedMessages, state]);
 
   const lastAgentMessage = [...messages].reverse().find((message) => message.authorKind === "agent");
@@ -3237,14 +3400,27 @@ export function App() {
     : undefined;
 
   return (
-    <main className={`app-shell ${activeView !== "team" || !showInspector ? "app-shell-utility" : ""}`}>
-      <aside className="sidebar">
+    <main
+      className={`app-shell ${activeView !== "team" || !showInspector ? "app-shell-utility" : ""} ${
+        sidebarCollapsed ? "app-shell-collapsed" : ""
+      }`.trim()}
+    >
+      <aside className={`sidebar ${sidebarCollapsed ? "sidebar-collapsed" : ""}`.trim()}>
         <div className="brand">
           <div className="brand-mark">HT</div>
-          <div>
+          <div className="brand-text">
             <strong>Hermes Team</strong>
             <span>Hermes Agent 工作台</span>
           </div>
+          <button
+            className="sidebar-collapse-btn"
+            type="button"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </button>
         </div>
 
         <nav className="workspace-list" aria-label="主导航">
@@ -3287,13 +3463,16 @@ export function App() {
           </button>
         </nav>
 
-        <SidebarRecentSessions
-          sessions={sessions}
-          formatTime={formatTime}
-          onRestore={(session) => void restoreSession(session)}
-          onShowAll={() => setActiveView("sessions")}
-        />
+        {!sidebarCollapsed && (
+          <SidebarRecentSessions
+            sessions={sessions}
+            formatTime={formatTime}
+            onRestore={(session) => void restoreSession(session)}
+            onShowAll={() => setActiveView("sessions")}
+          />
+        )}
 
+        {!sidebarCollapsed && (
         <section className="sidebar-panel">
           <p className="panel-label">Hermes Runtime</p>
           <div className={`runtime-badge ${runtimeStatus.state}`}>
@@ -3333,6 +3512,7 @@ export function App() {
             </div>
           )}
         </section>
+        )}
       </aside>
 
       <section className={`timeline ${activeView !== "team" ? "utility-view" : ""}`}>
