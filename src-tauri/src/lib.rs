@@ -152,6 +152,34 @@ struct ConfigHealthReport {
     summary: ConfigHealthSummary,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DoctorCheck {
+    label: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HermesDoctorReport {
+    ran_at: u64,
+    cli_available: bool,
+    command: Option<String>,
+    version: Option<String>,
+    active_profile: String,
+    gateway_running: bool,
+    gateway_health: String,
+    doctor_supported: bool,
+    doctor_ok: bool,
+    doctor_output: String,
+    config_errors: usize,
+    config_warnings: usize,
+    checks: Vec<DoctorCheck>,
+    summary: String,
+    ok: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConfigHealthFixInput {
@@ -485,6 +513,10 @@ struct AppSettings {
     theme: String,
     rounded_corners: bool,
     font: String,
+    // Stored preference only. Hermes Team desktop does not currently send any
+    // telemetry/analytics; this records consent for if/when analytics is added.
+    #[serde(default)]
+    allow_anonymous_analytics: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1306,6 +1338,138 @@ async fn get_config_health(profile: Option<String>) -> Result<ConfigHealthReport
 #[tauri::command]
 async fn rerun_config_health(profile: Option<String>) -> Result<ConfigHealthReport, String> {
     get_config_health(profile).await
+}
+
+#[tauri::command]
+async fn run_hermes_doctor(profile: Option<String>) -> Result<HermesDoctorReport, String> {
+    let install = inspect_hermes_install().await?;
+    let profile = normalize_profile(profile.as_deref().or(Some(&install.active_profile)));
+    let config = build_config_health_report(profile.as_deref()).ok();
+
+    let mut checks: Vec<DoctorCheck> = Vec::new();
+    checks.push(DoctorCheck {
+        label: "Hermes CLI".to_string(),
+        status: if install.installed { "ok" } else { "error" }.to_string(),
+        detail: install
+            .command
+            .clone()
+            .unwrap_or_else(|| "未找到 hermes 命令".to_string()),
+    });
+    checks.push(DoctorCheck {
+        label: "版本".to_string(),
+        status: if install.version.is_some() { "ok" } else { "warn" }.to_string(),
+        detail: install.version.clone().unwrap_or_else(|| "未返回".to_string()),
+    });
+    checks.push(DoctorCheck {
+        label: "config.yaml".to_string(),
+        status: if install.config_exists { "ok" } else { "warn" }.to_string(),
+        detail: if install.config_exists { "已存在" } else { "未发现" }.to_string(),
+    });
+    checks.push(DoctorCheck {
+        label: "API_SERVER_KEY".to_string(),
+        status: if install.api_server_key_present { "ok" } else { "warn" }.to_string(),
+        detail: if install.api_server_key_present { "已配置" } else { "未配置" }.to_string(),
+    });
+    checks.push(DoctorCheck {
+        label: "Gateway".to_string(),
+        status: if install.gateway_running { "ok" } else { "warn" }.to_string(),
+        detail: install.gateway_health.clone(),
+    });
+
+    let (config_errors, config_warnings) = match &config {
+        Some(report) => (report.summary.errors, report.summary.warnings),
+        None => (0, 0),
+    };
+    checks.push(DoctorCheck {
+        label: "配置健康检查".to_string(),
+        status: if config_errors > 0 {
+            "error"
+        } else if config_warnings > 0 {
+            "warn"
+        } else {
+            "ok"
+        }
+        .to_string(),
+        detail: format!("{config_errors} errors · {config_warnings} warnings"),
+    });
+
+    // Run the real `hermes doctor` subcommand when the CLI is available. Older
+    // CLI builds may not ship the subcommand, in which case we fall back to the
+    // aggregated checks above instead of fabricating output.
+    let mut doctor_supported = false;
+    let mut doctor_ok = false;
+    let mut doctor_output = "Hermes CLI 未安装，无法运行 hermes doctor。".to_string();
+    if install.installed {
+        match run_hermes_cli(&["doctor".to_string()], Duration::from_secs(45)) {
+            Ok(output) => {
+                doctor_supported = true;
+                doctor_ok = true;
+                doctor_output = output;
+            }
+            Err(message) => {
+                if is_unknown_subcommand_error(&message) {
+                    doctor_supported = false;
+                    doctor_output =
+                        "当前 Hermes CLI 不支持 doctor 子命令，已使用聚合诊断结果。".to_string();
+                } else {
+                    doctor_supported = true;
+                    doctor_ok = false;
+                    doctor_output = message;
+                }
+            }
+        }
+        checks.push(DoctorCheck {
+            label: "hermes doctor".to_string(),
+            status: if !doctor_supported {
+                "info"
+            } else if doctor_ok {
+                "ok"
+            } else {
+                "warn"
+            }
+            .to_string(),
+            detail: if doctor_supported {
+                if doctor_ok {
+                    "诊断通过".to_string()
+                } else {
+                    "诊断发现问题".to_string()
+                }
+            } else {
+                "未提供".to_string()
+            },
+        });
+    }
+
+    let ok = install.installed && config_errors == 0 && (!doctor_supported || doctor_ok);
+    let summary = if !install.installed {
+        "Hermes CLI 未安装。".to_string()
+    } else if config_errors > 0 {
+        format!("发现 {config_errors} 个配置错误，建议修复。")
+    } else if doctor_supported && !doctor_ok {
+        "hermes doctor 报告了问题，请查看详情。".to_string()
+    } else if config_warnings > 0 {
+        format!("基础检查通过，存在 {config_warnings} 个警告。")
+    } else {
+        "诊断通过，未发现明显问题。".to_string()
+    };
+
+    Ok(HermesDoctorReport {
+        ran_at: unix_millis(),
+        cli_available: install.installed,
+        command: install.command.clone(),
+        version: install.version.clone(),
+        active_profile: install.active_profile.clone(),
+        gateway_running: install.gateway_running,
+        gateway_health: install.gateway_health.clone(),
+        doctor_supported,
+        doctor_ok,
+        doctor_output,
+        config_errors,
+        config_warnings,
+        checks,
+        summary,
+        ok,
+    })
 }
 
 #[tauri::command]
@@ -7404,6 +7568,7 @@ fn default_app_settings() -> AppSettings {
         theme: "light".to_string(),
         rounded_corners: true,
         font: "system".to_string(),
+        allow_anonymous_analytics: false,
     }
 }
 
@@ -7422,6 +7587,7 @@ fn normalize_app_settings(settings: AppSettings) -> AppSettings {
         theme,
         rounded_corners: settings.rounded_corners,
         font,
+        allow_anonymous_analytics: settings.allow_anonymous_analytics,
     }
 }
 
@@ -7870,6 +8036,19 @@ fn find_hermes_command() -> Result<PathBuf, String> {
         }
     }
     Err("未找到 hermes 命令。请确认 Hermes 已安装，或设置 HERMES_CLI。".to_string())
+}
+
+/// Heuristic to tell apart "this CLI build has no such subcommand" from a real
+/// failure reported by the subcommand itself. Used so `hermes doctor` can fall
+/// back to aggregated checks on older CLI builds without faking output.
+fn is_unknown_subcommand_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("no such command")
+        || lower.contains("no such subcommand")
+        || lower.contains("unrecognized")
+        || lower.contains("invalid choice")
+        || lower.contains("unknown command")
+        || (lower.contains("usage:") && lower.contains("doctor"))
 }
 
 fn run_hermes_cli(args: &[String], timeout: Duration) -> Result<String, String> {
@@ -12049,6 +12228,7 @@ pub fn run() {
             inspect_hermes_install,
             get_config_health,
             rerun_config_health,
+            run_hermes_doctor,
             autofix_config_issue,
             list_hermes_profiles,
             create_hermes_profile,
@@ -12199,6 +12379,35 @@ mod tests {
 
         // Open-ended question with no option list yields no quick-picks.
         assert!(parse_clarify_choices("你想用哪个数据库？").is_empty());
+    }
+
+    #[test]
+    fn app_settings_default_disables_anonymous_analytics() {
+        // Hermes Team desktop performs no telemetry; consent defaults to off and
+        // legacy settings files without the field still parse.
+        assert!(!default_app_settings().allow_anonymous_analytics);
+        let legacy: AppSettings =
+            serde_json::from_str(r#"{"theme":"dark","roundedCorners":true,"font":"mono"}"#)
+                .expect("legacy settings parse");
+        assert!(!legacy.allow_anonymous_analytics);
+        let opted_in = normalize_app_settings(AppSettings {
+            theme: "dark".to_string(),
+            rounded_corners: true,
+            font: "mono".to_string(),
+            allow_anonymous_analytics: true,
+        });
+        assert!(opted_in.allow_anonymous_analytics);
+    }
+
+    #[test]
+    fn detects_unknown_doctor_subcommand() {
+        assert!(is_unknown_subcommand_error("Error: No such command 'doctor'."));
+        assert!(is_unknown_subcommand_error(
+            "error: unrecognized subcommand 'doctor'"
+        ));
+        assert!(!is_unknown_subcommand_error(
+            "doctor: gateway is not reachable"
+        ));
     }
 
     #[test]
