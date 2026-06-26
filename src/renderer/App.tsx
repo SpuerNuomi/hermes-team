@@ -49,6 +49,12 @@ import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/s
 import type { Message, MessageAttachment, WorkspaceMode } from "../core/types";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { buildLabel } from "./buildInfo";
+import {
+  isLocalReplyCommand,
+  runLocalReplyCommand,
+  slashCommandName,
+} from "./chatInput/localCommands";
+import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
@@ -110,6 +116,8 @@ import {
   readHermesMemoryDetails,
   readHermesLog,
   readHermesMemoryContent,
+  readHermesPersona,
+  writeHermesPersona,
   readHermesSkillContent,
   removeCredentialPoolEntry,
   removeHermesMemoryEntry,
@@ -172,6 +180,7 @@ import {
   type McpOperationResult,
   type McpServerInfo,
   type MemoryContent,
+  type PersonaContent,
   type MemoryDetails,
   type MemorySummary,
   type MessagingPlatformInfo,
@@ -750,6 +759,8 @@ export function App() {
   const [memoryDetails, setMemoryDetails] = useState<MemoryDetails | null>(null);
   const [memoryContent, setMemoryContent] = useState<MemoryContent | null>(null);
   const [memoryDraft, setMemoryDraft] = useState({ memory: "", user: "" });
+  const [personaContent, setPersonaContent] = useState<PersonaContent | null>(null);
+  const [personaDraft, setPersonaDraft] = useState("");
   const [newMemoryEntry, setNewMemoryEntry] = useState("");
   const [editingMemoryIndex, setEditingMemoryIndex] = useState<number | null>(null);
   const [editingMemoryDraft, setEditingMemoryDraft] = useState("");
@@ -1488,6 +1499,8 @@ export function App() {
       setMemoryDetails(null);
       setMemoryContent(null);
       setMemoryDraft({ memory: "", user: "" });
+      setPersonaContent(null);
+      setPersonaDraft("");
       setNewMemoryEntry("");
       setEditingMemoryIndex(null);
       setEditingMemoryDraft("");
@@ -1511,6 +1524,7 @@ export function App() {
         nextMemory,
         nextMemoryDetails,
         nextMemoryContent,
+        nextPersona,
         nextModels,
         nextActiveModel,
         nextAuxiliaryModels,
@@ -1527,6 +1541,7 @@ export function App() {
         readHermesMemorySummary({ profile: targetProfile }),
         readHermesMemoryDetails({ profile: targetProfile }),
         readHermesMemoryContent({ profile: targetProfile }),
+        readHermesPersona({ profile: targetProfile }),
         listHermesModels(),
         getHermesModelConfig({ profile: targetProfile }),
         listAuxiliaryModelConfigs({ profile: targetProfile }),
@@ -1549,6 +1564,8 @@ export function App() {
         memory: nextMemoryContent.memory,
         user: nextMemoryContent.user,
       });
+      setPersonaContent(nextPersona);
+      setPersonaDraft(nextPersona.content);
       setModels(nextModels);
       setActiveModel(nextActiveModel);
       setAuxiliaryModels(nextAuxiliaryModels);
@@ -3024,6 +3041,24 @@ export function App() {
     }
   };
 
+  const savePersonaDraft = async () => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setCapabilityBusy(true);
+    try {
+      const next = await writeHermesPersona({
+        profile: targetProfile,
+        content: personaDraft,
+      });
+      setPersonaContent(next);
+      setPersonaDraft(next.content);
+      setNotice("SOUL.md（Persona）已保存。");
+    } catch (error) {
+      setNotice(`保存 Persona 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setCapabilityBusy(false);
+    }
+  };
+
   const addMemoryEntryFromDraft = async () => {
     const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
     setCapabilityBusy(true);
@@ -3421,6 +3456,43 @@ export function App() {
       setNotice("当前会话已清空。");
   };
 
+  const runLocalSlashCommand = (content: string) => {
+    const workspaceId = state.workspace.id;
+    const agent = state.agents[0];
+    const now = Date.now();
+    const userMessage: Message = {
+      id: `local-user-${now}`,
+      workspaceId,
+      authorKind: "user",
+      authorName: "You",
+      content,
+      createdAt: now,
+    };
+    setState((current) => ({ ...current, messages: [...current.messages, userMessage] }));
+    setDraft("");
+    setDraftAttachments([]);
+    const appendReply = (replyContent: string) => {
+      const replyMessage: Message = {
+        id: `local-agent-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        workspaceId,
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: replyContent,
+        createdAt: Date.now(),
+        replyToMessageId: userMessage.id,
+      };
+      setState((current) => ({ ...current, messages: [...current.messages, replyMessage] }));
+    };
+    void runLocalReplyCommand(content, {
+      profile: installStatus?.activeProfile,
+      tokenUsage,
+      commands: SLASH_COMMANDS,
+    })
+      .then((reply) => appendReply(reply ?? "命令无输出。"))
+      .catch((error) => appendReply(`命令执行失败：${runtimeErrorMessage(error)}`));
+  };
+
   const sendMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? draft).trim();
     if (!content && draftAttachments.length === 0) return;
@@ -3430,6 +3502,23 @@ export function App() {
       setDraft("");
       setDraftAttachments([]);
       setNotice(`已打开 Web preview：${browseUrl}`);
+      return;
+    }
+    const slashName = slashCommandName(content);
+    if (slashName === "/new") {
+      setDraft("");
+      setDraftAttachments([]);
+      void createNewSession();
+      return;
+    }
+    if (slashName === "/clear") {
+      setDraft("");
+      setDraftAttachments([]);
+      clearChat();
+      return;
+    }
+    if (isLocalReplyCommand(content)) {
+      runLocalSlashCommand(content);
       return;
     }
     const attachments = contentOverride ? [] : draftAttachments;
@@ -5872,6 +5961,22 @@ export function App() {
                       </label>
                     </div>
                     {memoryContent && <p className="empty-note">{memoryContent.memoryPath}</p>}
+
+                    <div className="memory-raw-grid">
+                      <label>
+                        <span>Persona (SOUL.md)</span>
+                        <textarea
+                          value={personaDraft}
+                          onChange={(event) => setPersonaDraft(event.target.value)}
+                          placeholder="描述该 Agent 的人格、语气与行为准则（写入 profile 的 SOUL.md）"
+                        />
+                        <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void savePersonaDraft()}>
+                          <Save size={14} />
+                          <span>保存 Persona</span>
+                        </button>
+                      </label>
+                    </div>
+                    {personaContent && <p className="empty-note">{personaContent.path}</p>}
                   </div>
                 ) : (
                   <p className="empty-note">尚未读取 Memory 摘要。</p>

@@ -370,6 +370,21 @@ struct WriteMemoryInput {
     content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PersonaContent {
+    content: String,
+    path: String,
+    exists: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WritePersonaInput {
+    profile: Option<String>,
+    content: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MemoryEntryInput {
@@ -1683,6 +1698,29 @@ async fn write_hermes_memory_content(input: WriteMemoryInput) -> Result<MemoryCo
     fs::write(&path, ensure_trailing_newline(&input.content))
         .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
     read_hermes_memory_content(input.profile).await
+}
+
+#[tauri::command]
+async fn read_hermes_persona(profile: Option<String>) -> Result<PersonaContent, String> {
+    let profile = normalize_profile(profile.as_deref());
+    let path = profile_home(profile.as_deref())?.join("SOUL.md");
+    Ok(PersonaContent {
+        content: fs::read_to_string(&path).unwrap_or_default(),
+        path: path.to_string_lossy().to_string(),
+        exists: path.exists(),
+    })
+}
+
+#[tauri::command]
+async fn write_hermes_persona(input: WritePersonaInput) -> Result<PersonaContent, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let home = profile_home(profile.as_deref())?;
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("SOUL.md");
+    fs::write(&path, ensure_trailing_newline(&input.content))
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
+    read_hermes_persona(input.profile).await
 }
 
 #[tauri::command]
@@ -11134,6 +11172,8 @@ pub fn run() {
             read_hermes_memory_details,
             read_hermes_memory_content,
             write_hermes_memory_content,
+            read_hermes_persona,
+            write_hermes_persona,
             add_hermes_memory_entry,
             update_hermes_memory_entry,
             remove_hermes_memory_entry,

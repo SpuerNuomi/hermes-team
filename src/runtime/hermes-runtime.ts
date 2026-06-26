@@ -270,6 +270,12 @@ export interface MemoryContent {
   userPath: string;
 }
 
+export interface PersonaContent {
+  content: string;
+  path: string;
+  exists: boolean;
+}
+
 export interface SavedModel {
   id: string;
   name: string;
@@ -829,6 +835,23 @@ export async function writeHermesMemoryContent(input: {
 }): Promise<MemoryContent> {
   ensureTauriRuntime();
   return invoke<MemoryContent>("write_hermes_memory_content", { input });
+}
+
+export async function readHermesPersona(params: {
+  profile?: string;
+} = {}): Promise<PersonaContent> {
+  ensureTauriRuntime();
+  return invoke<PersonaContent>("read_hermes_persona", {
+    profile: params.profile,
+  });
+}
+
+export async function writeHermesPersona(input: {
+  profile?: string;
+  content: string;
+}): Promise<PersonaContent> {
+  ensureTauriRuntime();
+  return invoke<PersonaContent>("write_hermes_persona", { input });
 }
 
 export async function addHermesMemoryEntry(input: {
