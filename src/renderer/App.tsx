@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleDot,
   Clock,
+  Compass,
   GitBranch,
   FolderPlus,
   FileCode2,
@@ -63,6 +64,7 @@ import {
 } from "./chatInput/localCommands";
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
+import { DiscoverView } from "./DiscoverView";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
 import ProfileDetailModal from "./ProfileDetailModal";
@@ -230,7 +232,7 @@ import {
   type UpdateStatus,
 } from "../runtime/hermes-runtime";
 
-type ActiveView = "team" | "sessions" | "settings";
+type ActiveView = "team" | "sessions" | "discover" | "settings";
 type SettingsPanel = "overview" | "appearance" | "privacy" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
@@ -4680,6 +4682,20 @@ export function App() {
               <MessageSquareText size={18} />
               <span>{t("nav.chat")}</span>
             </button>
+            <button
+              className={`workspace-item ${activeView === "discover" ? "active" : ""}`}
+              type="button"
+              onClick={() => {
+                setActiveView("discover");
+                void refreshInstallStatus();
+                void refreshHermesCapabilities();
+              }}
+              title={t("nav.discover")}
+              aria-label={t("nav.discover")}
+            >
+              <Compass size={18} />
+              <span>{t("nav.discover")}</span>
+            </button>
           </div>
 
           <div className="nav-group">
@@ -7435,6 +7451,22 @@ export function App() {
               </section>
             </div>
           </>
+        ) : activeView === "discover" ? (
+          <DiscoverView
+            installedSkills={skills}
+            bundledSkills={bundledSkills}
+            mcpCatalog={mcpCatalog}
+            mcpServerNames={mcpServers.map((server) => server.name)}
+            mcpCatalogError={mcpCatalogError}
+            mcpCatalogDiagnostics={mcpCatalogDiagnostics}
+            skillBusy={skillBusy}
+            mcpCatalogBusyName={mcpCatalogBusyName}
+            busy={capabilityBusy}
+            onRefresh={() => void refreshHermesCapabilities()}
+            onInstallBundledSkill={(skill) => void installBundledSkill(skill)}
+            onInstallMcpEntry={(entry) => void installMcpCatalogEntry(entry)}
+            onReadSkillContent={(path) => readHermesSkillContent(path)}
+          />
         ) : activeView === "sessions" ? (
           <SessionsView
             sessions={sessions}
