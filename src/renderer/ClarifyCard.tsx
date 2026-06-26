@@ -1,5 +1,5 @@
 import { HelpCircle } from "lucide-react";
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import type { Message } from "../core/types";
 
 /**
@@ -22,12 +22,16 @@ export const ClarifyCard = memo(function ClarifyCard({
 }) {
   const [text, setText] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  // Synchronous guard: `submitted` state lags within the same tick, so a fast
+  // double-click could otherwise fire `onAnswer` twice.
+  const submittedRef = useRef(false);
 
   const resolved = Boolean(message.clarifyResolved);
   const choices = message.clarifyChoices ?? [];
 
   const submit = (answer: string) => {
-    if (resolved || submitted) return;
+    if (resolved || submittedRef.current) return;
+    submittedRef.current = true;
     setSubmitted(true);
     onAnswer(answer);
   };

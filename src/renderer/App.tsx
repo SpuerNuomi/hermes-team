@@ -2804,11 +2804,25 @@ export function App() {
       if (!installStatus?.apiServerKeyPresent) {
         await generateApiServerKey({ profile: targetProfile }).catch(() => undefined);
       }
-      await ensureHermesGateway({ profile: targetProfile, replace: true }).catch(() => undefined);
+      let gatewayOk = true;
+      let gatewayMessage = "";
+      try {
+        const gateway = await ensureHermesGateway({ profile: targetProfile, replace: true });
+        gatewayOk = gateway.ok;
+        gatewayMessage = gateway.message;
+      } catch (error) {
+        gatewayOk = false;
+        gatewayMessage = runtimeErrorMessage(error);
+      }
       await refreshRuntime({ autoStart: false });
       await refreshInstallStatus();
       await refreshHermesCapabilities(targetProfile);
       await refreshConfigHealth(targetProfile);
+      // Don't let the wizard claim success if the Gateway never started — surface
+      // the failure so SetupStep stays put and shows the error.
+      if (!gatewayOk) {
+        throw new Error(gatewayMessage || "Gateway 启动失败，请检查配置后重试。");
+      }
     } finally {
       setOnboardingBusy(false);
     }
@@ -3932,14 +3946,23 @@ export function App() {
   // state so it can't be answered twice.
   const answerClarify = (messageId: string, answer: string) => {
     const trimmed = answer.trim();
-    setState((current) => ({
-      ...current,
-      messages: current.messages.map((message) =>
-        message.id === messageId
-          ? { ...message, clarifyResolved: true, clarifyAnswer: trimmed }
-          : message,
-      ),
-    }));
+    let alreadyResolved = false;
+    setState((current) => {
+      const target = current.messages.find((message) => message.id === messageId);
+      if (!target || target.clarifyResolved) {
+        alreadyResolved = true;
+        return current;
+      }
+      return {
+        ...current,
+        messages: current.messages.map((message) =>
+          message.id === messageId
+            ? { ...message, clarifyResolved: true, clarifyAnswer: trimmed }
+            : message,
+        ),
+      };
+    });
+    if (alreadyResolved) return;
     sendMessage(trimmed || "你来决定，按你认为合理的默认继续即可。");
   };
 

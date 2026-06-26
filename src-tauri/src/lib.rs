@@ -3002,9 +3002,10 @@ async fn search_hermes_state_sessions(
         );
     }
 
-    // 2) Message content matches (FTS5 when available, else LIKE fallback).
+    // 2) Message content matches. Run FTS5 (when available) AND a LIKE scan, then
+    //    merge: FTS gives ranked, prefix-aware hits with a native snippet, while
+    //    LIKE also catches in-token substrings that FTS prefix terms would miss.
     let mut content_rows: Vec<serde_json::Value> = Vec::new();
-    let mut used_fts = false;
     if sqlite_table_exists(&db_path, "messages_fts") {
         let match_expr = sql_quote(&fts_match_expression(trimmed));
         let fts_sql = format!(
@@ -3013,18 +3014,15 @@ async fn search_hermes_state_sessions(
             limit = limit.saturating_mul(4)
         );
         if let Ok(rows) = sqlite_json_rows(&db_path, &fts_sql) {
-            content_rows = rows;
-            used_fts = true;
+            content_rows.extend(rows);
         }
     }
-    if !used_fts {
-        let like_sql = format!(
-            "SELECT m.session_id AS id, COALESCE(s.title,'') AS title, COALESCE(s.started_at,0) AS started_at, COALESCE(s.message_count,0) AS message_count, COALESCE(s.model,'') AS model, COALESCE(m.content,'') AS content FROM messages m JOIN sessions s ON s.id = m.session_id WHERE LOWER(COALESCE(m.content,'')) LIKE {like} ESCAPE '\\' ORDER BY s.started_at DESC, m.timestamp, m.id LIMIT {limit}",
-            like = like_value,
-            limit = limit.saturating_mul(8)
-        );
-        content_rows = sqlite_json_rows(&db_path, &like_sql).unwrap_or_default();
-    }
+    let like_sql = format!(
+        "SELECT m.session_id AS id, COALESCE(s.title,'') AS title, COALESCE(s.started_at,0) AS started_at, COALESCE(s.message_count,0) AS message_count, COALESCE(s.model,'') AS model, COALESCE(m.content,'') AS content FROM messages m JOIN sessions s ON s.id = m.session_id WHERE LOWER(COALESCE(m.content,'')) LIKE {like} ESCAPE '\\' ORDER BY s.started_at DESC, m.timestamp, m.id LIMIT {limit}",
+        like = like_value,
+        limit = limit.saturating_mul(8)
+    );
+    content_rows.extend(sqlite_json_rows(&db_path, &like_sql).unwrap_or_default());
 
     for row in content_rows {
         let Some(id) = json_field_string(&row, "id") else {
