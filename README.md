@@ -31,9 +31,6 @@ Profile、Provider/Model、MCP、Skills、Memory、附件、Context folder、会
 
 - 单 Agent 桌面体验优先。
 - 多 Agent / Kanban / Office 类能力后续作为独立上层能力接入，不作为默认聊天入口。
-- 不使用“产品研发协作室”作为默认会话概念。
-- 不用 mock 代替真实 Gateway、配置、会话、工具或模型行为。
-- 设计文档和代码分开维护。
 
 ## 项目结构
 
@@ -98,19 +95,6 @@ npm run tauri:build
 src-tauri/target/release/bundle/macos/Hermes Team.app
 ```
 
-## 文档
-
-设计和迁移文档位于同级目录：
-
-```text
-../hermes-team-design
-```
-
-主要文档：
-
-- `desktop-capability-migration.md`：桌面能力迁移矩阵。
-- `implementation-plan.md`：阶段实施计划。
-- `product-architecture.md`：产品与架构设计。
 
 ## 参考来源
 
