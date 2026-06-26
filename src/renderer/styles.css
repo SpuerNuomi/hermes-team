@@ -2707,6 +2707,191 @@ textarea:focus {
   opacity: 0.42;
 }
 
+.composer-add {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.composer-add-btn.open {
+  color: var(--text);
+  background: var(--surface-2, #1c232c);
+}
+
+.composer-add-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--surface, #161b22);
+  border: 1px solid var(--border-strong, #3a4451);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg, 0 16px 40px rgba(0, 0, 0, 0.4));
+}
+
+.composer-add-menu-label {
+  padding: 6px 10px 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.composer-add-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.composer-add-menu-item svg {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.composer-add-menu-item:hover {
+  background: var(--surface-2, rgba(122, 137, 152, 0.14));
+  color: var(--text);
+}
+
+.composer-add-menu-item:hover svg {
+  color: var(--accent);
+}
+
+.composer-add-menu-sep {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border);
+}
+
+.composer-add-menu-danger {
+  color: var(--danger);
+}
+
+.composer-add-menu-danger svg {
+  color: var(--danger);
+}
+
+.composer-add-menu-danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--danger);
+}
+
+.composer-add-menu-danger:hover svg {
+  color: var(--danger);
+}
+
+.chat-quickask-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-3);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.chat-quickask-btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--surface-2, #1c232c);
+}
+
+.chat-quickask-btn:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.chat-readiness {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(227, 179, 65, 0.35);
+  border-radius: 10px;
+  background: rgba(227, 179, 65, 0.1);
+  color: #e3b341;
+  font-size: 12.5px;
+}
+
+.chat-readiness svg {
+  flex-shrink: 0;
+}
+
+.chat-readiness-msg {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-readiness-fix {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px solid rgba(227, 179, 65, 0.5);
+  border-radius: 999px;
+  background: transparent;
+  color: #e3b341;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.chat-readiness-fix:hover {
+  background: rgba(227, 179, 65, 0.18);
+}
+
+.chat-ctx-gauge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.chat-ctx-gauge-track {
+  stroke: var(--surface-3, rgba(122, 137, 152, 0.22));
+}
+
+.chat-ctx-gauge-fill {
+  stroke: var(--accent);
+  transition: stroke-dasharray 0.4s ease;
+}
+
+.chat-ctx-gauge-fill.warm {
+  stroke: #e3b341;
+}
+
+.chat-ctx-gauge-fill.hot {
+  stroke: var(--danger);
+}
+
+.chat-ctx-gauge-num {
+  position: absolute;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .chat-stop-btn {
   background: #ff9a93;
 }

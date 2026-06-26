@@ -1,4 +1,19 @@
-import { Activity, ArrowUp, FolderOpen, FolderTree, Paperclip, Plus, Slash, Square, X, XCircle } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowUp,
+  ClipboardPaste,
+  FolderOpen,
+  FolderTree,
+  Link,
+  MessageSquarePlus,
+  Paperclip,
+  Plus,
+  Slash,
+  Square,
+  X,
+  XCircle,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -36,6 +51,58 @@ function slashGroupLabel(item: SlashMenuItem): string {
   return item.kind === "command" ? SLASH_CATEGORY_LABELS[item.command.category] : "Skills";
 }
 
+function gaugeTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const value = (n / 1_000_000).toFixed(1);
+    return `${value.endsWith(".0") ? value.slice(0, -2) : value}M`;
+  }
+  if (n >= 1000) {
+    const value = (n / 1000).toFixed(1);
+    return `${value.endsWith(".0") ? value.slice(0, -2) : value}k`;
+  }
+  return String(Math.round(n));
+}
+
+function ChatContextGauge({ used, window: ctxWindow }: { used: number; window: number }) {
+  const pct = ctxWindow > 0 ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
+  const size = 22;
+  const stroke = 3;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const filled = (pct / 100) * circumference;
+  return (
+    <div
+      className="chat-ctx-gauge"
+      title={`上下文占用 ${pct}% · ${gaugeTokens(used)}/${gaugeTokens(ctxWindow)} tokens`}
+      role="img"
+      aria-label={`上下文占用 ${pct}%`}
+    >
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle
+          className="chat-ctx-gauge-track"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+        />
+        <circle
+          className={`chat-ctx-gauge-fill ${pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""}`}
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${filled} ${circumference}`}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <span className="chat-ctx-gauge-num">{pct}</span>
+    </div>
+  );
+}
+
 function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) || path;
@@ -70,6 +137,8 @@ export function ChatView({
   profiles,
   models,
   skills,
+  contextUsage,
+  readiness,
   currentProfile,
   contextFolder,
   worktreeVisible,
@@ -78,6 +147,7 @@ export function ChatView({
   modelBusy,
   formatTime,
   onDraftChange,
+  onQuickAsk,
   onAddAttachment,
   onAttachFiles,
   onPickAttachments,
@@ -109,6 +179,8 @@ export function ChatView({
   profiles: HermesProfileInfo[];
   models: SavedModel[];
   skills: InstalledSkillInfo[];
+  contextUsage: { used: number; window: number } | null;
+  readiness: { ok: boolean; message?: string; fixLabel?: string; onFix?: () => void };
   currentProfile: string;
   contextFolder: string | null;
   worktreeVisible: boolean;
@@ -117,6 +189,7 @@ export function ChatView({
   modelBusy: boolean;
   formatTime: (timestamp: number) => string;
   onDraftChange: (value: string) => void;
+  onQuickAsk: () => void;
   onAddAttachment: (path?: string) => void;
   onAttachFiles: (files: File[]) => void;
   onPickAttachments: () => void;
@@ -139,10 +212,12 @@ export function ChatView({
   const canSend = draft.trim().length > 0 || draftAttachments.length > 0;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashMenuRef = useRef<HTMLDivElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashFilter, setSlashFilter] = useState("");
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const autoResize = useCallback(() => {
@@ -249,6 +324,24 @@ export function ChatView({
     active?.scrollIntoView({ block: "nearest" });
   }, [slashSelectedIndex, slashMenuOpen]);
 
+  useEffect(() => {
+    if (!addMenuOpen) return undefined;
+    function handleClickOutside(event: MouseEvent) {
+      if (addMenuRef.current && !addMenuRef.current.contains(event.target as Node)) {
+        setAddMenuOpen(false);
+      }
+    }
+    function handleEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setAddMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [addMenuOpen]);
+
   function sendCurrentDraft() {
     const text = draft.trim();
     if (text) history.push(text);
@@ -308,6 +401,35 @@ export function ChatView({
     onAttachFiles(files);
   }
 
+  async function pasteImageFromClipboard() {
+    setAttachmentError(null);
+    try {
+      const clipboard = navigator.clipboard as Clipboard & {
+        read?: () => Promise<ClipboardItem[]>;
+      };
+      if (!clipboard?.read) {
+        setAttachmentError("当前环境不支持读取剪贴板图片，可直接在输入框粘贴。");
+        return;
+      }
+      const items = await clipboard.read();
+      const files: File[] = [];
+      for (const item of items) {
+        const type = item.types.find((value) => value.startsWith("image/"));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        const ext = type.split("/")[1] || "png";
+        files.push(new File([blob], `clipboard-${Date.now()}.${ext}`, { type }));
+      }
+      if (files.length === 0) {
+        setAttachmentError("剪贴板里没有图片。");
+        return;
+      }
+      onAttachFiles(files);
+    } catch {
+      setAttachmentError("读取剪贴板图片失败，可直接在输入框粘贴。");
+    }
+  }
+
   function handleDrop(event: DragEvent<HTMLElement>) {
     const files = Array.from(event.dataTransfer.files || []);
     if (files.length === 0) return;
@@ -355,6 +477,15 @@ export function ChatView({
         event.preventDefault();
         return;
       }
+    }
+
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (!isLoading && draft.trim().length > 0) {
+        history.push(draft.trim());
+        onQuickAsk();
+      }
+      return;
     }
 
     if (event.key === "Enter" && !event.shiftKey) {
@@ -506,6 +637,17 @@ export function ChatView({
             </div>
           </div>
         )}
+        {!readiness.ok && (
+          <div className="chat-readiness" role="status">
+            <AlertTriangle size={14} />
+            <span className="chat-readiness-msg">{readiness.message}</span>
+            {readiness.fixLabel && readiness.onFix && (
+              <button type="button" className="chat-readiness-fix" onClick={readiness.onFix}>
+                {readiness.fixLabel}
+              </button>
+            )}
+          </div>
+        )}
         <div className="chat-input-wrapper">
           <textarea
             ref={inputRef}
@@ -525,58 +667,114 @@ export function ChatView({
             rows={1}
           />
           <div className="chat-input-toolbar">
-            <button
-              className="chat-attach-btn"
-              disabled={isLoading}
-              title="Attach"
-              aria-label="Attach"
-              type="button"
-              onClick={() => {
-                setAttachmentError(null);
-                onPickAttachments();
-              }}
-            >
-              <Paperclip size={16} />
-            </button>
-            {contextFolder ? (
-              <div className="chat-ctxfolder-group">
-                <button
-                  className="chat-meta-chip chat-meta-chip-active"
-                  type="button"
-                  title={contextFolder}
-                  onClick={onPickContextFolder}
-                >
-                  <FolderOpen size={13} />
-                  <span>{folderName(contextFolder)}</span>
-                </button>
-                <button
-                  className="chat-meta-chip-icon"
-                  type="button"
-                  title="Clear context folder"
-                  aria-label="Clear context folder"
-                  onClick={onClearContextFolder}
-                >
-                  <X size={12} />
-                </button>
-                <button
-                  className={`chat-meta-chip-icon ${worktreeVisible ? "chat-meta-chip-icon-active" : ""}`}
-                  type="button"
-                  title={worktreeVisible ? "Hide folder tree" : "Show folder tree"}
-                  aria-label={worktreeVisible ? "Hide folder tree" : "Show folder tree"}
-                  onClick={onToggleWorktree}
-                >
-                  <FolderTree size={13} />
-                </button>
-              </div>
-            ) : (
+            <div className="composer-add" ref={addMenuRef}>
               <button
-                className="chat-meta-chip"
+                className={`chat-attach-btn composer-add-btn ${addMenuOpen ? "open" : ""}`}
+                disabled={isLoading}
+                title="附加"
+                aria-label="附加"
+                aria-haspopup="menu"
+                aria-expanded={addMenuOpen}
                 type="button"
-                title="Set context folder"
+                onClick={() => {
+                  setAttachmentError(null);
+                  setAddMenuOpen((value) => !value);
+                }}
+              >
+                <Plus size={18} />
+              </button>
+              {addMenuOpen && (
+                <div className="composer-add-menu" role="menu">
+                  <div className="composer-add-menu-label">附加</div>
+                  <button
+                    className="composer-add-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      onPickAttachments();
+                    }}
+                  >
+                    <Paperclip size={15} />
+                    <span>文件…</span>
+                  </button>
+                  <button
+                    className="composer-add-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      void pasteImageFromClipboard();
+                    }}
+                  >
+                    <ClipboardPaste size={15} />
+                    <span>粘贴图片</span>
+                  </button>
+                  <button
+                    className="composer-add-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      insertDraftPrefix("/browse ");
+                    }}
+                  >
+                    <Link size={15} />
+                    <span>网址 /browse…</span>
+                  </button>
+                  <button
+                    className="composer-add-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      onPickContextFolder();
+                    }}
+                  >
+                    <FolderOpen size={15} />
+                    <span>{contextFolder ? "更换上下文文件夹…" : "上下文文件夹…"}</span>
+                  </button>
+                  {contextFolder && (
+                    <>
+                      <button
+                        className="composer-add-menu-item"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAddMenuOpen(false);
+                          onToggleWorktree();
+                        }}
+                      >
+                        <FolderTree size={15} />
+                        <span>{worktreeVisible ? "隐藏目录树" : "显示目录树"}</span>
+                      </button>
+                      <div className="composer-add-menu-sep" />
+                      <button
+                        className="composer-add-menu-item composer-add-menu-danger"
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAddMenuOpen(false);
+                          onClearContextFolder();
+                        }}
+                      >
+                        <X size={15} />
+                        <span>清除上下文文件夹</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            {contextFolder && (
+              <button
+                className="chat-meta-chip chat-meta-chip-active"
+                type="button"
+                title={contextFolder}
                 onClick={onPickContextFolder}
               >
                 <FolderOpen size={13} />
-                <span>Folder</span>
+                <span>{folderName(contextFolder)}</span>
               </button>
             )}
             <ChatControls
@@ -592,6 +790,24 @@ export function ChatView({
               onOpenModels={onOpenModels}
             />
             <div className="chat-input-toolbar-spacer" />
+            {contextUsage && contextUsage.window > 0 && contextUsage.used > 0 && (
+              <ChatContextGauge used={contextUsage.used} window={contextUsage.window} />
+            )}
+            <button
+              className="chat-quickask-btn"
+              disabled={isLoading || !canSend}
+              title="旁路提问，不写入上下文 (⌘/Ctrl + ↵)"
+              aria-label="旁路提问"
+              type="button"
+              onClick={() => {
+                if (draft.trim()) {
+                  history.push(draft.trim());
+                  onQuickAsk();
+                }
+              }}
+            >
+              <MessageSquarePlus size={16} />
+            </button>
             <button
               className={`chat-send-btn ${isLoading ? "chat-stop-btn" : ""}`}
               disabled={!isLoading && !canSend}

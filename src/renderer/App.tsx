@@ -6060,6 +6060,40 @@ export function App() {
           profiles={profiles}
           models={models}
           skills={skills}
+          contextUsage={
+            activeModel?.contextLength && tokenUsage?.promptTokens
+              ? { used: tokenUsage.promptTokens, window: activeModel.contextLength }
+              : null
+          }
+          readiness={
+            runtimeStatus.state === "unavailable"
+              ? {
+                  ok: false,
+                  message: runtimeStatus.message || "Hermes 运行时不可用",
+                  fixLabel: "打开设置",
+                  onFix: () => {
+                    setActiveView("settings");
+                    setActiveSettingsPanel("overview");
+                  },
+                }
+              : !activeModel?.model
+                ? {
+                    ok: false,
+                    message: "尚未配置模型，发送可能失败",
+                    fixLabel: "配置模型",
+                    onFix: () => {
+                      setActiveView("settings");
+                      setActiveSettingsPanel("models");
+                    },
+                  }
+                : { ok: true }
+          }
+          onQuickAsk={() => {
+            const text = draft.trim();
+            if (!text) return;
+            const prefixed = /^\/(?:btw|bg|background)\b/i.test(text) ? text : `/btw ${text}`;
+            sendMessage(prefixed);
+          }}
           currentProfile={currentChatProfile}
           contextFolder={chatBinding?.workDir ?? null}
           worktreeVisible={worktreeVisible}
