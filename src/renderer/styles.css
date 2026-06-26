@@ -3515,6 +3515,247 @@ textarea:focus {
   font-size: 12px;
 }
 
+.snippet-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 16px 16px;
+  background: rgba(2, 6, 12, 0.55);
+  backdrop-filter: blur(3px);
+}
+
+.snippet-modal {
+  width: 100%;
+  max-width: 560px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 22px 24px;
+  background: var(--surface, #161b22);
+  border: 1px solid var(--border-strong, #3a4451);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg, 0 24px 64px rgba(0, 0, 0, 0.5));
+}
+
+.snippet-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.snippet-modal-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.snippet-modal-head p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.snippet-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.snippet-modal-close:hover {
+  color: var(--text);
+  background: var(--surface-2, #1c232c);
+}
+
+.snippet-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.snippet-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.snippet-card > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.snippet-card:hover {
+  background: var(--accent-soft);
+  border-color: rgba(63, 207, 142, 0.24);
+}
+
+.snippet-card:hover > svg {
+  color: var(--accent);
+}
+
+.snippet-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.snippet-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.snippet-card-desc {
+  font-size: 13px;
+  color: var(--text-3);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.snippet-card-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.snippet-card-row .snippet-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.snippet-modal-divider {
+  margin: 12px 4px 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.snippet-add-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 10px 16px;
+  border: 1px dashed var(--border-strong, #3a4451);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.snippet-add-row:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.snippet-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.snippet-delete:hover {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.snippet-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.snippet-form-title,
+.snippet-form-body {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong, #3a4451);
+  border-radius: 8px;
+  background: var(--bg, #0d1117);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.snippet-form-body {
+  resize: vertical;
+  min-height: 72px;
+}
+
+.snippet-form-title:focus,
+.snippet-form-body:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.snippet-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.snippet-form-cancel,
+.snippet-form-save {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong, #3a4451);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.snippet-form-save {
+  border-color: transparent;
+  background: var(--accent-fill);
+  color: #f5fbf8;
+}
+
+.snippet-form-save:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .chat-attachment-error {
   margin-bottom: 8px;
   color: #ff9a93;

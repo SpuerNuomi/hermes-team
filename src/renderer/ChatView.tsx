@@ -52,6 +52,50 @@ interface AtFileEntry {
   rel: string;
 }
 
+interface PromptSnippet {
+  id: string;
+  title: string;
+  body: string;
+}
+
+const PROMPT_SNIPPETS_KEY = "hermes-team:prompt-snippets";
+
+const PRESET_SNIPPETS: Array<{ id: string; title: string; description: string; body: string }> = [
+  {
+    id: "preset-review",
+    title: "代码审查",
+    description: "审查当前更改是否存在回归、遗漏的边界情况和缺失的测试。",
+    body: "请审查当前更改，重点关注：潜在回归、遗漏的边界情况、以及缺失的测试覆盖。逐条列出问题与对应的修复建议。",
+  },
+  {
+    id: "preset-plan",
+    title: "实现计划",
+    description: "在动代码之前先勾勒方案，让 diff 保持聚焦。",
+    body: "在开始编码前，请先给出实现方案：涉及的文件、改动步骤、潜在风险点，以及验证方式。保持改动聚焦、可回滚。",
+  },
+  {
+    id: "preset-explain",
+    title: "解释这段",
+    description: "讲解所选代码的工作方式，并链接到关键文件。",
+    body: "请解释这段代码的工作方式：描述关键执行流程与数据流，并指出相关的关键文件、函数与依赖。",
+  },
+];
+
+function loadPromptSnippets(): PromptSnippet[] {
+  try {
+    const raw = window.localStorage.getItem(PROMPT_SNIPPETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is PromptSnippet =>
+        item && typeof item.id === "string" && typeof item.title === "string" && typeof item.body === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
 type SlashMenuItem =
   | { kind: "command"; command: SlashCommand }
   | { kind: "skill"; skill: InstalledSkillInfo };
@@ -240,6 +284,10 @@ export function ChatView({
   const [atSelectedIndex, setAtSelectedIndex] = useState(0);
   const [atFiles, setAtFiles] = useState<AtFileEntry[]>([]);
   const [atLoading, setAtLoading] = useState(false);
+  const snippetMenuRef = useRef<HTMLDivElement>(null);
+  const [snippetMenuOpen, setSnippetMenuOpen] = useState(false);
+  const [snippets, setSnippets] = useState<PromptSnippet[]>(() => loadPromptSnippets());
+  const [snippetForm, setSnippetForm] = useState<{ title: string; body: string } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const autoResize = useCallback(() => {
@@ -435,6 +483,65 @@ export function ChatView({
     const active = atMenuRef.current?.querySelector(".slash-menu-item-active");
     active?.scrollIntoView({ block: "nearest" });
   }, [atSelectedIndex, atMenuOpen]);
+
+  useEffect(() => {
+    if (!snippetMenuOpen) return undefined;
+    function handleClickOutside(event: MouseEvent) {
+      if (snippetMenuRef.current && !snippetMenuRef.current.contains(event.target as Node)) {
+        setSnippetMenuOpen(false);
+        setSnippetForm(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [snippetMenuOpen]);
+
+  const persistSnippets = useCallback((next: PromptSnippet[]) => {
+    setSnippets(next);
+    try {
+      window.localStorage.setItem(PROMPT_SNIPPETS_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore persistence failures (e.g. storage disabled); in-memory still works.
+    }
+  }, []);
+
+  function insertSnippet(snippet: PromptSnippet) {
+    setSnippetMenuOpen(false);
+    setSnippetForm(null);
+    const el = inputRef.current;
+    const value = draft;
+    const caret = el?.selectionStart ?? value.length;
+    const before = value.slice(0, caret);
+    const after = value.slice(caret);
+    const needsLead = before.length > 0 && !before.endsWith("\n") && !before.endsWith(" ");
+    const insertText = `${needsLead ? "\n" : ""}${snippet.body}`;
+    const next = before + insertText + after;
+    const newCaret = before.length + insertText.length;
+    onDraftChange(next);
+    window.requestAnimationFrame(() => {
+      autoResize();
+      el?.focus();
+      el?.setSelectionRange(newCaret, newCaret);
+    });
+  }
+
+  function saveSnippet() {
+    if (!snippetForm) return;
+    const title = snippetForm.title.trim();
+    const body = snippetForm.body.trim();
+    if (!title || !body) return;
+    const next: PromptSnippet = {
+      id: `snippet-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      title,
+      body,
+    };
+    persistSnippets([...snippets, next]);
+    setSnippetForm(null);
+  }
+
+  function deleteSnippet(id: string) {
+    persistSnippets(snippets.filter((item) => item.id !== id));
+  }
 
   function sendCurrentDraft() {
     const text = draft.trim();
@@ -930,6 +1037,20 @@ export function ChatView({
                     role="menuitem"
                     onClick={() => {
                       setAddMenuOpen(false);
+                      setSnippetForm(null);
+                      setSnippetMenuOpen(true);
+                    }}
+                  >
+                    <MessageSquarePlus size={15} />
+                    <span>提示词片段…</span>
+                  </button>
+                  <div className="composer-add-menu-sep" />
+                  <button
+                    className="composer-add-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
                       onPickContextFolder();
                     }}
                   >
@@ -1023,6 +1144,119 @@ export function ChatView({
           </div>
         </div>
       </footer>
+
+      {snippetMenuOpen && (
+        <div
+          className="snippet-modal-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setSnippetMenuOpen(false);
+              setSnippetForm(null);
+            }
+          }}
+        >
+          <div className="snippet-modal" ref={snippetMenuRef} role="dialog" aria-modal="true">
+            <div className="snippet-modal-head">
+              <div>
+                <h2>提示词片段</h2>
+                <p>选择一个起始提示词放入输入框。</p>
+              </div>
+              <button
+                type="button"
+                className="snippet-modal-close"
+                aria-label="关闭"
+                onClick={() => {
+                  setSnippetMenuOpen(false);
+                  setSnippetForm(null);
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            {snippetForm ? (
+              <div className="snippet-form">
+                <input
+                  className="snippet-form-title"
+                  placeholder="片段名称"
+                  value={snippetForm.title}
+                  autoFocus
+                  onChange={(event) =>
+                    setSnippetForm((form) => (form ? { ...form, title: event.target.value } : form))
+                  }
+                />
+                <textarea
+                  className="snippet-form-body"
+                  placeholder="片段内容（可用当前输入预填）"
+                  rows={5}
+                  value={snippetForm.body}
+                  onChange={(event) =>
+                    setSnippetForm((form) => (form ? { ...form, body: event.target.value } : form))
+                  }
+                />
+                <div className="snippet-form-actions">
+                  <button type="button" className="snippet-form-cancel" onClick={() => setSnippetForm(null)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="snippet-form-save"
+                    disabled={!snippetForm.title.trim() || !snippetForm.body.trim()}
+                    onClick={saveSnippet}
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="snippet-modal-body">
+                {PRESET_SNIPPETS.map((preset) => (
+                  <button
+                    className="snippet-card"
+                    key={preset.id}
+                    type="button"
+                    onClick={() => insertSnippet({ id: preset.id, title: preset.title, body: preset.body })}
+                  >
+                    <MessageSquarePlus size={18} />
+                    <span className="snippet-card-text">
+                      <span className="snippet-card-title">{preset.title}</span>
+                      <span className="snippet-card-desc">{preset.description}</span>
+                    </span>
+                  </button>
+                ))}
+                {snippets.length > 0 && <div className="snippet-modal-divider">我的片段</div>}
+                {snippets.map((snippet) => (
+                  <div className="snippet-card-row" key={snippet.id}>
+                    <button className="snippet-card" type="button" onClick={() => insertSnippet(snippet)}>
+                      <MessageSquarePlus size={18} />
+                      <span className="snippet-card-text">
+                        <span className="snippet-card-title">{snippet.title}</span>
+                        <span className="snippet-card-desc">{snippet.body}</span>
+                      </span>
+                    </button>
+                    <button
+                      className="snippet-delete"
+                      type="button"
+                      title="删除片段"
+                      aria-label="删除片段"
+                      onClick={() => deleteSnippet(snippet.id)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  className="snippet-add-row"
+                  type="button"
+                  onClick={() => setSnippetForm({ title: "", body: draft.trim() })}
+                >
+                  <Plus size={16} />
+                  新建片段{draft.trim() ? "（用当前输入）" : ""}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
