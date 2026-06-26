@@ -8,11 +8,14 @@ import {
   Clock,
   GitBranch,
   FolderPlus,
+  FileCode2,
   History,
+  MoreHorizontal,
   Pause,
   Pencil,
   Play,
   Repeat,
+  ScrollText,
   X,
   MessageSquareText,
   PanelLeftClose,
@@ -73,6 +76,8 @@ import {
   checkForAppUpdates,
   createHermesCronJob,
   editHermesCronJob,
+  listHermesCronJobRuns,
+  listHermesCronScripts,
   createHermesProfile,
   deleteHermesTeamSession,
   deleteHermesProfile,
@@ -169,6 +174,7 @@ import {
   type ConfigHealthReport,
   type CronJobActionResult,
   type CronJobInfo,
+  type CronJobRun,
   type CredentialPoolGroup,
   type HermesInstallStatus,
   type HermesLogContent,
@@ -253,6 +259,8 @@ type CronJobForm = {
   minute: number;
   weekdays: number[];
   customCron: string;
+  noAgent: boolean;
+  script: string;
 };
 type MessagingEnvDrafts = Record<string, Record<string, string>>;
 type RuntimeEvent = {
@@ -358,14 +366,27 @@ const emptyCronJobForm: CronJobForm = {
   minute: 0,
   weekdays: [1, 2, 3, 4, 5],
   customCron: "*/30 * * * *",
+  noAgent: false,
+  script: "",
 };
 
 const CRON_DELIVER_OPTIONS: { id: string; label: string }[] = [
-  { id: "origin", label: "origin" },
   { id: "local", label: "local" },
+  { id: "origin", label: "origin" },
   { id: "telegram", label: "telegram" },
   { id: "discord", label: "discord" },
   { id: "slack", label: "slack" },
+  { id: "whatsapp", label: "whatsapp" },
+  { id: "signal", label: "signal" },
+  { id: "matrix", label: "matrix" },
+  { id: "mattermost", label: "mattermost" },
+  { id: "email", label: "email" },
+  { id: "webhook", label: "webhook" },
+  { id: "sms", label: "sms" },
+  { id: "homeassistant", label: "homeassistant" },
+  { id: "dingtalk", label: "dingtalk" },
+  { id: "feishu", label: "feishu" },
+  { id: "wecom", label: "wecom" },
 ];
 
 const ONBOARDING_STORAGE_KEY = "hermes-team:onboarding-complete";
@@ -653,8 +674,35 @@ function cronFormFromJob(job: CronJobInfo): CronJobForm {
     deliverTargets: job.deliver.length ? job.deliver : ["local"],
     repeatTimes: job.repeat?.times != null ? String(job.repeat.times) : "",
     skills: job.skills ?? [],
+    noAgent: job.noAgent,
+    script: job.script ?? "",
     ...parseCronToForm(job.schedule),
   };
+}
+
+function formatCronRunTime(value?: string | null): string {
+  if (!value) return "未知时间";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
+
+function cronRunStatusKind(status?: string | null): "ok" | "fail" | "info" {
+  if (!status) return "info";
+  const lower = status.toLowerCase();
+  if (lower.includes("error") || lower.includes("fail") || lower.includes("non-zero")) {
+    return "fail";
+  }
+  if (lower.includes("ok") || lower.includes("success") || lower.includes("silent")) {
+    return "ok";
+  }
+  return "info";
 }
 
 function formatFileSize(bytes: number): string {
@@ -830,6 +878,13 @@ export function App() {
   const [cronOperatingId, setCronOperatingId] = useState<string | null>(null);
   const [cronEditId, setCronEditId] = useState<string | null>(null);
   const [cronSkillDraft, setCronSkillDraft] = useState("");
+  const [cronScripts, setCronScripts] = useState<string[]>([]);
+  const [cronMenuJobId, setCronMenuJobId] = useState<string | null>(null);
+  const [cronRunsJob, setCronRunsJob] = useState<CronJobInfo | null>(null);
+  const [cronRuns, setCronRuns] = useState<CronJobRun[]>([]);
+  const [cronRunsBusy, setCronRunsBusy] = useState(false);
+  const [cronRunsError, setCronRunsError] = useState<string | null>(null);
+  const [cronExpandedRun, setCronExpandedRun] = useState<string | null>(null);
   const cronNameInputRef = useRef<HTMLInputElement>(null);
   const cronSchedulePreview = useMemo(() => serializeCronSchedule(cronForm), [cronForm]);
   const cronNextRun = useMemo(
@@ -1716,13 +1771,14 @@ export function App() {
     }
   };
 
-  const refreshCronJobs = async (profileName?: string) => {
+  const refreshCronJobs = async (profileName?: string, options?: { silent?: boolean }) => {
     if (!isTauriRuntimeAvailable()) {
       setCronJobs([]);
       return;
     }
+    const silent = options?.silent ?? false;
     const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
-    setCronBusy(true);
+    if (!silent) setCronBusy(true);
     try {
       const jobs = await listHermesCronJobs({
         includeDisabled: true,
@@ -1730,10 +1786,51 @@ export function App() {
       });
       setCronJobs(jobs);
     } catch (error) {
-      setNotice(`读取 Schedules 失败：${runtimeErrorMessage(error)}`);
+      // Auto-refresh polling stays quiet so it never spams the notice bar.
+      if (!silent) setNotice(`读取 Schedules 失败：${runtimeErrorMessage(error)}`);
     } finally {
-      setCronBusy(false);
+      if (!silent) setCronBusy(false);
     }
+  };
+
+  const refreshCronScripts = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setCronScripts([]);
+      return;
+    }
+    const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
+    try {
+      const scripts = await listHermesCronScripts({ profile: targetProfile });
+      setCronScripts(scripts);
+    } catch {
+      setCronScripts([]);
+    }
+  };
+
+  const openCronRuns = async (job: CronJobInfo) => {
+    setCronMenuJobId(null);
+    setCronRunsJob(job);
+    setCronRuns([]);
+    setCronExpandedRun(null);
+    setCronRunsError(null);
+    setCronRunsBusy(true);
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    try {
+      const runs = await listHermesCronJobRuns({ jobId: job.id, profile: targetProfile, limit: 50 });
+      setCronRuns(runs);
+      if (runs.length === 1) setCronExpandedRun(runs[0].name);
+    } catch (error) {
+      setCronRunsError(runtimeErrorMessage(error));
+    } finally {
+      setCronRunsBusy(false);
+    }
+  };
+
+  const closeCronRuns = () => {
+    setCronRunsJob(null);
+    setCronRuns([]);
+    setCronExpandedRun(null);
+    setCronRunsError(null);
   };
 
   const startCronEdit = (job: CronJobInfo) => {
@@ -1752,11 +1849,17 @@ export function App() {
   const submitCronForm = async () => {
     const { value: schedule, error: scheduleError } = serializeCronSchedule(cronForm);
     const prompt = cronForm.prompt.trim();
+    const script = cronForm.script.trim();
+    const noAgent = cronForm.noAgent;
     if (scheduleError || !schedule) {
       setNotice(`Schedule 无效：${scheduleError ?? "请检查调度设置"}`);
       return;
     }
-    if (!prompt) {
+    if (noAgent && !script) {
+      setNotice("脚本型任务（no-agent）需要指定脚本文件。");
+      return;
+    }
+    if (!noAgent && !prompt) {
       setNotice("Prompt 不能为空。");
       return;
     }
@@ -1773,6 +1876,10 @@ export function App() {
       repeat = parsed;
     }
     const editing = cronEditId;
+    // When editing, an emptied repeat field on a job that previously had a cap
+    // means "switch back to run forever" — send the explicit clear channel.
+    const editingJob = editing ? cronJobs.find((job) => job.id === editing) : undefined;
+    const clearRepeat = Boolean(editing && !repeatRaw && editingJob?.repeat?.times != null);
     setCronBusy(true);
     try {
       const result = editing
@@ -1780,20 +1887,26 @@ export function App() {
             profile: targetProfile,
             jobId: editing,
             schedule,
-            prompt,
+            prompt: noAgent ? prompt || undefined : prompt,
             name: cronForm.name.trim() || undefined,
             deliver,
             repeat,
+            clearRepeat: clearRepeat || undefined,
             skills: cronForm.skills,
+            // Empty string clears a previously attached script.
+            script,
+            noAgent,
           })
         : await createHermesCronJob({
             profile: targetProfile,
             schedule,
-            prompt,
+            prompt: prompt || undefined,
             name: cronForm.name.trim() || undefined,
             deliver,
             repeat,
             skills: cronForm.skills.length ? cronForm.skills : undefined,
+            script: script || undefined,
+            noAgent: noAgent || undefined,
           });
       handleCronActionResult(result, editing ? "Schedule 已更新。" : "Schedule 已创建。");
       if (result.success) {
@@ -3746,6 +3859,7 @@ export function App() {
       messages: [],
       tasks: [],
       logs: [],
+      workspace: { ...current.workspace, modelOverride: undefined },
     }));
     setDraft("");
     setDraftAttachments([]);
@@ -3784,6 +3898,7 @@ export function App() {
     void runLocalReplyCommand(content, {
       profile: installStatus?.activeProfile,
       tokenUsage,
+      sessionModelOverride: state.workspace.modelOverride ?? null,
       commands: SLASH_COMMANDS,
     })
       .then((reply) => appendReply(reply ?? "命令无输出。"))
@@ -4015,6 +4130,14 @@ export function App() {
     const binding = baseState.bindings.find((item) => item.agentId === agent.id);
     const profileName = binding?.hermesProfile ?? "default";
     const selectedProfile = profileByName.get(profileName);
+    // Resolve the runtime model with "session override > global active model".
+    // When the session has no override, leave binding.model untouched so the
+    // Gateway keeps using the profile's global default (config.yaml).
+    const sessionOverride = baseState.workspace.modelOverride;
+    const effectiveBinding =
+      binding && sessionOverride?.model
+        ? { ...binding, model: sessionOverride.model }
+        : binding;
 
     setState((current) => markTaskRunning(current, taskId));
     setNotice(`${agent.name} 正在通过真实 Hermes Runtime 执行...`);
@@ -4047,7 +4170,7 @@ export function App() {
       const output = await runHermesTaskStream({
         task,
         agent,
-        binding,
+        binding: effectiveBinding,
         messages: baseState.messages,
       });
       const content = output.content;
@@ -4165,6 +4288,38 @@ export function App() {
     scheduleDispatchedTasks(result.state, result.createdTaskIds);
   }, [queuedMessages, state]);
 
+  // Auto-refresh the Schedules list while its panel is open so next-run times and
+  // last-run status stay close to real-time without a manual refresh. Polling is
+  // silent (no busy spinner / notice) and pauses while a run-history modal is open
+  // to avoid churning the underlying list out from under the viewer.
+  useEffect(() => {
+    if (activeView !== "settings" || activeSettingsPanel !== "schedules") return;
+    if (!isTauriRuntimeAvailable()) return;
+    const interval = window.setInterval(() => {
+      if (cronRunsJob) return;
+      void refreshCronJobs(undefined, { silent: true });
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [activeView, activeSettingsPanel, cronRunsJob]);
+
+  // Close the per-card overflow menu on any outside click.
+  useEffect(() => {
+    if (!cronMenuJobId) return;
+    const handleClick = () => setCronMenuJobId(null);
+    window.addEventListener("click", handleClick);
+    return () => window.removeEventListener("click", handleClick);
+  }, [cronMenuJobId]);
+
+  // Escape closes the run-history modal.
+  useEffect(() => {
+    if (!cronRunsJob) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCronRuns();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [cronRunsJob]);
+
   const lastAgentMessage = [...messages].reverse().find((message) => message.authorKind === "agent");
   const handoff = lastAgentMessage
     ? classifyAssistantHandoff({
@@ -4185,6 +4340,19 @@ export function App() {
     ? state.bindings.find((binding) => binding.agentId === chatAgent.id)
     : undefined;
   const currentChatProfile = chatBinding?.hermesProfile ?? "default";
+  // The model the current conversation actually resolves to: session override
+  // first, then the global active model. Drives the in-chat picker label/check,
+  // the context gauge window, and the readiness prompt so the UI reflects what a
+  // send will route to.
+  const sessionModelOverride = state.workspace.modelOverride ?? null;
+  const effectiveModel: ActiveModelConfig | null = sessionModelOverride
+    ? {
+        provider: sessionModelOverride.provider,
+        model: sessionModelOverride.model,
+        baseUrl: sessionModelOverride.baseUrl,
+        contextLength: sessionModelOverride.contextLength,
+      }
+    : activeModel;
   const { reasoningEffort, setReasoningEffort } = useReasoningEffort(currentChatProfile);
   const selectReasoningEffort = async (value: typeof reasoningEffort) => {
     await setReasoningEffort(value);
@@ -4274,6 +4442,7 @@ export function App() {
                 setActiveSettingsPanel("schedules");
                 void refreshInstallStatus();
                 void refreshCronJobs();
+                void refreshCronScripts();
               }}
               title="定时任务"
               aria-label="定时任务"
@@ -4297,6 +4466,7 @@ export function App() {
                 void refreshHermesCapabilities();
                 void refreshMessagingPlatforms();
                 void refreshCronJobs();
+                void refreshCronScripts();
                 void refreshHermesLogs();
               }}
               title="设置"
@@ -6556,10 +6726,10 @@ export function App() {
           models={models}
           skills={skills}
           contextUsage={
-            activeModel?.contextLength && tokenUsage?.promptTokens
+            effectiveModel?.contextLength && tokenUsage?.promptTokens
               ? {
                   used: tokenUsage.promptTokens,
-                  window: activeModel.contextLength,
+                  window: effectiveModel.contextLength,
                   cacheReadTokens: tokenUsage.cacheReadTokens,
                   cacheWriteTokens: tokenUsage.cacheWriteTokens,
                 }
@@ -6576,7 +6746,7 @@ export function App() {
                     setActiveSettingsPanel("overview");
                   },
                 }
-              : !activeModel?.model
+              : !effectiveModel?.model
                 ? {
                     ok: false,
                     message: "尚未配置模型，发送可能失败",
@@ -6597,7 +6767,7 @@ export function App() {
           currentProfile={currentChatProfile}
           contextFolder={chatBinding?.workDir ?? null}
           worktreeVisible={worktreeVisible}
-          activeModel={activeModel}
+          activeModel={effectiveModel}
           reasoningEffort={reasoningEffort}
           fastMode={fastMode}
           modelBusy={modelBusy}
@@ -6614,7 +6784,7 @@ export function App() {
           onClearContextFolder={() => setChatContextFolder(null)}
           onToggleWorktree={() => setWorktreeVisible((value) => !value)}
           onSelectProfile={selectChatProfile}
-          onSelectModel={(model) => void activateChatModel(model)}
+          onSelectModel={(model) => selectSessionModel(model)}
           onSelectReasoningEffort={selectReasoningEffort}
           onToggleFastMode={() => void toggleFastMode()}
           onOpenModels={() => {

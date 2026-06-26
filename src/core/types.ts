@@ -1,11 +1,31 @@
 export type WorkspaceMode = "manual" | "smart";
 
+/**
+ * A session-scoped model selection made from the in-chat model picker. Unlike
+ * the persisted global default (`config.yaml`, surfaced as `ActiveModelConfig`),
+ * this override belongs to one conversation only: it rides along with the
+ * session snapshot, is restored when the session is reopened, and is absent on a
+ * fresh chat so new conversations start on the global active model.
+ *
+ * It carries the full routing identity — not just the model name — so the picker
+ * label and any later persisted save stay consistent. It stores only routing
+ * identity, never API keys (those remain in the profile/global credential store).
+ */
+export interface SessionModelOverride {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  contextLength?: number;
+}
+
 export interface Workspace {
   id: string;
   name: string;
   description: string;
   mode: WorkspaceMode;
   defaultAgentId?: string;
+  /** Per-session model override; absent means "use the global active model". */
+  modelOverride?: SessionModelOverride;
 }
 
 export interface Agent {

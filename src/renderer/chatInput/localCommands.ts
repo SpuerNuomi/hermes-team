@@ -1,3 +1,4 @@
+import type { SessionModelOverride } from "../../core/types";
 import {
   getHermesModelConfig,
   inspectHermesInstall,
@@ -42,6 +43,8 @@ export interface LocalCommandContext {
   profile?: string;
   /** Live token usage captured from the most recent run's usage event. */
   tokenUsage: { promptTokens: number; totalTokens: number } | null;
+  /** Active per-session model override, or null when using the global default. */
+  sessionModelOverride?: SessionModelOverride | null;
   /** Fallback known commands for `/help` (kept in sync with the slash menu). */
   commands: Array<{ name: string; description: string; category: string }>;
 }
@@ -72,15 +75,28 @@ function renderHelp(commands: LocalCommandContext["commands"]): string {
   return md.trim();
 }
 
-async function renderModel(profile?: string): Promise<string> {
+async function renderModel(
+  profile?: string,
+  sessionOverride?: SessionModelOverride | null,
+): Promise<string> {
   const config = await getHermesModelConfig(profile ? { profile } : {});
+  // The session override (in-chat picker) takes priority over the global
+  // config.yaml default at runtime, so surface it as the "current" model and
+  // keep the global default visible as the fallback.
+  const effective = sessionOverride ?? config;
   const lines = [
-    `**当前模型：** \`${config.model || "未设置"}\``,
-    `**Provider：** ${config.provider || "auto"}`,
+    `**当前模型：** \`${effective.model || "未设置"}\``,
+    `**Provider：** ${effective.provider || "auto"}`,
   ];
-  if (config.baseUrl) lines.push(`**Base URL：** ${config.baseUrl}`);
-  if (config.contextLength) {
-    lines.push(`**上下文窗口：** ${config.contextLength.toLocaleString()} tokens`);
+  if (effective.baseUrl) lines.push(`**Base URL：** ${effective.baseUrl}`);
+  if (effective.contextLength) {
+    lines.push(`**上下文窗口：** ${effective.contextLength.toLocaleString()} tokens`);
+  }
+  if (sessionOverride?.model) {
+    lines.push("", "_仅当前会话覆盖；其他会话不受影响。_");
+    lines.push(
+      `**全局默认：** \`${config.model || "未设置"}\`（${config.provider || "auto"}）`,
+    );
   }
   return lines.join("\n");
 }
@@ -162,7 +178,7 @@ export async function runLocalReplyCommand(
     case "/help":
       return renderHelp(ctx.commands);
     case "/model":
-      return renderModel(ctx.profile);
+      return renderModel(ctx.profile, ctx.sessionModelOverride);
     case "/memory":
       return renderMemory(ctx.profile);
     case "/persona":
