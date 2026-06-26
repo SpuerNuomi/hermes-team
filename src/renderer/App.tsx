@@ -49,6 +49,7 @@ import {
 import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
+import { useI18n, type Language } from "../i18n";
 import type { Message, MessageAttachment, SessionModelOverride, WorkspaceMode } from "../core/types";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { buildLabel } from "./buildInfo";
@@ -774,6 +775,7 @@ function sameSessionModelOverride(
 }
 
 export function App() {
+  const { t, language, setLanguage, options: languageOptions } = useI18n();
   const [state, setState] = useState<OrchestrationState>({
     workspace: seedWorkspace,
     agents: seedAgents,
@@ -957,20 +959,20 @@ export function App() {
     );
   }, [bundledSkills, skillCatalogQuery]);
   const settingsPanels: Array<{ id: SettingsPanel; label: string }> = [
-    { id: "overview", label: "概览" },
-    { id: "appearance", label: "Appearance" },
-    { id: "network", label: "Network" },
-    { id: "profiles", label: "Profiles" },
-    { id: "providers", label: "Provider" },
-    { id: "models", label: "Models" },
-    { id: "gateway", label: "Gateway" },
-    { id: "messaging", label: "Messaging" },
-    { id: "schedules", label: "Schedules" },
-    { id: "capabilities", label: "Capabilities" },
-    { id: "skills", label: "Skills" },
-    { id: "memory", label: "Memory" },
-    { id: "update", label: "Update" },
-    { id: "logs", label: "Logs" },
+    { id: "overview", label: t("settings.panels.overview") },
+    { id: "appearance", label: t("settings.panels.appearance") },
+    { id: "network", label: t("settings.panels.network") },
+    { id: "profiles", label: t("settings.panels.profiles") },
+    { id: "providers", label: t("settings.panels.providers") },
+    { id: "models", label: t("settings.panels.models") },
+    { id: "gateway", label: t("settings.panels.gateway") },
+    { id: "messaging", label: t("settings.panels.messaging") },
+    { id: "schedules", label: t("settings.panels.schedules") },
+    { id: "capabilities", label: t("settings.panels.capabilities") },
+    { id: "skills", label: t("settings.panels.skills") },
+    { id: "memory", label: t("settings.panels.memory") },
+    { id: "update", label: t("settings.panels.update") },
+    { id: "logs", label: t("settings.panels.logs") },
   ];
   const inspectorPanels: Array<{ id: InspectorPanel; label: string }> = [
     { id: "agents", label: "Agents" },
@@ -1506,7 +1508,7 @@ export function App() {
       applyAppSettings(settings);
       return settings;
     } catch (error) {
-      setNotice(`读取外观设置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("appearance.readFailed", { error: runtimeErrorMessage(error) }));
       return null;
     }
   };
@@ -1521,9 +1523,9 @@ export function App() {
       const saved = await saveAppSettings(next);
       setAppSettings(saved);
       applyAppSettings(saved);
-      setNotice("外观设置已保存。");
+      setNotice(t("appearance.saved"));
     } catch (error) {
-      setNotice(`保存外观设置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("appearance.saveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setSettingsBusy(false);
     }
@@ -4419,9 +4421,9 @@ export function App() {
     : { kind: "none" as const, targetNames: [] };
   const scratchSession = isScratchSession(state);
   const showInspector = false;
-  const chatTitle = scratchSession ? "新建聊天" : "Hermes Chat";
+  const chatTitle = scratchSession ? t("chat.newChatTitle") : "Hermes Chat";
   const chatDescription = scratchSession
-    ? "输入消息开始一次新的 Hermes 聊天。"
+    ? t("chat.newChatDescription")
     : seedWorkspace.description;
   const activeTask = state.tasks.find((task) => task.status === "running" || task.status === "pending");
   const chatAgent = state.agents[0];
@@ -4476,51 +4478,51 @@ export function App() {
           <div className="brand-mark">HT</div>
           <div className="brand-text">
             <strong>Hermes Team</strong>
-            <span>Hermes Agent 工作台</span>
+            <span>{t("nav.brandSubtitle")}</span>
           </div>
           <button
             className="sidebar-collapse-btn"
             type="button"
             onClick={() => setSidebarCollapsed((value) => !value)}
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            title={sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
+            aria-label={sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
           >
             {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
           </button>
         </div>
 
-        <nav className="workspace-list" aria-label="主导航">
+        <nav className="workspace-list" aria-label={t("nav.mainNav")}>
           <button
             className={`workspace-item workspace-new-chat ${
               activeView === "team" && scratchSession ? "active" : ""
             }`}
             type="button"
             onClick={() => void createNewSession()}
-            title="新建聊天"
-            aria-label="新建聊天"
+            title={t("nav.newChat")}
+            aria-label={t("nav.newChat")}
           >
             <Plus size={18} />
-            <span>新建聊天</span>
+            <span>{t("nav.newChat")}</span>
           </button>
 
           <div className="nav-group">
-            <p className="nav-group-label">工作区</p>
+            <p className="nav-group-label">{t("nav.groupWorkspace")}</p>
             <button
               className={`workspace-item ${
                 activeView === "team" && !scratchSession ? "active" : ""
               }`}
               type="button"
               onClick={() => setActiveView("team")}
-              title="聊天"
-              aria-label="聊天"
+              title={t("nav.chat")}
+              aria-label={t("nav.chat")}
             >
               <MessageSquareText size={18} />
-              <span>聊天</span>
+              <span>{t("nav.chat")}</span>
             </button>
           </div>
 
           <div className="nav-group">
-            <p className="nav-group-label">自动化</p>
+            <p className="nav-group-label">{t("nav.groupAutomation")}</p>
             <button
               className={`workspace-item ${
                 activeView === "settings" && activeSettingsPanel === "schedules" ? "active" : ""
@@ -4533,16 +4535,16 @@ export function App() {
                 void refreshCronJobs();
                 void refreshCronScripts();
               }}
-              title="定时任务"
-              aria-label="定时任务"
+              title={t("nav.schedules")}
+              aria-label={t("nav.schedules")}
             >
               <CalendarClock size={18} />
-              <span>定时任务</span>
+              <span>{t("nav.schedules")}</span>
             </button>
           </div>
 
           <div className="nav-group">
-            <p className="nav-group-label">系统</p>
+            <p className="nav-group-label">{t("nav.groupSystem")}</p>
             <button
               className={`workspace-item ${
                 activeView === "settings" && activeSettingsPanel !== "schedules" ? "active" : ""
@@ -4558,11 +4560,11 @@ export function App() {
                 void refreshCronScripts();
                 void refreshHermesLogs();
               }}
-              title="设置"
-              aria-label="设置"
+              title={t("nav.settings")}
+              aria-label={t("nav.settings")}
             >
               <Settings size={18} />
-              <span>设置</span>
+              <span>{t("nav.settings")}</span>
             </button>
           </div>
         </nav>
@@ -4742,14 +4744,30 @@ export function App() {
               <section className={settingsCardClass("appearance", "settings-card-wide")}>
                 <div className="settings-card-head">
                   <div>
-                    <p className="panel-label">Appearance</p>
-                    <h2>外观设置</h2>
+                    <p className="panel-label">{t("appearance.panelLabel")}</p>
+                    <h2>{t("appearance.title")}</h2>
                   </div>
-                  <span className="count-pill">{settingsBusy ? "Saving" : "Local"}</span>
+                  <span className="count-pill">{settingsBusy ? t("common.saving") : t("common.local")}</span>
                 </div>
                 <div className="appearance-panel">
                   <div>
-                    <h3>Theme</h3>
+                    <h3>{t("appearance.language")}</h3>
+                    <div className="language-options">
+                      {languageOptions.map((option) => (
+                        <button
+                          className={language === option.id ? "active" : ""}
+                          key={option.id}
+                          type="button"
+                          onClick={() => setLanguage(option.id as Language)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    <small className="language-hint">{t("appearance.languageHint")}</small>
+                  </div>
+                  <div>
+                    <h3>{t("appearance.theme")}</h3>
                     <div className="theme-grid">
                       {themeOptions.map((theme) => (
                         <button
@@ -4771,8 +4789,8 @@ export function App() {
                   <div className="appearance-options">
                     <label className="settings-toggle-row">
                       <span>
-                        <strong>Rounded corners</strong>
-                        <small>控制应用界面的圆角显示。</small>
+                        <strong>{t("appearance.roundedCorners")}</strong>
+                        <small>{t("appearance.roundedCornersHint")}</small>
                       </span>
                       <input
                         checked={appSettings.roundedCorners}
@@ -4781,7 +4799,7 @@ export function App() {
                       />
                     </label>
                     <div>
-                      <h3>Font</h3>
+                      <h3>{t("appearance.font")}</h3>
                       <div className="font-options">
                         {fontOptions.map((font) => (
                           <button
