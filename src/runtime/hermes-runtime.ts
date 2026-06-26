@@ -415,11 +415,21 @@ export interface CronJobInfo {
   deliver: string[];
   skills: string[];
   script?: string | null;
+  noAgent: boolean;
 }
 
 export interface CronJobActionResult {
   success: boolean;
   error?: string | null;
+}
+
+export interface CronJobRun {
+  name: string;
+  path: string;
+  ranAt?: string | null;
+  status?: string | null;
+  mode?: string | null;
+  content: string;
 }
 
 export interface MessagingEnvVarInfo {
@@ -1101,6 +1111,8 @@ export async function createHermesCronJob(input: {
   deliver?: string;
   repeat?: number;
   skills?: string[];
+  script?: string;
+  noAgent?: boolean;
 }): Promise<CronJobActionResult> {
   ensureTauriRuntime();
   return invoke<CronJobActionResult>("create_hermes_cron_job", { input });
@@ -1115,6 +1127,12 @@ export async function editHermesCronJob(input: {
   deliver?: string;
   repeat?: number;
   skills?: string[];
+  /** Empty string clears the script; omit to leave unchanged. */
+  script?: string;
+  /** true enables no-agent mode, false reverts to agent, omit to leave unchanged. */
+  noAgent?: boolean;
+  /** true clears the repeat cap so the job runs forever. */
+  clearRepeat?: boolean;
 }): Promise<CronJobActionResult> {
   ensureTauriRuntime();
   return invoke<CronJobActionResult>("edit_hermes_cron_job", { input });
@@ -1150,6 +1168,28 @@ export async function triggerHermesCronJob(input: {
 }): Promise<CronJobActionResult> {
   ensureTauriRuntime();
   return invoke<CronJobActionResult>("trigger_hermes_cron_job", { input });
+}
+
+export async function listHermesCronJobRuns(params: {
+  jobId: string;
+  profile?: string;
+  limit?: number;
+}): Promise<CronJobRun[]> {
+  ensureTauriRuntime();
+  return invoke<CronJobRun[]>("list_hermes_cron_job_runs", {
+    jobId: params.jobId,
+    profile: params.profile,
+    limit: params.limit,
+  });
+}
+
+export async function listHermesCronScripts(params: {
+  profile?: string;
+} = {}): Promise<string[]> {
+  ensureTauriRuntime();
+  return invoke<string[]>("list_hermes_cron_scripts", {
+    profile: params.profile,
+  });
 }
 
 export async function listMessagingPlatforms(params: {

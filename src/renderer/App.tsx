@@ -8,11 +8,14 @@ import {
   Clock,
   GitBranch,
   FolderPlus,
+  FileCode2,
   History,
+  MoreHorizontal,
   Pause,
   Pencil,
   Play,
   Repeat,
+  ScrollText,
   X,
   MessageSquareText,
   PanelLeftClose,
@@ -72,6 +75,8 @@ import {
   checkForAppUpdates,
   createHermesCronJob,
   editHermesCronJob,
+  listHermesCronJobRuns,
+  listHermesCronScripts,
   createHermesProfile,
   deleteHermesTeamSession,
   deleteHermesProfile,
@@ -168,6 +173,7 @@ import {
   type ConfigHealthReport,
   type CronJobActionResult,
   type CronJobInfo,
+  type CronJobRun,
   type CredentialPoolGroup,
   type HermesInstallStatus,
   type HermesLogContent,
@@ -252,6 +258,8 @@ type CronJobForm = {
   minute: number;
   weekdays: number[];
   customCron: string;
+  noAgent: boolean;
+  script: string;
 };
 type MessagingEnvDrafts = Record<string, Record<string, string>>;
 type RuntimeEvent = {
@@ -357,14 +365,27 @@ const emptyCronJobForm: CronJobForm = {
   minute: 0,
   weekdays: [1, 2, 3, 4, 5],
   customCron: "*/30 * * * *",
+  noAgent: false,
+  script: "",
 };
 
 const CRON_DELIVER_OPTIONS: { id: string; label: string }[] = [
-  { id: "origin", label: "origin" },
   { id: "local", label: "local" },
+  { id: "origin", label: "origin" },
   { id: "telegram", label: "telegram" },
   { id: "discord", label: "discord" },
   { id: "slack", label: "slack" },
+  { id: "whatsapp", label: "whatsapp" },
+  { id: "signal", label: "signal" },
+  { id: "matrix", label: "matrix" },
+  { id: "mattermost", label: "mattermost" },
+  { id: "email", label: "email" },
+  { id: "webhook", label: "webhook" },
+  { id: "sms", label: "sms" },
+  { id: "homeassistant", label: "homeassistant" },
+  { id: "dingtalk", label: "dingtalk" },
+  { id: "feishu", label: "feishu" },
+  { id: "wecom", label: "wecom" },
 ];
 
 const ONBOARDING_STORAGE_KEY = "hermes-team:onboarding-complete";
@@ -652,8 +673,35 @@ function cronFormFromJob(job: CronJobInfo): CronJobForm {
     deliverTargets: job.deliver.length ? job.deliver : ["local"],
     repeatTimes: job.repeat?.times != null ? String(job.repeat.times) : "",
     skills: job.skills ?? [],
+    noAgent: job.noAgent,
+    script: job.script ?? "",
     ...parseCronToForm(job.schedule),
   };
+}
+
+function formatCronRunTime(value?: string | null): string {
+  if (!value) return "未知时间";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
+
+function cronRunStatusKind(status?: string | null): "ok" | "fail" | "info" {
+  if (!status) return "info";
+  const lower = status.toLowerCase();
+  if (lower.includes("error") || lower.includes("fail") || lower.includes("non-zero")) {
+    return "fail";
+  }
+  if (lower.includes("ok") || lower.includes("success") || lower.includes("silent")) {
+    return "ok";
+  }
+  return "info";
 }
 
 function formatFileSize(bytes: number): string {
@@ -815,6 +863,13 @@ export function App() {
   const [cronOperatingId, setCronOperatingId] = useState<string | null>(null);
   const [cronEditId, setCronEditId] = useState<string | null>(null);
   const [cronSkillDraft, setCronSkillDraft] = useState("");
+  const [cronScripts, setCronScripts] = useState<string[]>([]);
+  const [cronMenuJobId, setCronMenuJobId] = useState<string | null>(null);
+  const [cronRunsJob, setCronRunsJob] = useState<CronJobInfo | null>(null);
+  const [cronRuns, setCronRuns] = useState<CronJobRun[]>([]);
+  const [cronRunsBusy, setCronRunsBusy] = useState(false);
+  const [cronRunsError, setCronRunsError] = useState<string | null>(null);
+  const [cronExpandedRun, setCronExpandedRun] = useState<string | null>(null);
   const cronNameInputRef = useRef<HTMLInputElement>(null);
   const cronSchedulePreview = useMemo(() => serializeCronSchedule(cronForm), [cronForm]);
   const cronNextRun = useMemo(
@@ -1701,13 +1756,14 @@ export function App() {
     }
   };
 
-  const refreshCronJobs = async (profileName?: string) => {
+  const refreshCronJobs = async (profileName?: string, options?: { silent?: boolean }) => {
     if (!isTauriRuntimeAvailable()) {
       setCronJobs([]);
       return;
     }
+    const silent = options?.silent ?? false;
     const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
-    setCronBusy(true);
+    if (!silent) setCronBusy(true);
     try {
       const jobs = await listHermesCronJobs({
         includeDisabled: true,
@@ -1715,10 +1771,51 @@ export function App() {
       });
       setCronJobs(jobs);
     } catch (error) {
-      setNotice(`读取 Schedules 失败：${runtimeErrorMessage(error)}`);
+      // Auto-refresh polling stays quiet so it never spams the notice bar.
+      if (!silent) setNotice(`读取 Schedules 失败：${runtimeErrorMessage(error)}`);
     } finally {
-      setCronBusy(false);
+      if (!silent) setCronBusy(false);
     }
+  };
+
+  const refreshCronScripts = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setCronScripts([]);
+      return;
+    }
+    const targetProfile = profileName ?? installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name;
+    try {
+      const scripts = await listHermesCronScripts({ profile: targetProfile });
+      setCronScripts(scripts);
+    } catch {
+      setCronScripts([]);
+    }
+  };
+
+  const openCronRuns = async (job: CronJobInfo) => {
+    setCronMenuJobId(null);
+    setCronRunsJob(job);
+    setCronRuns([]);
+    setCronExpandedRun(null);
+    setCronRunsError(null);
+    setCronRunsBusy(true);
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    try {
+      const runs = await listHermesCronJobRuns({ jobId: job.id, profile: targetProfile, limit: 50 });
+      setCronRuns(runs);
+      if (runs.length === 1) setCronExpandedRun(runs[0].name);
+    } catch (error) {
+      setCronRunsError(runtimeErrorMessage(error));
+    } finally {
+      setCronRunsBusy(false);
+    }
+  };
+
+  const closeCronRuns = () => {
+    setCronRunsJob(null);
+    setCronRuns([]);
+    setCronExpandedRun(null);
+    setCronRunsError(null);
   };
 
   const startCronEdit = (job: CronJobInfo) => {
@@ -1737,11 +1834,17 @@ export function App() {
   const submitCronForm = async () => {
     const { value: schedule, error: scheduleError } = serializeCronSchedule(cronForm);
     const prompt = cronForm.prompt.trim();
+    const script = cronForm.script.trim();
+    const noAgent = cronForm.noAgent;
     if (scheduleError || !schedule) {
       setNotice(`Schedule 无效：${scheduleError ?? "请检查调度设置"}`);
       return;
     }
-    if (!prompt) {
+    if (noAgent && !script) {
+      setNotice("脚本型任务（no-agent）需要指定脚本文件。");
+      return;
+    }
+    if (!noAgent && !prompt) {
       setNotice("Prompt 不能为空。");
       return;
     }
@@ -1758,6 +1861,10 @@ export function App() {
       repeat = parsed;
     }
     const editing = cronEditId;
+    // When editing, an emptied repeat field on a job that previously had a cap
+    // means "switch back to run forever" — send the explicit clear channel.
+    const editingJob = editing ? cronJobs.find((job) => job.id === editing) : undefined;
+    const clearRepeat = Boolean(editing && !repeatRaw && editingJob?.repeat?.times != null);
     setCronBusy(true);
     try {
       const result = editing
@@ -1765,20 +1872,26 @@ export function App() {
             profile: targetProfile,
             jobId: editing,
             schedule,
-            prompt,
+            prompt: noAgent ? prompt || undefined : prompt,
             name: cronForm.name.trim() || undefined,
             deliver,
             repeat,
+            clearRepeat: clearRepeat || undefined,
             skills: cronForm.skills,
+            // Empty string clears a previously attached script.
+            script,
+            noAgent,
           })
         : await createHermesCronJob({
             profile: targetProfile,
             schedule,
-            prompt,
+            prompt: prompt || undefined,
             name: cronForm.name.trim() || undefined,
             deliver,
             repeat,
             skills: cronForm.skills.length ? cronForm.skills : undefined,
+            script: script || undefined,
+            noAgent: noAgent || undefined,
           });
       handleCronActionResult(result, editing ? "Schedule 已更新。" : "Schedule 已创建。");
       if (result.success) {
@@ -2494,6 +2607,7 @@ export function App() {
       await refreshNetworkSettings(profileName);
       await refreshMessagingPlatforms(profileName);
       await refreshCronJobs(profileName);
+      await refreshCronScripts(profileName);
       setNotice(`已切换到 Profile：${profileName}`);
       if (openChat) {
         setActiveView("team");
@@ -4147,6 +4261,38 @@ export function App() {
     scheduleDispatchedTasks(result.state, result.createdTaskIds);
   }, [queuedMessages, state]);
 
+  // Auto-refresh the Schedules list while its panel is open so next-run times and
+  // last-run status stay close to real-time without a manual refresh. Polling is
+  // silent (no busy spinner / notice) and pauses while a run-history modal is open
+  // to avoid churning the underlying list out from under the viewer.
+  useEffect(() => {
+    if (activeView !== "settings" || activeSettingsPanel !== "schedules") return;
+    if (!isTauriRuntimeAvailable()) return;
+    const interval = window.setInterval(() => {
+      if (cronRunsJob) return;
+      void refreshCronJobs(undefined, { silent: true });
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [activeView, activeSettingsPanel, cronRunsJob]);
+
+  // Close the per-card overflow menu on any outside click.
+  useEffect(() => {
+    if (!cronMenuJobId) return;
+    const handleClick = () => setCronMenuJobId(null);
+    window.addEventListener("click", handleClick);
+    return () => window.removeEventListener("click", handleClick);
+  }, [cronMenuJobId]);
+
+  // Escape closes the run-history modal.
+  useEffect(() => {
+    if (!cronRunsJob) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeCronRuns();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [cronRunsJob]);
+
   const lastAgentMessage = [...messages].reverse().find((message) => message.authorKind === "agent");
   const handoff = lastAgentMessage
     ? classifyAssistantHandoff({
@@ -4256,6 +4402,7 @@ export function App() {
                 setActiveSettingsPanel("schedules");
                 void refreshInstallStatus();
                 void refreshCronJobs();
+                void refreshCronScripts();
               }}
               title="定时任务"
               aria-label="定时任务"
@@ -4279,6 +4426,7 @@ export function App() {
                 void refreshHermesCapabilities();
                 void refreshMessagingPlatforms();
                 void refreshCronJobs();
+                void refreshCronScripts();
                 void refreshHermesLogs();
               }}
               title="设置"
@@ -5395,7 +5543,11 @@ export function App() {
                   </div>
                   <div className="settings-actions">
                     <span className="count-pill">{cronJobs.length}</span>
-                    <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => void refreshCronJobs(installStatus?.activeProfile)}>
+                    <span className="cron-autorefresh-hint" title="列表每 15 秒自动刷新">
+                      <RefreshCw size={12} />
+                      自动刷新
+                    </span>
+                    <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => { void refreshCronJobs(installStatus?.activeProfile); void refreshCronScripts(installStatus?.activeProfile); }}>
                       <RefreshCw size={14} />
                       <span>{cronBusy ? "读取中..." : "刷新"}</span>
                     </button>
@@ -5432,6 +5584,84 @@ export function App() {
                         placeholder="留空 = 一直运行"
                       />
                     </label>
+
+                    <div className="cron-field model-form-wide">
+                      <span className="cron-field-label">任务类型</span>
+                      <div className="cron-type-tabs">
+                        <button
+                          type="button"
+                          className={!cronForm.noAgent ? "active" : ""}
+                          onClick={() => setCronForm((current) => ({ ...current, noAgent: false }))}
+                        >
+                          <WandSparkles size={13} />
+                          <span>Agent 任务</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={cronForm.noAgent ? "active" : ""}
+                          onClick={() => setCronForm((current) => ({ ...current, noAgent: true }))}
+                        >
+                          <TerminalSquare size={13} />
+                          <span>脚本任务（no-agent）</span>
+                        </button>
+                      </div>
+                      <span className="cron-field-hint">
+                        {cronForm.noAgent
+                          ? "到点直接运行脚本并把 stdout 原样投递，不经过 LLM（适合看门狗 / 巡检脚本）。"
+                          : "到点把 prompt 交给 Hermes Agent 跑一轮，可选附加脚本，其 stdout 注入到 prompt。"}
+                      </span>
+                    </div>
+
+                    <div className="cron-field model-form-wide">
+                      <span className="cron-field-label">
+                        脚本{cronForm.noAgent ? "（必填）" : "（可选）"}
+                      </span>
+                      <div className="cron-script-row">
+                        <FileCode2 size={14} />
+                        <input
+                          list="cron-script-options"
+                          value={cronForm.script}
+                          placeholder="脚本文件名，如 watchdog.py（位于 ~/.hermes/scripts/）"
+                          onChange={(event) => setCronForm((current) => ({ ...current, script: event.target.value }))}
+                        />
+                        <datalist id="cron-script-options">
+                          {cronScripts.map((script) => (
+                            <option key={script} value={script} />
+                          ))}
+                        </datalist>
+                        {cronForm.script && (
+                          <button
+                            type="button"
+                            className="cron-script-clear"
+                            aria-label="清除脚本"
+                            onClick={() => setCronForm((current) => ({ ...current, script: "", noAgent: false }))}
+                          >
+                            <X size={13} />
+                          </button>
+                        )}
+                      </div>
+                      {cronScripts.length > 0 && (
+                        <div className="cron-script-suggest">
+                          {cronScripts
+                            .filter((script) => script !== cronForm.script)
+                            .slice(0, 6)
+                            .map((script) => (
+                              <button
+                                key={script}
+                                type="button"
+                                className="cron-script-suggest-chip"
+                                onClick={() => setCronForm((current) => ({ ...current, script }))}
+                              >
+                                {script}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                      <span className="cron-field-hint">
+                        脚本需放在 ~/.hermes/scripts/ 下；.sh/.bash 走 bash，其余走 Python。
+                      </span>
+                    </div>
+
                     <div className="cron-builder model-form-wide">
                       <span className="cron-builder-title">调度频率</span>
                       <div className="cron-freq-tabs">
@@ -5667,11 +5897,15 @@ export function App() {
                     </div>
 
                     <label className="model-form-wide">
-                      <span>Prompt</span>
+                      <span>Prompt{cronForm.noAgent ? "（可选）" : ""}</span>
                       <textarea
                         value={cronForm.prompt}
                         onChange={(event) => setCronForm((current) => ({ ...current, prompt: event.target.value }))}
-                        placeholder="定时执行的真实 Hermes prompt"
+                        placeholder={
+                          cronForm.noAgent
+                            ? "脚本任务通常不需要 prompt；留空即可。"
+                            : "定时执行的真实 Hermes prompt"
+                        }
                       />
                     </label>
                     <div className="model-form-actions">
@@ -5723,6 +5957,15 @@ export function App() {
                                   <Clock size={13} />
                                   {job.schedule}
                                 </span>
+                                {job.script && (
+                                  <span
+                                    className="schedule-meta-item schedule-meta-script"
+                                    title={job.noAgent ? "脚本任务（no-agent）" : "附加脚本"}
+                                  >
+                                    {job.noAgent ? <TerminalSquare size={13} /> : <FileCode2 size={13} />}
+                                    {job.noAgent ? `脚本 · ${job.script}` : job.script}
+                                  </span>
+                                )}
                                 {job.repeat?.times != null && (
                                   <span className="schedule-meta-item">
                                     <Repeat size={13} />
@@ -5816,6 +6059,40 @@ export function App() {
                                 <Trash2 size={14} />
                                 <span>删除</span>
                               </button>
+                              <div className="schedule-overflow">
+                                <button
+                                  className="schedule-action schedule-overflow-trigger"
+                                  type="button"
+                                  aria-label="更多操作"
+                                  aria-expanded={cronMenuJobId === job.id}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setCronMenuJobId((current) => (current === job.id ? null : job.id));
+                                  }}
+                                >
+                                  <MoreHorizontal size={14} />
+                                  <span>更多</span>
+                                </button>
+                                {cronMenuJobId === job.id && (
+                                  <div className="schedule-overflow-menu" onClick={(event) => event.stopPropagation()}>
+                                    <button type="button" onClick={() => void openCronRuns(job)}>
+                                      <History size={13} />
+                                      <span>查看运行历史</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        void navigator.clipboard?.writeText(job.id);
+                                        setCronMenuJobId(null);
+                                        setNotice(`已复制任务 ID：${job.id}`);
+                                      }}
+                                    >
+                                      <ScrollText size={13} />
+                                      <span>复制任务 ID</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </article>
                         );
@@ -5834,6 +6111,71 @@ export function App() {
                   </div>
                 </div>
               </section>
+
+              {cronRunsJob && (
+                <div className="snippet-modal-overlay" onClick={closeCronRuns}>
+                  <div className="snippet-modal schedule-runs-modal" onClick={(event) => event.stopPropagation()}>
+                    <div className="snippet-modal-head">
+                      <div>
+                        <h2>运行历史</h2>
+                        <p>
+                          {cronRunsJob.name} · 最近 {cronRuns.length} 次记录
+                        </p>
+                      </div>
+                      <button className="snippet-modal-close" type="button" aria-label="关闭" onClick={closeCronRuns}>
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="snippet-modal-body schedule-runs-body">
+                      {cronRunsBusy ? (
+                        <div className="schedule-runs-empty">
+                          <RefreshCw className="schedule-spin" size={18} />
+                          <span>正在读取运行历史…</span>
+                        </div>
+                      ) : cronRunsError ? (
+                        <div className="schedule-runs-empty schedule-runs-error">
+                          <AlertTriangle size={18} />
+                          <span>读取运行历史失败：{cronRunsError}</span>
+                        </div>
+                      ) : cronRuns.length === 0 ? (
+                        <div className="schedule-runs-empty">
+                          <History size={20} />
+                          <span>
+                            {remoteConfig.mode === "local"
+                              ? "暂无运行记录（任务尚未运行，或投递目标不含 local）。"
+                              : "远程模式下运行历史保存在服务端，桌面端暂不可读取。"}
+                          </span>
+                        </div>
+                      ) : (
+                        cronRuns.map((run) => {
+                          const statusKind = cronRunStatusKind(run.status);
+                          const expanded = cronExpandedRun === run.name;
+                          return (
+                            <div className={`schedule-run-item schedule-run-${statusKind}`} key={run.name}>
+                              <button
+                                type="button"
+                                className="schedule-run-head"
+                                onClick={() => setCronExpandedRun((current) => (current === run.name ? null : run.name))}
+                              >
+                                <span className="schedule-run-time">{formatCronRunTime(run.ranAt)}</span>
+                                <span className="schedule-run-tags">
+                                  {run.mode && <span className="schedule-run-mode">{run.mode}</span>}
+                                  {run.status && (
+                                    <span className={`schedule-run-status schedule-run-status-${statusKind}`}>
+                                      {run.status}
+                                    </span>
+                                  )}
+                                </span>
+                              </button>
+                              {expanded && <pre className="schedule-run-content">{run.content}</pre>}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <section className={settingsCardClass("capabilities", "settings-card-wide")}>
                 <div className="settings-card-head">
