@@ -1931,6 +1931,265 @@ button {
   box-shadow: 0 0 0 2px rgba(59, 111, 176, 0.18);
 }
 
+.cron-autorefresh-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #7d8896;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cron-type-tabs {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cron-type-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #2a313c;
+  border-radius: 9px;
+  background: #161b22;
+  color: #aeb8c4;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.cron-type-tabs button:hover {
+  border-color: #3a4451;
+  color: #d7e0ea;
+}
+
+.cron-type-tabs button.active {
+  border-color: #1f7a4d;
+  background: rgba(31, 122, 77, 0.16);
+  color: #6fd6a3;
+}
+
+.cron-script-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #2a313c;
+  border-radius: 9px;
+  background: #161b22;
+  color: #7d8896;
+}
+
+.cron-script-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: #d7e0ea;
+  font-size: 12px;
+  font-family: var(--mono, "SFMono-Regular", Consolas, monospace);
+}
+
+.cron-script-row input:focus {
+  outline: none;
+}
+
+.cron-script-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #7d8896;
+  cursor: pointer;
+}
+
+.cron-script-clear:hover {
+  color: #ff7b72;
+}
+
+.cron-script-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.cron-script-suggest-chip {
+  padding: 4px 9px;
+  border: 1px dashed #2a313c;
+  border-radius: 999px;
+  background: transparent;
+  color: #9aa6b2;
+  font-size: 11px;
+  font-family: var(--mono, "SFMono-Regular", Consolas, monospace);
+  cursor: pointer;
+}
+
+.cron-script-suggest-chip:hover {
+  border-color: #1f7a4d;
+  color: #6fd6a3;
+}
+
+.schedule-meta-script {
+  color: #9aa6b2;
+}
+
+.schedule-overflow {
+  position: relative;
+}
+
+.schedule-overflow-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  min-width: 168px;
+  padding: 6px;
+  background: #161b22;
+  border: 1px solid #2a313c;
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg, 0 18px 40px rgba(0, 0, 0, 0.5));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.schedule-overflow-menu button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #d7e0ea;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.schedule-overflow-menu button:hover {
+  background: #1c232c;
+}
+
+.schedule-runs-modal {
+  max-width: 620px;
+}
+
+.schedule-runs-body {
+  gap: 8px;
+}
+
+.schedule-runs-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  text-align: center;
+  color: #9aa6b2;
+  font-size: 13px;
+}
+
+.schedule-runs-error {
+  color: #ff7b72;
+}
+
+.schedule-run-item {
+  border: 1px solid #2a313c;
+  border-radius: 10px;
+  background: #12171e;
+  overflow: hidden;
+}
+
+.schedule-run-item.schedule-run-fail {
+  border-color: #5c2620;
+}
+
+.schedule-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: #d7e0ea;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.schedule-run-head:hover {
+  background: #161b22;
+}
+
+.schedule-run-time {
+  font-family: var(--mono, "SFMono-Regular", Consolas, monospace);
+}
+
+.schedule-run-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.schedule-run-mode {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #1c232c;
+  color: #aeb8c4;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.schedule-run-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.schedule-run-status-ok {
+  background: rgba(31, 122, 77, 0.18);
+  color: #6fd6a3;
+}
+
+.schedule-run-status-fail {
+  background: #2a1311;
+  color: #ff7b72;
+}
+
+.schedule-run-status-info {
+  background: #1c232c;
+  color: #aeb8c4;
+}
+
+.schedule-run-content {
+  margin: 0;
+  padding: 12px;
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid #2a313c;
+  background: #0d1117;
+  color: #c2cdd7;
+  font-size: 12px;
+  font-family: var(--mono, "SFMono-Regular", Consolas, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .schedule-editing-tag {
   padding: 2px 8px;
   border-radius: 999px;

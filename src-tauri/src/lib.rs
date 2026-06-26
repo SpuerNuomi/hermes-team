@@ -747,6 +747,7 @@ struct CronJobInfo {
     deliver: Vec<String>,
     skills: Vec<String>,
     script: Option<String>,
+    no_agent: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -759,6 +760,8 @@ struct CreateCronJobInput {
     deliver: Option<String>,
     repeat: Option<u64>,
     skills: Option<Vec<String>>,
+    script: Option<String>,
+    no_agent: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -772,6 +775,12 @@ struct EditCronJobInput {
     deliver: Option<String>,
     repeat: Option<u64>,
     skills: Option<Vec<String>>,
+    /// `Some("")` clears the attached script; `Some(path)` sets it; `None` leaves unchanged.
+    script: Option<String>,
+    /// `Some(true)` enables no-agent mode; `Some(false)` reverts to agent mode; `None` unchanged.
+    no_agent: Option<bool>,
+    /// `Some(true)` clears the repeat cap (run forever) via `--repeat 0`.
+    clear_repeat: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -786,6 +795,23 @@ struct CronJobActionInput {
 struct CronJobActionResult {
     success: bool,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CronJobRun {
+    /// Output file name, e.g. `2026-06-23_10-30-24.md`.
+    name: String,
+    /// Absolute path to the recorded run output.
+    path: String,
+    /// ISO timestamp parsed from the file name, when recognizable.
+    ran_at: Option<String>,
+    /// Parsed `**Status:**` line from the run record, when present.
+    status: Option<String>,
+    /// Parsed `**Mode:**` line from the run record, when present.
+    mode: Option<String>,
+    /// Full recorded output (markdown). Run records are small by design.
+    content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2389,6 +2415,16 @@ async fn create_hermes_cron_job(input: CreateCronJobInput) -> Result<CronJobActi
         .map(|skill| skill.trim().to_string())
         .filter(|skill| !skill.is_empty())
         .collect();
+    let script = input
+        .script
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let no_agent = input.no_agent.unwrap_or(false);
+    if no_agent && script.is_none() {
+        return Ok(cron_action_error("脚本型任务（--no-agent）需要指定脚本。"));
+    }
     let config = read_connection_config()?;
     if config.mode == "remote" || config.mode == "ssh" {
         let mut body = json!({
@@ -2403,6 +2439,12 @@ async fn create_hermes_cron_job(input: CreateCronJobInput) -> Result<CronJobActi
             }
             if !skills.is_empty() {
                 map.insert("skills".to_string(), json!(skills));
+            }
+            if let Some(script) = &script {
+                map.insert("script".to_string(), json!(script));
+            }
+            if no_agent {
+                map.insert("no_agent".to_string(), json!(true));
             }
         }
         return remote_cron_request("POST", "/api/jobs", Some(body), input.profile.as_deref());
@@ -2443,6 +2485,13 @@ async fn create_hermes_cron_job(input: CreateCronJobInput) -> Result<CronJobActi
         args.push("--skill".to_string());
         args.push(skill.clone());
     }
+    if let Some(script) = &script {
+        args.push("--script".to_string());
+        args.push(script.clone());
+    }
+    if no_agent {
+        args.push("--no-agent".to_string());
+    }
     run_cron_command(&args, input.profile.as_deref())
 }
 
@@ -2478,6 +2527,9 @@ async fn edit_hermes_cron_job(input: EditCronJobInput) -> Result<CronJobActionRe
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    // `Some("")` is a sentinel meaning "clear the script"; preserve it (do not trim away).
+    let script = input.script.as_ref().map(|value| value.trim().to_string());
+    let clear_repeat = input.clear_repeat.unwrap_or(false);
 
     let config = read_connection_config()?;
     if config.mode == "remote" || config.mode == "ssh" {
@@ -2494,11 +2546,19 @@ async fn edit_hermes_cron_job(input: EditCronJobInput) -> Result<CronJobActionRe
         if let Some(deliver) = deliver {
             body.insert("deliver".to_string(), json!(deliver));
         }
-        if let Some(repeat) = input.repeat {
+        if clear_repeat {
+            body.insert("repeat".to_string(), json!(0));
+        } else if let Some(repeat) = input.repeat {
             body.insert("repeat".to_string(), json!(repeat));
         }
         if let Some(skills) = &skills {
             body.insert("skills".to_string(), json!(skills));
+        }
+        if let Some(script) = &script {
+            body.insert("script".to_string(), json!(script));
+        }
+        if let Some(no_agent) = input.no_agent {
+            body.insert("no_agent".to_string(), json!(no_agent));
         }
         let encoded = encode_path_segment(job_id);
         let path = format!("/api/jobs/{encoded}");
@@ -2527,7 +2587,10 @@ async fn edit_hermes_cron_job(input: EditCronJobInput) -> Result<CronJobActionRe
         args.push("--deliver".to_string());
         args.push(deliver.to_string());
     }
-    if let Some(repeat) = input.repeat {
+    if clear_repeat {
+        args.push("--repeat".to_string());
+        args.push("0".to_string());
+    } else if let Some(repeat) = input.repeat {
         args.push("--repeat".to_string());
         args.push(repeat.to_string());
     }
@@ -2539,6 +2602,16 @@ async fn edit_hermes_cron_job(input: EditCronJobInput) -> Result<CronJobActionRe
             }
         }
         Some(_) => args.push("--clear-skills".to_string()),
+        None => {}
+    }
+    if let Some(script) = &script {
+        // Empty string clears the script per `hermes cron edit --script ""`.
+        args.push("--script".to_string());
+        args.push(script.clone());
+    }
+    match input.no_agent {
+        Some(true) => args.push("--no-agent".to_string()),
+        Some(false) => args.push("--agent".to_string()),
         None => {}
     }
     run_cron_command(&args, input.profile.as_deref())
@@ -2562,6 +2635,129 @@ async fn resume_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActi
 #[tauri::command]
 async fn trigger_hermes_cron_job(input: CronJobActionInput) -> Result<CronJobActionResult, String> {
     run_cron_action(input, "run", "POST", Some("run")).await
+}
+
+#[tauri::command]
+async fn list_hermes_cron_job_runs(
+    job_id: String,
+    profile: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<CronJobRun>, String> {
+    let job_id = job_id.trim();
+    if job_id.is_empty() {
+        return Err("job id 不能为空。".to_string());
+    }
+    // Run records live in the local "local" delivery output directory. In
+    // remote/SSH mode they sit on the server with no documented read endpoint,
+    // so return an empty list rather than fabricating history.
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        return Ok(Vec::new());
+    }
+
+    let profile = normalize_profile(profile.as_deref());
+    let dir = profile_home(profile.as_deref())?
+        .join("cron")
+        .join("output")
+        .join(job_id);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<PathBuf> = fs::read_dir(&dir)
+        .map_err(|error| format!("读取运行历史目录失败：{error}"))?
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("md"))
+                    .unwrap_or(false)
+        })
+        .collect();
+    // File names are timestamp-sorted (YYYY-MM-DD_HH-MM-SS.md); newest first.
+    entries.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    let limit = limit.unwrap_or(50).max(1);
+    let runs = entries
+        .into_iter()
+        .take(limit)
+        .filter_map(|path| read_cron_run(&path))
+        .collect::<Vec<_>>();
+    Ok(runs)
+}
+
+fn read_cron_run(path: &std::path::Path) -> Option<CronJobRun> {
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let content = fs::read_to_string(path).ok()?;
+    let mut status = None;
+    let mut mode = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("**Status:**") {
+            status = Some(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("**Mode:**") {
+            mode = Some(rest.trim().to_string());
+        }
+    }
+    CronJobRun {
+        ran_at: cron_run_timestamp(&name),
+        name,
+        path: path.to_string_lossy().to_string(),
+        status,
+        mode,
+        content,
+    }
+    .into()
+}
+
+/// Parse `2026-06-23_10-30-24.md` into an ISO-ish `2026-06-23T10:30:24` string.
+fn cron_run_timestamp(name: &str) -> Option<String> {
+    let stem = name.strip_suffix(".md").unwrap_or(name);
+    let (date, time) = stem.split_once('_')?;
+    let date_parts: Vec<&str> = date.split('-').collect();
+    let time_parts: Vec<&str> = time.split('-').collect();
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return None;
+    }
+    if date_parts.iter().chain(time_parts.iter()).any(|part| {
+        part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit())
+    }) {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{}T{}:{}:{}",
+        date_parts[0], date_parts[1], date_parts[2], time_parts[0], time_parts[1], time_parts[2]
+    ))
+}
+
+#[tauri::command]
+async fn list_hermes_cron_scripts(profile: Option<String>) -> Result<Vec<String>, String> {
+    // Scripts always live under the local profile's scripts directory. Remote
+    // gateways manage their own scripts, so an empty list is returned there.
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        return Ok(Vec::new());
+    }
+    let profile = normalize_profile(profile.as_deref());
+    let dir = profile_home(profile.as_deref())?.join("scripts");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut scripts = fs::read_dir(&dir)
+        .map_err(|error| format!("读取脚本目录失败：{error}"))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect::<Vec<_>>();
+    scripts.sort();
+    Ok(scripts)
 }
 
 #[tauri::command]
@@ -9056,6 +9252,10 @@ fn normalize_cron_job(job: &serde_json::Value) -> Option<CronJobInfo> {
             .or_else(|| json_string(job.get("skill")).map(|value| vec![value]))
             .unwrap_or_default(),
         script: json_string(job.get("script")),
+        no_agent: job
+            .get("no_agent")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -11702,6 +11902,8 @@ pub fn run() {
             pause_hermes_cron_job,
             resume_hermes_cron_job,
             trigger_hermes_cron_job,
+            list_hermes_cron_job_runs,
+            list_hermes_cron_scripts,
             list_messaging_platforms,
             update_messaging_platform,
             test_messaging_platform,
