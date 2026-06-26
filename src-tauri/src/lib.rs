@@ -899,6 +899,18 @@ struct HermesStateSessionSummary {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct HermesStateSearchResult {
+    id: String,
+    title: String,
+    started_at: u64,
+    message_count: u64,
+    model: String,
+    snippet: String,
+    profile: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct HermesStateMessage {
     id: i64,
     kind: String,
@@ -2924,6 +2936,230 @@ async fn load_hermes_state_session(
         }
     }
     Ok(messages)
+}
+
+/// Full-text search across a profile's `state.db` chat history.
+///
+/// Mirrors the upstream desktop `searchSessions`: title/id matches plus message
+/// content matches, deduped by session (title hits rank first), each carrying a
+/// highlighted snippet. Uses the SQLite FTS5 `messages_fts` virtual table when
+/// the profile's `state.db` provides one; otherwise falls back to a `LIKE` scan
+/// over message content so search still works on older databases.
+#[tauri::command]
+async fn search_hermes_state_sessions(
+    profile: Option<String>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<HermesStateSearchResult>, String> {
+    let profile_name = profile.unwrap_or_else(active_profile_name);
+    let db_path = state_db_path_for_profile(&profile_name)?;
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.unwrap_or(40).clamp(1, 100);
+
+    // Preserve insertion order (title hits first) while deduping by session id.
+    let mut order: Vec<String> = Vec::new();
+    let mut found: HashMap<String, HermesStateSearchResult> = HashMap::new();
+
+    let like_value = sql_quote(&format!(
+        "%{}%",
+        escape_like_pattern(&trimmed.to_lowercase())
+    ));
+
+    // 1) Title / session-id matches.
+    let title_sql = format!(
+        "SELECT s.id AS id, COALESCE(s.title,'') AS title, COALESCE(s.started_at,0) AS started_at, COALESCE(s.message_count,0) AS message_count, COALESCE(s.model,'') AS model FROM sessions s WHERE LOWER(COALESCE(s.title,'')) LIKE {like} ESCAPE '\\' OR LOWER(s.id) LIKE {like} ESCAPE '\\' ORDER BY s.started_at DESC LIMIT {limit}",
+        like = like_value,
+        limit = limit
+    );
+    for row in sqlite_json_rows(&db_path, &title_sql)? {
+        let Some(id) = json_field_string(&row, "id") else {
+            continue;
+        };
+        if found.contains_key(&id) {
+            continue;
+        }
+        order.push(id.clone());
+        let title = json_field_string(&row, "title")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| title_from_preview("", &id));
+        found.insert(
+            id.clone(),
+            HermesStateSearchResult {
+                id,
+                title,
+                started_at: json_field_u64(&row, "started_at").unwrap_or(0),
+                message_count: json_field_u64(&row, "message_count").unwrap_or(0),
+                model: json_field_string(&row, "model").unwrap_or_default(),
+                snippet: String::new(),
+                profile: profile_name.clone(),
+            },
+        );
+    }
+
+    // 2) Message content matches (FTS5 when available, else LIKE fallback).
+    let mut content_rows: Vec<serde_json::Value> = Vec::new();
+    let mut used_fts = false;
+    if sqlite_table_exists(&db_path, "messages_fts") {
+        let match_expr = sql_quote(&fts_match_expression(trimmed));
+        let fts_sql = format!(
+            "SELECT m.session_id AS id, COALESCE(s.title,'') AS title, COALESCE(s.started_at,0) AS started_at, COALESCE(s.message_count,0) AS message_count, COALESCE(s.model,'') AS model, snippet(messages_fts, 0, '\u{ab}', '\u{bb}', '\u{2026}', 12) AS snippet FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid JOIN sessions s ON s.id = m.session_id WHERE messages_fts MATCH {match_expr} ORDER BY rank LIMIT {limit}",
+            match_expr = match_expr,
+            limit = limit.saturating_mul(4)
+        );
+        if let Ok(rows) = sqlite_json_rows(&db_path, &fts_sql) {
+            content_rows = rows;
+            used_fts = true;
+        }
+    }
+    if !used_fts {
+        let like_sql = format!(
+            "SELECT m.session_id AS id, COALESCE(s.title,'') AS title, COALESCE(s.started_at,0) AS started_at, COALESCE(s.message_count,0) AS message_count, COALESCE(s.model,'') AS model, COALESCE(m.content,'') AS content FROM messages m JOIN sessions s ON s.id = m.session_id WHERE LOWER(COALESCE(m.content,'')) LIKE {like} ESCAPE '\\' ORDER BY s.started_at DESC, m.timestamp, m.id LIMIT {limit}",
+            like = like_value,
+            limit = limit.saturating_mul(8)
+        );
+        content_rows = sqlite_json_rows(&db_path, &like_sql).unwrap_or_default();
+    }
+
+    for row in content_rows {
+        let Some(id) = json_field_string(&row, "id") else {
+            continue;
+        };
+        let snippet = json_field_string(&row, "snippet")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                json_field_string(&row, "content")
+                    .map(|content| build_state_snippet(&content, trimmed))
+            })
+            .unwrap_or_default();
+        if let Some(existing) = found.get_mut(&id) {
+            if existing.snippet.trim().is_empty() && !snippet.trim().is_empty() {
+                existing.snippet = snippet;
+            }
+            continue;
+        }
+        order.push(id.clone());
+        let title = json_field_string(&row, "title")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| title_from_preview(&snippet, &id));
+        found.insert(
+            id.clone(),
+            HermesStateSearchResult {
+                id,
+                title,
+                started_at: json_field_u64(&row, "started_at").unwrap_or(0),
+                message_count: json_field_u64(&row, "message_count").unwrap_or(0),
+                model: json_field_string(&row, "model").unwrap_or_default(),
+                snippet,
+                profile: profile_name.clone(),
+            },
+        );
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut results = Vec::new();
+    for id in order {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(result) = found.remove(&id) {
+            results.push(result);
+            if results.len() >= limit as usize {
+                break;
+            }
+        }
+    }
+    Ok(results)
+}
+
+fn sqlite_table_exists(db_path: &Path, table: &str) -> bool {
+    let sql = format!(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name={}",
+        sql_quote(table)
+    );
+    sqlite_json_rows(db_path, &sql)
+        .map(|rows| !rows.is_empty())
+        .unwrap_or(false)
+}
+
+/// Escape `LIKE` wildcards so user input is matched literally (paired with
+/// `ESCAPE '\'` in the query).
+fn escape_like_pattern(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Build an FTS5 `MATCH` expression: quote each whitespace-separated term and
+/// add a prefix wildcard so partial words still match.
+fn fts_match_expression(query: &str) -> String {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .filter(|word| !word.is_empty())
+        .map(|word| format!("\"{}\"*", word.replace('"', "")))
+        .filter(|term| term != "\"\"*")
+        .collect();
+    terms.join(" ")
+}
+
+/// Extract a short, single-line excerpt around the first match of `query`,
+/// marking the hit with «» so the UI can highlight it. Used for the `LIKE`
+/// fallback where SQLite's `snippet()` is unavailable.
+fn build_state_snippet(content: &str, query: &str) -> String {
+    let collapsed = collapse_whitespace(content);
+    let chars: Vec<char> = collapsed.chars().collect();
+    let lower: Vec<char> = collapsed.to_lowercase().chars().collect();
+    let needle: Vec<char> = query.to_lowercase().chars().collect();
+    // Lowercasing is per-char, so indexes stay aligned with `chars` for the
+    // scripts we target; only highlight when both views agree on length.
+    let position = if lower.len() == chars.len() {
+        find_char_subsequence(&lower, &needle)
+    } else {
+        None
+    };
+    let (start, end) = match position {
+        Some(pos) => (
+            pos.saturating_sub(30),
+            (pos + needle.len() + 90).min(chars.len()),
+        ),
+        None => (0, chars.len().min(140)),
+    };
+    let mut excerpt = String::new();
+    if start > 0 {
+        excerpt.push('\u{2026}');
+    }
+    match position {
+        Some(pos) => {
+            let hit_end = (pos + needle.len()).min(end);
+            excerpt.extend(chars[start..pos].iter());
+            excerpt.push('\u{ab}');
+            excerpt.extend(chars[pos..hit_end].iter());
+            excerpt.push('\u{bb}');
+            excerpt.extend(chars[hit_end..end].iter());
+        }
+        None => excerpt.extend(chars[start..end].iter()),
+    }
+    if end < chars.len() {
+        excerpt.push('\u{2026}');
+    }
+    truncate(&excerpt, 240)
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn find_char_subsequence(haystack: &[char], needle: &[char]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|window| window == needle)
 }
 
 fn sqlite_json_rows(db_path: &Path, sql: &str) -> Result<Vec<serde_json::Value>, String> {
@@ -5832,6 +6068,35 @@ fn handle_run_event(
                     }
                     return Ok(RunSignal::Continue);
                 }
+                // The `clarify` tool asks the user a question. Surface it as an
+                // interactive card (kind: "clarify") instead of a plain tool row
+                // so the user can answer inline. The `/v1/runs` transport only
+                // carries the question text (no structured choices), so we parse
+                // any inline option list best-effort; the answer is delivered as
+                // the next message (the gateway's text-fallback contract).
+                if tool_event.name.eq_ignore_ascii_case("clarify") {
+                    let question = if !tool_event.preview.trim().is_empty() {
+                        tool_event.preview.trim().to_string()
+                    } else {
+                        tool_event.result.trim().to_string()
+                    };
+                    if !question.is_empty() {
+                        let choices = parse_clarify_choices(&question);
+                        emit_stream_event(
+                            app,
+                            RuntimeStreamEvent {
+                                task_id: task_id.to_string(),
+                                kind: "clarify".to_string(),
+                                delta: question,
+                                content: serde_json::to_string(&choices)
+                                    .unwrap_or_else(|_| "[]".to_string()),
+                                message: tool_event.call_id.clone(),
+                            },
+                        )?;
+                        trace_stream_event("emit-clarify", &tool_event.call_id);
+                        return Ok(RunSignal::Continue);
+                    }
+                }
                 emit_stream_event(
                     app,
                     RuntimeStreamEvent {
@@ -6179,6 +6444,60 @@ fn format_tool_event_content(event: &ParsedToolEvent) -> String {
         lines.push("error: true".to_string());
     }
     lines.join("\n")
+}
+
+/// Best-effort extraction of an option list from a `clarify` question.
+///
+/// The `/v1/runs` transport only forwards the clarify question text, not the
+/// structured `choices` array. When the agent inlines its options as a
+/// numbered ("1) ", "1. ", "1、") or bulleted ("- ", "* ", "• ") list, surface
+/// them as quick-pick buttons; otherwise the card falls back to a free-text
+/// reply. Returns at most four choices to mirror the upstream tool's cap.
+fn parse_clarify_choices(question: &str) -> Vec<String> {
+    let mut choices = Vec::new();
+    for line in question.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let bullet = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("• "));
+        let option = bullet
+            .map(|rest| rest.trim().to_string())
+            .or_else(|| strip_numbered_prefix(trimmed));
+        if let Some(text) = option {
+            let text = text.trim();
+            if !text.is_empty() {
+                choices.push(text.to_string());
+            }
+        }
+        if choices.len() >= 4 {
+            break;
+        }
+    }
+    choices
+}
+
+/// Strip a leading list marker like `1) `, `1. ` or `1、` and return the rest.
+fn strip_numbered_prefix(line: &str) -> Option<String> {
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let rest = line[digits.len()..].trim_start();
+    let rest = rest
+        .strip_prefix(')')
+        .or_else(|| rest.strip_prefix('.'))
+        .or_else(|| rest.strip_prefix('、'))
+        .or_else(|| rest.strip_prefix(']'))?;
+    let cleaned = rest.trim();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
 }
 
 fn tool_event_title(name: &str, preview: &str) -> String {
@@ -11265,6 +11584,7 @@ pub fn run() {
             update_hermes_team_session_title,
             delete_hermes_team_session,
             list_hermes_state_sessions,
+            search_hermes_state_sessions,
             load_hermes_state_session,
             create_hermes_debug_dump,
             create_hermes_backup_file,
@@ -11319,6 +11639,44 @@ mod tests {
         assert_eq!(tool.name, "_thinking");
         assert_eq!(tool.status, "running");
         assert_eq!(tool.result, "正在检查上下文。");
+    }
+
+    #[test]
+    fn parses_clarify_choice_lists() {
+        let numbered = parse_clarify_choices("选择部署环境：\n1) staging\n2. production\n3、本地");
+        assert_eq!(numbered, vec!["staging", "production", "本地"]);
+
+        let bulleted = parse_clarify_choices("挑一个:\n- 红色\n* 蓝色\n• 绿色");
+        assert_eq!(bulleted, vec!["红色", "蓝色", "绿色"]);
+
+        let capped = parse_clarify_choices("1) a\n2) b\n3) c\n4) d\n5) e");
+        assert_eq!(capped, vec!["a", "b", "c", "d"]);
+
+        // Open-ended question with no option list yields no quick-picks.
+        assert!(parse_clarify_choices("你想用哪个数据库？").is_empty());
+    }
+
+    #[test]
+    fn escapes_like_wildcards() {
+        assert_eq!(escape_like_pattern("a%b_c\\d"), "a\\%b\\_c\\\\d");
+        assert_eq!(escape_like_pattern("plain"), "plain");
+    }
+
+    #[test]
+    fn builds_fts_match_expression() {
+        assert_eq!(fts_match_expression("deploy gateway"), "\"deploy\"* \"gateway\"*");
+        assert_eq!(fts_match_expression("  spaced   out "), "\"spaced\"* \"out\"*");
+        assert_eq!(fts_match_expression("\"\""), "");
+    }
+
+    #[test]
+    fn builds_highlighted_snippet() {
+        let snippet = build_state_snippet("Please deploy the gateway service now", "gateway");
+        assert!(snippet.contains("\u{ab}gateway\u{bb}"));
+
+        // No match falls back to a leading excerpt without markers.
+        let plain = build_state_snippet("unrelated text here", "missing");
+        assert!(!plain.contains('\u{ab}'));
     }
 
     #[test]

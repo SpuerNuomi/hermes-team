@@ -35,6 +35,7 @@ import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
 import { useInputHistory } from "./chatInput/useInputHistory";
 import { ChatControls } from "./ChatControls";
+import { ClarifyCard } from "./ClarifyCard";
 import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
 import { WorktreePanel } from "./WorktreePanel";
 import {
@@ -228,6 +229,7 @@ export function ChatView({
   onStop,
   onRegenerateMessage,
   onBranchMessage,
+  onAnswerClarify,
 }: {
   title: string;
   description: string;
@@ -272,6 +274,7 @@ export function ChatView({
   onStop: () => void;
   onRegenerateMessage: (messageId: string) => void;
   onBranchMessage: (messageId: string) => void;
+  onAnswerClarify: (messageId: string, answer: string) => void;
 }) {
   const canSend = draft.trim().length > 0 || draftAttachments.length > 0;
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -348,19 +351,24 @@ export function ChatView({
   const visibleMessages = useMemo(() => {
     return messages.filter((message) => {
       if (message.authorName === "Runtime activity") return false;
-      if (message.kind === "reasoning" || message.kind === "tool") return true;
+      if (message.kind === "reasoning" || message.kind === "tool" || message.kind === "clarify") return true;
       return message.content.trim().length > 0;
     });
   }, [messages]);
 
   type RenderItem =
     | { type: "message"; key: string; message: Message; showMeta: boolean; isLast: boolean }
-    | { type: "tool-group"; key: string; messages: Message[] };
+    | { type: "tool-group"; key: string; messages: Message[] }
+    | { type: "clarify"; key: string; message: Message };
 
   const renderItems = useMemo<RenderItem[]>(() => {
     const items: RenderItem[] = [];
     for (let index = 0; index < visibleMessages.length; index += 1) {
       const message = visibleMessages[index];
+      if (message.kind === "clarify") {
+        items.push({ type: "clarify", key: message.id, message });
+        continue;
+      }
       if (message.kind === "tool") {
         const group = [message];
         let cursor = index;
@@ -794,6 +802,16 @@ export function ChatView({
             {renderItems.map((item) => {
               if (item.type === "tool-group") {
                 return <ToolCallGroup key={item.key} messages={item.messages} />;
+              }
+              if (item.type === "clarify") {
+                return (
+                  <ClarifyCard
+                    key={item.key}
+                    message={item.message}
+                    formatTime={formatTime}
+                    onAnswer={(answer) => onAnswerClarify(item.message.id, answer)}
+                  />
+                );
               }
               const { message, isLast, showMeta } = item;
               return (

@@ -498,7 +498,7 @@ export interface RunHermesAgentOutput {
 
 export interface RuntimeStreamEvent {
   taskId: string;
-  kind: "start" | "delta" | "reasoning" | "tool" | "done" | "error" | "usage";
+  kind: "start" | "delta" | "reasoning" | "tool" | "clarify" | "done" | "error" | "usage";
   delta: string;
   content: string;
   message: string;
@@ -524,6 +524,17 @@ export interface HermesStateSessionSummary {
   messageCount: number;
   model: string;
   preview: string;
+  profile: string;
+}
+
+export interface HermesStateSearchResult {
+  id: string;
+  title: string;
+  startedAt: number;
+  messageCount: number;
+  model: string;
+  /** Highlighted excerpt (matches wrapped in «»), empty for title-only hits. */
+  snippet: string;
   profile: string;
 }
 
@@ -1236,6 +1247,19 @@ export async function listHermesStateSessions(params: {
   ensureTauriRuntime();
   return invoke<HermesStateSessionSummary[]>("list_hermes_state_sessions", {
     profile: params.profile,
+  });
+}
+
+export async function searchHermesStateSessions(params: {
+  query: string;
+  profile?: string;
+  limit?: number;
+}): Promise<HermesStateSearchResult[]> {
+  ensureTauriRuntime();
+  return invoke<HermesStateSearchResult[]>("search_hermes_state_sessions", {
+    query: params.query,
+    profile: params.profile,
+    limit: params.limit,
   });
 }
 

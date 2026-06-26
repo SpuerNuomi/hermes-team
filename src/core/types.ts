@@ -45,7 +45,7 @@ export interface MessageAttachment {
 export interface Message {
   id: string;
   workspaceId: string;
-  kind?: "message" | "reasoning" | "tool";
+  kind?: "message" | "reasoning" | "tool" | "clarify";
   authorKind: "user" | "agent" | "system";
   authorId?: string;
   authorName: string;
@@ -53,6 +53,12 @@ export interface Message {
   createdAt: number;
   replyToMessageId?: string;
   attachments?: MessageAttachment[];
+  /** For `kind: "clarify"` — quick-pick options parsed from the question. */
+  clarifyChoices?: string[];
+  /** For `kind: "clarify"` — set once the user answers or skips the card. */
+  clarifyResolved?: boolean;
+  /** For `kind: "clarify"` — the answer the user submitted (empty = skipped). */
+  clarifyAnswer?: string;
 }
 
 export interface DispatchAssignment {

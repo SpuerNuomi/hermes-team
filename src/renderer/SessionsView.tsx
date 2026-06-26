@@ -1,6 +1,10 @@
 import { Check, Database, FolderOpen, History, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
-import type { HermesStateSessionSummary, HermesTeamSessionSummary } from "../runtime/hermes-runtime";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  HermesStateSearchResult,
+  HermesStateSessionSummary,
+  HermesTeamSessionSummary,
+} from "../runtime/hermes-runtime";
 
 function folderName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
@@ -17,6 +21,7 @@ export function SessionsView({
   desktopSessions,
   desktopBusy,
   onRefreshDesktopSessions,
+  onSearchDesktopSessions,
   onImportDesktopSession,
 }: {
   sessions: HermesTeamSessionSummary[];
@@ -29,13 +34,19 @@ export function SessionsView({
   desktopSessions: HermesStateSessionSummary[];
   desktopBusy: boolean;
   onRefreshDesktopSessions: () => void;
+  onSearchDesktopSessions: (query: string) => Promise<HermesStateSearchResult[]>;
   onImportDesktopSession: (session: HermesStateSessionSummary) => void;
 }) {
   const [query, setQuery] = useState("");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [desktopResults, setDesktopResults] = useState<HermesStateSearchResult[]>([]);
+  const [desktopSearching, setDesktopSearching] = useState(false);
   const normalizedQuery = query.trim().toLowerCase();
+  const trimmedQuery = query.trim();
+  const searchDesktopRef = useRef(onSearchDesktopSessions);
+  searchDesktopRef.current = onSearchDesktopSessions;
   const visibleSessions = useMemo(
     () =>
       normalizedQuery
@@ -43,6 +54,35 @@ export function SessionsView({
         : sessions,
     [normalizedQuery, sessions],
   );
+
+  // Full-text search over the profile's state.db (FTS5 when available), debounced
+  // so we don't fire a sqlite query on every keystroke.
+  useEffect(() => {
+    if (!trimmedQuery) {
+      setDesktopResults([]);
+      setDesktopSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setDesktopSearching(true);
+    const handle = window.setTimeout(() => {
+      searchDesktopRef
+        .current(trimmedQuery)
+        .then((items) => {
+          if (!cancelled) setDesktopResults(items);
+        })
+        .catch(() => {
+          if (!cancelled) setDesktopResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setDesktopSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [trimmedQuery]);
 
   const startRename = (session: HermesTeamSessionSummary) => {
     setPendingDeleteId(null);
@@ -212,28 +252,71 @@ export function SessionsView({
               <span>{desktopBusy ? "读取中" : "刷新 state.db"}</span>
             </button>
           </div>
-          <div className="mini-list">
-            {desktopSessions.length === 0 ? (
-              <p className="empty-note">没有读取到本地 state.db 会话。</p>
-            ) : (
-              desktopSessions.slice(0, 30).map((session) => (
-                <article key={`${session.profile}-${session.id}`}>
-                  <div>
-                    <strong>{session.title}</strong>
-                    <span>
-                      {formatTime(normalizeSessionTime(session.startedAt))} · {session.messageCount} messages · {session.profile}
-                    </span>
-                    {session.preview && <span>{session.preview}</span>}
-                  </div>
-                  <div className="mini-actions">
-                    <button type="button" onClick={() => onImportDesktopSession(session)}>
-                      导入
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
+          {trimmedQuery ? (
+            <div className="mini-list">
+              {desktopSearching ? (
+                <p className="empty-note">正在全文检索 state.db…</p>
+              ) : desktopResults.length === 0 ? (
+                <p className="empty-note">state.db 中没有匹配「{trimmedQuery}」的会话。</p>
+              ) : (
+                desktopResults.map((result) => (
+                  <article key={`${result.profile}-${result.id}`}>
+                    <div>
+                      <strong>{result.title}</strong>
+                      <span>
+                        {formatTime(normalizeSessionTime(result.startedAt))} · {result.messageCount} messages · {result.profile}
+                      </span>
+                      {result.snippet && (
+                        <span className="session-search-snippet">{renderSnippet(result.snippet)}</span>
+                      )}
+                    </div>
+                    <div className="mini-actions">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onImportDesktopSession({
+                            id: result.id,
+                            title: result.title,
+                            startedAt: result.startedAt,
+                            endedAt: null,
+                            messageCount: result.messageCount,
+                            model: result.model,
+                            preview: result.snippet,
+                            profile: result.profile,
+                          })
+                        }
+                      >
+                        导入
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="mini-list">
+              {desktopSessions.length === 0 ? (
+                <p className="empty-note">没有读取到本地 state.db 会话。</p>
+              ) : (
+                desktopSessions.slice(0, 30).map((session) => (
+                  <article key={`${session.profile}-${session.id}`}>
+                    <div>
+                      <strong>{session.title}</strong>
+                      <span>
+                        {formatTime(normalizeSessionTime(session.startedAt))} · {session.messageCount} messages · {session.profile}
+                      </span>
+                      {session.preview && <span>{session.preview}</span>}
+                    </div>
+                    <div className="mini-actions">
+                      <button type="button" onClick={() => onImportDesktopSession(session)}>
+                        导入
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          )}
         </section>
       </div>
     </>
@@ -242,6 +325,24 @@ export function SessionsView({
 
 function normalizeSessionTime(value: number): number {
   return value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+}
+
+/**
+ * Render a search snippet, highlighting the matched terms that the backend
+ * wrapped in «» (both the FTS5 `snippet()` output and the LIKE fallback use
+ * these markers).
+ */
+function renderSnippet(snippet: string) {
+  const parts = snippet.split(/«([^»]*)»/g);
+  return parts.map((part, index) =>
+    index % 2 === 1 ? (
+      <mark key={index} className="session-search-hit">
+        {part}
+      </mark>
+    ) : (
+      <Fragment key={index}>{part}</Fragment>
+    ),
+  );
 }
 
 function sessionMatchesQuery(session: HermesTeamSessionSummary, query: string): boolean {

@@ -56,6 +56,7 @@ import {
 } from "./chatInput/localCommands";
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
+import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
 import { WebPreviewPanel } from "./WebPreviewPanel";
@@ -98,6 +99,7 @@ import {
   listHermesLogs,
   listHermesMcpCatalog,
   listHermesStateSessions,
+  searchHermesStateSessions,
   listHermesMcpServers,
   listHermesModels,
   listHermesProfiles,
@@ -176,6 +178,7 @@ import {
   type HermesTeamSessionSummary,
   type HermesStateMessage,
   type HermesStateSessionSummary,
+  type HermesStateSearchResult,
   type InstalledSkillInfo,
   type McpCatalogEntry,
   type McpOperationResult,
@@ -363,6 +366,8 @@ const CRON_DELIVER_OPTIONS: { id: string; label: string }[] = [
   { id: "discord", label: "discord" },
   { id: "slack", label: "slack" },
 ];
+
+const ONBOARDING_STORAGE_KEY = "hermes-team:onboarding-complete";
 
 const defaultRemoteConnectionConfig: RemoteConnectionConfig = {
   mode: "local",
@@ -742,6 +747,9 @@ export function App() {
   const [remoteStatus, setRemoteStatus] = useState<RemoteConnectionStatus | null>(null);
   const [profiles, setProfiles] = useState<HermesProfileInfo[]>([]);
   const [installStatus, setInstallStatus] = useState<HermesInstallStatus | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const onboardingAutoCheckedRef = useRef(false);
   const [configHealth, setConfigHealth] = useState<ConfigHealthReport | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings>(defaultAppSettings);
   const [networkSettings, setNetworkSettings] = useState<NetworkSettings>(defaultNetworkSettings);
@@ -955,6 +963,22 @@ export function App() {
     return [...messages, processMessage, answerPlaceholder];
   }
 
+  function parseClarifyChoices(raw: string | undefined): string[] {
+    if (!raw?.trim()) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => String(item).trim())
+          .filter((item) => item.length > 0)
+          .slice(0, 4);
+      }
+    } catch {
+      // Not JSON — ignore and fall back to a free-text card.
+    }
+    return [];
+  }
+
   function normalizeProcessText(value: string) {
     return value.replace(/\s+/g, " ").trim();
   }
@@ -1121,6 +1145,53 @@ export function App() {
       });
       return;
     }
+    if (event.kind === "clarify") {
+      setState((current) => {
+        const task = current.tasks.find((item) => item.id === event.taskId);
+        if (!task || task.status === "cancelled") return current;
+        const agent = current.agents.find((item) => item.id === task.agentId);
+        const callId = event.message || "clarify";
+        const messageId = `clarify-${event.taskId}-${callId}`;
+        const existing = current.messages.find((message) => message.id === messageId);
+        const question = event.delta || existing?.content || "";
+        if (!question.trim()) return current;
+        const nextMessage: Message = {
+          id: messageId,
+          workspaceId: task.workspaceId,
+          kind: "clarify" as const,
+          authorKind: "agent" as const,
+          authorId: agent?.id,
+          authorName: agent?.name ?? "Hermes",
+          content: question,
+          clarifyChoices: parseClarifyChoices(event.content),
+          clarifyResolved: existing?.clarifyResolved ?? false,
+          clarifyAnswer: existing?.clarifyAnswer,
+          createdAt: existing?.createdAt ?? Date.now(),
+          replyToMessageId: task.triggerMessageId,
+        };
+        const streamMessageId = `stream-${event.taskId}`;
+        const streamMessage: Message = {
+          id: streamMessageId,
+          workspaceId: task.workspaceId,
+          authorKind: "agent" as const,
+          authorId: agent?.id,
+          authorName: agent?.name ?? "Hermes",
+          content: "正在生成...",
+          createdAt: Date.now(),
+          replyToMessageId: task.triggerMessageId,
+        };
+        return {
+          ...current,
+          messages: upsertProcessMessageBeforeAnswer(
+            current.messages,
+            nextMessage,
+            streamMessage,
+            streamMessageId,
+          ),
+        };
+      });
+      return;
+    }
     setState((current) => {
       const task = current.tasks.find((item) => item.id === event.taskId);
       if (!task || task.status === "cancelled") return current;
@@ -1241,6 +1312,42 @@ export function App() {
         authorId: agent?.id,
         authorName: agent?.name ?? "Hermes",
         content: nextContent,
+        createdAt: existing?.createdAt ?? Date.now(),
+        replyToMessageId: task.triggerMessageId,
+      };
+      const streamMessage: Message = {
+        id: streamMessageId,
+        workspaceId: task.workspaceId,
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: "正在生成...",
+        createdAt: Date.now(),
+        replyToMessageId: task.triggerMessageId,
+      };
+      return {
+        ...current,
+        messages: upsertProcessMessageBeforeAnswer(current.messages, nextMessage, streamMessage, streamMessageId),
+      };
+    }
+    if (event.kind === "clarify") {
+      const callId = event.message || "clarify";
+      const messageId = `clarify-${event.taskId}-${callId}`;
+      const existing = current.messages.find((message) => message.id === messageId);
+      const question = event.delta || existing?.content || "";
+      if (!question.trim()) return current;
+      const streamMessageId = `stream-${event.taskId}`;
+      const nextMessage: Message = {
+        id: messageId,
+        workspaceId: task.workspaceId,
+        kind: "clarify",
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: question,
+        clarifyChoices: parseClarifyChoices(event.content),
+        clarifyResolved: existing?.clarifyResolved ?? false,
+        clarifyAnswer: existing?.clarifyAnswer,
         createdAt: existing?.createdAt ?? Date.now(),
         replyToMessageId: task.triggerMessageId,
       };
@@ -2206,6 +2313,16 @@ export function App() {
     }
   };
 
+  const searchDesktopSessions = async (
+    query: string,
+  ): Promise<HermesStateSearchResult[]> => {
+    if (!isTauriRuntimeAvailable()) return [];
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const targetProfile = currentChatProfile || installStatus?.activeProfile || "default";
+    return searchHermesStateSessions({ query: trimmed, profile: targetProfile });
+  };
+
   const importDesktopSession = async (session: HermesStateSessionSummary) => {
     if (hasActiveSessionTasks(state)) {
       setNotice("当前会话仍有运行中的 Agent，请先停止任务后再导入历史会话。");
@@ -2562,6 +2679,138 @@ export function App() {
       return false;
     } finally {
       setKeyBusy(false);
+    }
+  };
+
+  const finishOnboarding = () => {
+    try {
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "done");
+    } catch {
+      // localStorage may be unavailable; the in-memory flag still closes it.
+    }
+    setShowOnboarding(false);
+  };
+
+  const startOnboarding = () => {
+    onboardingAutoCheckedRef.current = true;
+    setShowOnboarding(true);
+  };
+
+  // Auto-open the guided flow on first launch when the environment isn't ready
+  // yet (no install, or no API server key/config). Runs once per session after
+  // the first install probe resolves; honours a persisted "completed" flag.
+  useEffect(() => {
+    if (onboardingAutoCheckedRef.current) return;
+    if (!isTauriRuntimeAvailable()) return;
+    if (installStatus === null) return;
+    onboardingAutoCheckedRef.current = true;
+    let completed = false;
+    try {
+      completed = window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === "done";
+    } catch {
+      completed = false;
+    }
+    const ready =
+      installStatus.installed &&
+      installStatus.apiServerKeyPresent &&
+      installStatus.apiServerConfigured;
+    if (!completed && !ready) {
+      setShowOnboarding(true);
+    }
+  }, [installStatus]);
+
+  const onboardingConnectRemote = async (
+    url: string,
+    key: string,
+  ): Promise<RemoteConnectionStatus> => {
+    const config: RemoteConnectionConfig = {
+      ...remoteConfig,
+      mode: "remote",
+      remoteUrl: url,
+      apiKey: key,
+    };
+    setOnboardingBusy(true);
+    try {
+      const status = await testRemoteConnection(config);
+      if (status.ok) {
+        await saveRemoteConnectionConfig(config);
+        setRemoteConfig(config);
+        setRemoteStatus(status);
+        await refreshInstallStatus();
+      }
+      return status;
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const onboardingConnectSsh = async (input: {
+    host: string;
+    port: number;
+    username: string;
+    keyPath: string;
+    remotePort: number;
+  }): Promise<RemoteConnectionStatus> => {
+    const config: RemoteConnectionConfig = {
+      ...remoteConfig,
+      mode: "ssh",
+      ssh: {
+        ...remoteConfig.ssh,
+        host: input.host,
+        port: input.port,
+        username: input.username,
+        keyPath: input.keyPath,
+        remotePort: input.remotePort,
+      },
+    };
+    setOnboardingBusy(true);
+    try {
+      const status = await startSshTunnel(config);
+      if (status.ok) {
+        await saveRemoteConnectionConfig(config);
+        setRemoteConfig(config);
+        setRemoteStatus(status);
+        await refreshInstallStatus();
+      }
+      return status;
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const onboardingConfigureModel = async (input: OnboardingConfigureInput) => {
+    const targetProfile =
+      installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setOnboardingBusy(true);
+    try {
+      if (input.apiKey && input.envKey) {
+        await saveProviderKey({ profile: targetProfile, envKey: input.envKey, value: input.apiKey });
+      }
+      await saveHermesModel({
+        name: `${input.label} · ${input.model}`,
+        provider: input.provider,
+        model: input.model,
+        baseUrl: input.baseUrl || undefined,
+        contextLength: input.contextLength,
+      });
+      const activated = await activateHermesModel({
+        profile: targetProfile,
+        provider: input.provider,
+        model: input.model,
+        baseUrl: input.baseUrl || undefined,
+        contextLength: input.contextLength,
+      });
+      setActiveModel(activated);
+      if (!installStatus?.apiServerKeyPresent) {
+        await generateApiServerKey({ profile: targetProfile }).catch(() => undefined);
+      }
+      await ensureHermesGateway({ profile: targetProfile, replace: true }).catch(() => undefined);
+      await refreshRuntime({ autoStart: false });
+      await refreshInstallStatus();
+      await refreshHermesCapabilities(targetProfile);
+      await refreshConfigHealth(targetProfile);
+    } finally {
+      setOnboardingBusy(false);
     }
   };
 
@@ -3675,6 +3924,25 @@ export function App() {
     setQueuedMessages((current) => current.filter((item) => item.id !== id));
   };
 
+  // Answer an inline Clarify card. The `/v1/runs` transport has no clarify
+  // resolve endpoint, so the answer is delivered as the next message (the
+  // gateway's text-fallback contract). An empty answer means "let Hermes
+  // decide"; we send a short instruction so the agent proceeds with its best
+  // judgment instead of waiting. The card is flipped to a resolved, read-only
+  // state so it can't be answered twice.
+  const answerClarify = (messageId: string, answer: string) => {
+    const trimmed = answer.trim();
+    setState((current) => ({
+      ...current,
+      messages: current.messages.map((message) =>
+        message.id === messageId
+          ? { ...message, clarifyResolved: true, clarifyAnswer: trimmed }
+          : message,
+      ),
+    }));
+    sendMessage(trimmed || "你来决定，按你认为合理的默认继续即可。");
+  };
+
   const scheduleDispatchedTasks = (nextState: OrchestrationState, taskIds: string[]) => {
     window.setTimeout(() => {
       for (const taskId of taskIds) {
@@ -4030,15 +4298,21 @@ export function App() {
                     <p className="panel-label">Install</p>
                     <h2>安装检测</h2>
                   </div>
-                  <button
-                    className="refresh-runtime"
-                    disabled={installBusy}
-                    type="button"
-                    onClick={() => void refreshInstallStatus()}
-                  >
-                    <RefreshCw size={14} />
-                    <span>{installBusy ? "检测中..." : "重新检测"}</span>
-                  </button>
+                  <div className="settings-card-head-actions">
+                    <button className="refresh-runtime" type="button" onClick={startOnboarding}>
+                      <WandSparkles size={14} />
+                      <span>引导式安装</span>
+                    </button>
+                    <button
+                      className="refresh-runtime"
+                      disabled={installBusy}
+                      type="button"
+                      onClick={() => void refreshInstallStatus()}
+                    >
+                      <RefreshCw size={14} />
+                      <span>{installBusy ? "检测中..." : "重新检测"}</span>
+                    </button>
+                  </div>
                 </div>
                 {installStatus ? (
                   <div className="settings-rows">
@@ -6207,6 +6481,7 @@ export function App() {
             desktopSessions={desktopSessions}
             desktopBusy={desktopSessionsBusy}
             onRefreshDesktopSessions={() => void refreshDesktopSessions()}
+            onSearchDesktopSessions={searchDesktopSessions}
             onImportDesktopSession={(session) => void importDesktopSession(session)}
           />
         ) : (
@@ -6291,6 +6566,7 @@ export function App() {
           }}
           onRegenerateMessage={regenerateFromMessage}
           onBranchMessage={branchFromMessage}
+          onAnswerClarify={answerClarify}
         />
         {webPreviewUrl && (
           <WebPreviewPanel
@@ -6531,6 +6807,21 @@ export function App() {
           {buildLabel() || "Hermes Team"}
         </span>
       </footer>
+      {showOnboarding && (
+        <OnboardingFlow
+          installStatus={installStatus}
+          providers={providerRegistry}
+          busy={onboardingBusy}
+          onRecheck={async () => {
+            await refreshInstallStatus();
+          }}
+          onConnectRemote={onboardingConnectRemote}
+          onConnectSsh={onboardingConnectSsh}
+          onConfigureModel={onboardingConfigureModel}
+          onFinish={finishOnboarding}
+          onSkip={finishOnboarding}
+        />
+      )}
     </main>
   );
 }
