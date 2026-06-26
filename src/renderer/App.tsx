@@ -25,6 +25,8 @@ import {
   Plug,
   RefreshCw,
   Save,
+  ShieldCheck,
+  Stethoscope,
   Upload,
   Search,
   Settings,
@@ -151,6 +153,7 @@ import {
   selectAttachmentFiles,
   selectContextFolder,
   removeHermesModel,
+  runHermesDoctor,
   searchHermesSkills,
   setActiveHermesProfile,
   setAutoUpgradeEnabled,
@@ -179,6 +182,7 @@ import {
   type CronJobInfo,
   type CronJobRun,
   type CredentialPoolGroup,
+  type HermesDoctorReport,
   type HermesInstallStatus,
   type HermesLogContent,
   type HermesLogInfo,
@@ -214,7 +218,7 @@ import {
 } from "../runtime/hermes-runtime";
 
 type ActiveView = "team" | "sessions" | "settings";
-type SettingsPanel = "overview" | "appearance" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
+type SettingsPanel = "overview" | "appearance" | "privacy" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
   id?: string;
@@ -308,6 +312,7 @@ const defaultAppSettings: AppSettings = {
   theme: "light",
   roundedCorners: true,
   font: "system",
+  allowAnonymousAnalytics: false,
 };
 const defaultNetworkSettings: NetworkSettings = {
   forceIpv4: false,
@@ -899,6 +904,8 @@ export function App() {
   const [installBusy, setInstallBusy] = useState(false);
   const [configHealthBusy, setConfigHealthBusy] = useState(false);
   const [configFixingCode, setConfigFixingCode] = useState<string | null>(null);
+  const [doctorReport, setDoctorReport] = useState<HermesDoctorReport | null>(null);
+  const [doctorBusy, setDoctorBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [networkBusy, setNetworkBusy] = useState(false);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -959,6 +966,7 @@ export function App() {
   const settingsPanels: Array<{ id: SettingsPanel; label: string }> = [
     { id: "overview", label: "概览" },
     { id: "appearance", label: "Appearance" },
+    { id: "privacy", label: "Privacy" },
     { id: "network", label: "Network" },
     { id: "profiles", label: "Profiles" },
     { id: "providers", label: "Provider" },
@@ -1657,6 +1665,26 @@ export function App() {
       return null;
     } finally {
       setConfigHealthBusy(false);
+    }
+  };
+
+  const runDoctorDiagnostics = async (profileName?: string) => {
+    if (!isTauriRuntimeAvailable()) {
+      setNotice("当前非 Tauri 运行环境，无法运行诊断。");
+      return null;
+    }
+    const targetProfile = currentProfileName(profileName);
+    setDoctorBusy(true);
+    try {
+      const report = await runHermesDoctor({ profile: targetProfile });
+      setDoctorReport(report);
+      setNotice(report.summary);
+      return report;
+    } catch (error) {
+      setNotice(`运行诊断失败：${runtimeErrorMessage(error)}`);
+      return null;
+    } finally {
+      setDoctorBusy(false);
     }
   };
 
@@ -4739,6 +4767,64 @@ export function App() {
                 )}
               </section>
 
+              <section className={settingsCardClass("overview", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Doctor</p>
+                    <h2>诊断检查</h2>
+                  </div>
+                  <button
+                    className="refresh-runtime"
+                    disabled={doctorBusy}
+                    type="button"
+                    onClick={() => void runDoctorDiagnostics(installStatus?.activeProfile)}
+                  >
+                    <Stethoscope size={14} />
+                    <span>{doctorBusy ? "诊断中..." : "运行诊断"}</span>
+                  </button>
+                </div>
+                {doctorReport ? (
+                  <div className="config-health-panel">
+                    <div className="config-health-summary">
+                      <span className={doctorReport.ok ? "ok" : "warning"}>
+                        {doctorReport.ok ? "通过" : "需关注"}
+                      </span>
+                      <span className={doctorReport.configErrors > 0 ? "danger" : "ok"}>
+                        {doctorReport.configErrors} errors
+                      </span>
+                      <span className={doctorReport.configWarnings > 0 ? "warning" : "ok"}>
+                        {doctorReport.configWarnings} warnings
+                      </span>
+                      <span>{doctorReport.activeProfile} · {formatTime(doctorReport.ranAt)}</span>
+                    </div>
+                    <p className="empty-note">{doctorReport.summary}</p>
+                    <div className="settings-rows">
+                      {doctorReport.checks.map((check) => (
+                        <StatusRow
+                          key={check.label}
+                          label={check.label}
+                          value={check.detail}
+                          ok={check.status === "ok"}
+                          warn={check.status === "warn" || check.status === "info"}
+                        />
+                      ))}
+                    </div>
+                    {doctorReport.doctorOutput.trim().length > 0 && (
+                      <div className="doctor-output">
+                        <p className="panel-label">
+                          {doctorReport.doctorSupported ? "hermes doctor 输出" : "诊断说明"}
+                        </p>
+                        <pre>{doctorReport.doctorOutput}</pre>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="empty-note">
+                    运行 <code>hermes doctor</code> 等价诊断：聚合 CLI 安装、Gateway、配置健康检查与 doctor 子命令输出。
+                  </p>
+                )}
+              </section>
+
               <section className={settingsCardClass("appearance", "settings-card-wide")}>
                 <div className="settings-card-head">
                   <div>
@@ -4797,6 +4883,41 @@ export function App() {
                       </div>
                     </div>
                   </div>
+                </div>
+              </section>
+
+              <section className={settingsCardClass("privacy", "settings-card-wide")}>
+                <div className="settings-card-head">
+                  <div>
+                    <p className="panel-label">Privacy</p>
+                    <h2>隐私设置</h2>
+                  </div>
+                  <span className="count-pill">
+                    <ShieldCheck size={14} />
+                    {settingsBusy ? "Saving" : "Local"}
+                  </span>
+                </div>
+                <div className="appearance-options">
+                  <label className="settings-toggle-row">
+                    <span>
+                      <strong>允许匿名使用分析</strong>
+                      <small>
+                        记录你是否同意匿名使用分析。此偏好仅保存在本机的应用设置中。
+                      </small>
+                    </span>
+                    <input
+                      checked={appSettings.allowAnonymousAnalytics}
+                      type="checkbox"
+                      onChange={(event) =>
+                        void updateAppSettings({ allowAnonymousAnalytics: event.target.checked })
+                      }
+                    />
+                  </label>
+                  <p className="empty-note">
+                    当前状态：Hermes Team 桌面端<strong>不会</strong>采集或上报任何遥测/分析数据，
+                    也未内置分析上报服务。此开关仅作为真实的偏好存储，用于未来若引入匿名分析时
+                    决定是否启用——开启它<strong>不会</strong>立即产生任何网络上报。
+                  </p>
                 </div>
               </section>
 
@@ -7430,12 +7551,24 @@ function SessionTimer({ startedAt }: { startedAt: number }) {
   return <span className="status-val status-mono">{label}</span>;
 }
 
-function StatusRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+function StatusRow({
+  label,
+  value,
+  ok,
+  warn,
+}: {
+  label: string;
+  value: string;
+  ok: boolean;
+  warn?: boolean;
+}) {
+  const tone = ok ? "ok" : warn ? "warning" : "danger";
+  const text = ok ? "OK" : warn ? "注意" : "需要处理";
   return (
     <div className="status-row">
       <span>{label}</span>
       <strong title={value}>{value}</strong>
-      <em className={ok ? "ok" : "warning"}>{ok ? "OK" : "需要处理"}</em>
+      <em className={tone}>{text}</em>
     </div>
   );
 }

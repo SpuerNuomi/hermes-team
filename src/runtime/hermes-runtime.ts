@@ -112,6 +112,31 @@ export interface AppSettings {
   theme: string;
   roundedCorners: boolean;
   font: string;
+  allowAnonymousAnalytics: boolean;
+}
+
+export interface DoctorCheck {
+  label: string;
+  status: "ok" | "warn" | "error" | "info";
+  detail: string;
+}
+
+export interface HermesDoctorReport {
+  ranAt: number;
+  cliAvailable: boolean;
+  command?: string | null;
+  version?: string | null;
+  activeProfile: string;
+  gatewayRunning: boolean;
+  gatewayHealth: string;
+  doctorSupported: boolean;
+  doctorOk: boolean;
+  doctorOutput: string;
+  configErrors: number;
+  configWarnings: number;
+  checks: DoctorCheck[];
+  summary: string;
+  ok: boolean;
 }
 
 export interface UpdateStatus {
@@ -684,6 +709,15 @@ export async function autofixConfigIssue(input: {
 }): Promise<ConfigHealthFixResult> {
   ensureTauriRuntime();
   return invoke<ConfigHealthFixResult>("autofix_config_issue", { input });
+}
+
+export async function runHermesDoctor(params: {
+  profile?: string;
+} = {}): Promise<HermesDoctorReport> {
+  ensureTauriRuntime();
+  return invoke<HermesDoctorReport>("run_hermes_doctor", {
+    profile: params.profile,
+  });
 }
 
 export async function getAppSettings(): Promise<AppSettings> {

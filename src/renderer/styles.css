@@ -4775,6 +4775,31 @@ textarea:focus {
   background: #241a0a;
 }
 
+.status-row em.danger {
+  color: #ff7b72;
+  background: #2d1517;
+}
+
+.doctor-output {
+  display: grid;
+  gap: 6px;
+}
+
+.doctor-output pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  color: #c9d4df;
+  background: #0f141a;
+  border: 1px solid #222a33;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .config-health-panel {
   display: grid;
   gap: 12px;
