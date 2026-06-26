@@ -492,6 +492,11 @@ button {
 :root[data-theme="dracula"] .font-options button,
 :root[data-theme="nord"] .font-options button,
 :root[data-theme="one-dark"] .font-options button,
+:root[data-theme="dark"] .language-options button,
+:root[data-theme="github-dark"] .language-options button,
+:root[data-theme="dracula"] .language-options button,
+:root[data-theme="nord"] .language-options button,
+:root[data-theme="one-dark"] .language-options button,
 :root[data-theme="dark"] .network-field,
 :root[data-theme="github-dark"] .network-field,
 :root[data-theme="dracula"] .network-field,
@@ -5076,6 +5081,35 @@ textarea:focus {
   color: #f5fbf8;
   background: #1f7a4d;
   border-color: #e6edf3;
+}
+
+.language-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.language-options button {
+  min-height: 34px;
+  padding: 7px 12px;
+  color: #e6edf3;
+  background: #161b22;
+  border: 1px solid #2a313c;
+  border-radius: 8px;
+  font-weight: 700;
+}
+
+.language-options button.active {
+  color: #f5fbf8;
+  background: #1f7a4d;
+  border-color: #e6edf3;
+}
+
+.language-hint {
+  display: block;
+  margin-top: 8px;
+  color: #9aa6b2;
+  font-size: 12px;
 }
 
 .network-field {

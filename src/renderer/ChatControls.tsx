@@ -2,6 +2,7 @@ import { Check, ChevronDown, Settings, Zap } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReasoningEffort } from "../core/reasoning";
 import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtime/hermes-runtime";
+import { useTranslation } from "../i18n";
 import { ReasoningEffortPicker } from "./ReasoningEffortPicker";
 
 export const ChatControls = memo(function ChatControls({
@@ -31,6 +32,7 @@ export const ChatControls = memo(function ChatControls({
   onToggleFastMode: () => void | Promise<void>;
   onOpenModels: () => void;
 }) {
+  const t = useTranslation();
   const [profileOpen, setProfileOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
@@ -117,7 +119,7 @@ export const ChatControls = memo(function ChatControls({
                 >
                   <span>
                     <strong>{name}</strong>
-                    <small>{profile?.hasApiKey ? "API key ready" : "no API key"}</small>
+                    <small>{profile?.hasApiKey ? t("chat.apiKeyReady") : t("chat.noApiKey")}</small>
                   </span>
                   {selected && <Check size={14} />}
                 </button>
@@ -148,7 +150,7 @@ export const ChatControls = memo(function ChatControls({
               className="chat-control-search"
               value={modelSearch}
               onChange={(event) => setModelSearch(event.target.value)}
-              placeholder="Search models"
+              placeholder={t("chat.searchModels")}
             />
             {filteredModels.length > 0 ? (
               filteredModels.map((model) => {
@@ -173,7 +175,7 @@ export const ChatControls = memo(function ChatControls({
                 );
               })
             ) : (
-              <div className="chat-control-empty">No saved models</div>
+              <div className="chat-control-empty">{t("chat.noSavedModels")}</div>
             )}
             <button
               className="chat-control-manage"
@@ -184,7 +186,7 @@ export const ChatControls = memo(function ChatControls({
               }}
             >
               <Settings size={13} />
-              Manage models
+              {t("chat.manageModels")}
             </button>
           </div>
         )}
@@ -200,7 +202,7 @@ export const ChatControls = memo(function ChatControls({
         className={`chat-control-trigger fast-mode-toggle ${fastMode ? "active" : ""}`}
         disabled={busy}
         type="button"
-        title={fastMode ? "Fast Mode 已开启（优先处理）" : "开启 Fast Mode（优先处理、更低延迟）"}
+        title={fastMode ? t("chat.fastModeOnTitle") : t("chat.fastModeOffTitle")}
         aria-pressed={fastMode}
         onClick={() => void onToggleFastMode()}
       >
