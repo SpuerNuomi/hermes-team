@@ -4022,6 +4022,30 @@ textarea:focus {
   border-radius: 7px;
 }
 
+.web-preview-btn-active {
+  color: #0d1117;
+  background: #58a6ff;
+  border-color: #58a6ff;
+}
+
+.web-preview-inspect-hint,
+.web-preview-inspect-notice {
+  padding: 7px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-bottom: 1px solid #2a313c;
+}
+
+.web-preview-inspect-hint {
+  color: #9fd0ff;
+  background: rgba(88, 166, 255, 0.12);
+}
+
+.web-preview-inspect-notice {
+  color: #ffce8a;
+  background: rgba(187, 128, 9, 0.16);
+}
+
 .web-preview-address-bar {
   display: flex;
   align-items: center;

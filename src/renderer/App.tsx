@@ -46,7 +46,7 @@ import {
 import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
-import type { Message, MessageAttachment, WorkspaceMode } from "../core/types";
+import type { Message, MessageAttachment, SessionModelOverride, WorkspaceMode } from "../core/types";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { buildLabel } from "./buildInfo";
 import {
@@ -60,6 +60,7 @@ import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow"
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
 import { WebPreviewPanel } from "./WebPreviewPanel";
+import { formatInspectInjection } from "./webPreviewInspector";
 import { useFastMode } from "./useFastMode";
 import { useReasoningEffort } from "./useReasoningEffort";
 import {
@@ -705,6 +706,20 @@ function isScratchSession(state: OrchestrationState): boolean {
 
 function hasActiveSessionTasks(state: OrchestrationState): boolean {
   return state.tasks.some((task) => task.status === "pending" || task.status === "running");
+}
+
+function sameSessionModelOverride(
+  left: SessionModelOverride | undefined,
+  right: SessionModelOverride | undefined,
+): boolean {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  return (
+    left.provider === right.provider &&
+    left.model === right.model &&
+    (left.baseUrl ?? "") === (right.baseUrl ?? "") &&
+    (left.contextLength ?? 0) === (right.contextLength ?? 0)
+  );
 }
 
 export function App() {
@@ -2951,34 +2966,37 @@ export function App() {
     void refreshConfigHealth(profileName);
   };
 
-  const activateChatModel = async (model: SavedModel) => {
-    const agent = state.agents[0];
-    const binding = agent
-      ? state.bindings.find((item) => item.agentId === agent.id)
-      : undefined;
-    const targetProfile = binding?.hermesProfile ?? "default";
-    setModelBusy(true);
-    try {
-      const activated = await activateHermesModel({
-        profile: targetProfile,
-        provider: model.provider,
-        model: model.model,
-        baseUrl: model.baseUrl,
-        contextLength: model.contextLength,
-      });
-      setActiveModel(activated);
-      setNotice(`已激活 ${model.name} 到聊天 Profile「${targetProfile}」。`);
-      if (runtimeStatus.state === "ready") {
-        await ensureHermesGateway({ profile: targetProfile, replace: true });
-        await refreshRuntime({ autoStart: false });
+  // In-chat model picker. The choice is scoped to the current conversation
+  // only: it never rewrites config.yaml (the global default stays put), so
+  // sessions without an override fall back to the global active model. The
+  // override rides along with the session snapshot (autosaved by session id) and
+  // is restored when the session is reopened. Picking the model that already
+  // matches the global default clears the override instead of pinning it.
+  const selectSessionModel = (model: SavedModel) => {
+    const matchesGlobal =
+      activeModel?.provider === model.provider && activeModel?.model === model.model;
+    setState((current) => {
+      const nextOverride: SessionModelOverride | undefined = matchesGlobal
+        ? undefined
+        : {
+            provider: model.provider,
+            model: model.model,
+            baseUrl: model.baseUrl ?? "",
+            contextLength: model.contextLength,
+          };
+      if (sameSessionModelOverride(current.workspace.modelOverride, nextOverride)) {
+        return current;
       }
-      await refreshHermesCapabilities(targetProfile);
-      await refreshConfigHealth(targetProfile);
-    } catch (error) {
-      setNotice(`激活聊天模型失败：${runtimeErrorMessage(error)}`);
-    } finally {
-      setModelBusy(false);
-    }
+      return {
+        ...current,
+        workspace: { ...current.workspace, modelOverride: nextOverride },
+      };
+    });
+    setNotice(
+      matchesGlobal
+        ? `当前会话已恢复全局默认模型 ${model.name}。`
+        : `当前会话已切换到 ${model.name}（仅本会话生效，不影响全局默认）。`,
+    );
   };
 
   const saveProviderKeyDraft = async (envKey: string) => {
@@ -6617,6 +6635,11 @@ export function App() {
             onClose={() => setWebPreviewUrl(null)}
             onOpenExternal={(url) => {
               void openExternalUrl(url).catch((error) => setNotice(`打开外部浏览器失败：${runtimeErrorMessage(error)}`));
+            }}
+            onInspectElement={(payload) => {
+              const block = formatInspectInjection(payload);
+              setDraft((current) => (current.trim() ? `${current.replace(/\s+$/, "")}\n\n${block}\n` : `${block}\n`));
+              setNotice("已将拾取的元素注入聊天输入。");
             }}
           />
         )}
