@@ -2423,6 +2423,66 @@ button {
   background: #1c232c;
 }
 
+.message-bubble-time {
+  display: block;
+  margin-top: 6px;
+  color: #8b96a2;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.message.user .message-bubble-time {
+  text-align: right;
+  color: rgba(245, 251, 248, 0.66);
+}
+
+.message:hover .message-bubble-time,
+.message:focus-within .message-bubble-time {
+  opacity: 1;
+}
+
+.bubble-context-menu {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  min-width: 168px;
+  padding: 7px;
+  background: rgba(22, 27, 34, 0.98);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+}
+
+.bubble-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 0 9px;
+  color: #c2cdd7;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bubble-context-menu button:hover:not(:disabled) {
+  color: #e6edf3;
+  background: #1c232c;
+}
+
+.bubble-context-menu button:disabled {
+  color: #5b646e;
+  cursor: default;
+}
+
 .message-approval-bar {
   display: flex;
   gap: 8px;

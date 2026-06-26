@@ -3,6 +3,8 @@ import {
   AlertTriangle,
   ArrowUp,
   AtSign,
+  Check,
+  ClipboardList,
   ClipboardPaste,
   File as FileIcon,
   FolderOpen,
@@ -39,6 +41,7 @@ import { useVoiceInput } from "./chatInput/useVoiceInput";
 import { ChatControls } from "./ChatControls";
 import { ClarifyCard } from "./ClarifyCard";
 import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
+import { buildChatTranscript, copyTextToClipboard } from "./chatTranscript";
 import { WorktreePanel } from "./WorktreePanel";
 import {
   readDirectory,
@@ -323,6 +326,19 @@ export function ChatView({
   const [snippets, setSnippets] = useState<PromptSnippet[]>(() => loadPromptSnippets());
   const [snippetForm, setSnippetForm] = useState<{ title: string; body: string } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [transcriptCopied, setTranscriptCopied] = useState(false);
+
+  const handleCopyTranscript = useCallback(async () => {
+    const transcript = buildChatTranscript(messages, "markdown");
+    if (!transcript.trim()) return;
+    try {
+      await copyTextToClipboard(transcript);
+      setTranscriptCopied(true);
+      window.setTimeout(() => setTranscriptCopied(false), 1800);
+    } catch {
+      setTranscriptCopied(false);
+    }
+  }, [messages]);
 
   const autoResize = useCallback(() => {
     const el = inputRef.current;
@@ -830,6 +846,17 @@ export function ChatView({
             <Activity size={15} />
             <span>{notice}</span>
           </div>
+          {visibleMessages.length > 0 && (
+            <button
+              className="refresh-runtime"
+              type="button"
+              onClick={() => void handleCopyTranscript()}
+              title="复制整段对话"
+            >
+              {transcriptCopied ? <Check size={14} /> : <ClipboardList size={14} />}
+              <span>{transcriptCopied ? "已复制" : "复制对话"}</span>
+            </button>
+          )}
           <button className="refresh-runtime" type="button" onClick={onNewChat}>
             <Plus size={14} />
             <span>新建聊天</span>
@@ -872,6 +899,7 @@ export function ChatView({
                   onDeny={() => onSend("/deny")}
                   onRegenerate={() => onRegenerateMessage(message.id)}
                   onBranch={() => onBranchMessage(message.id)}
+                  onCopyTranscript={() => void handleCopyTranscript()}
                 />
               );
             })}

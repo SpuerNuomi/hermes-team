@@ -1,7 +1,10 @@
 import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, GitBranch, Loader2, MoreHorizontal, Paperclip, Radio, RefreshCw, Speaker, Terminal, XCircle } from "lucide-react";
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { Message } from "../core/types";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { BubbleContextMenu, buildBubbleActions } from "./BubbleContextMenu";
+import { formatBubbleTime, formatBubbleTimeAbsolute } from "./bubbleTime";
+import { copyTextToClipboard, currentSelectionText } from "./chatTranscript";
 
 type ToolStatus = "completed" | "failed" | "running";
 
@@ -105,13 +108,6 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 
 const APPROVAL_RE =
   /⚠️.*dangerous|requires? (your )?approval|\/approve.*\/deny|do you want (me )?to (proceed|continue|run|execute)/i;
-
-function copyToClipboard(value: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    return navigator.clipboard.writeText(value);
-  }
-  return Promise.reject(new Error("clipboard unavailable"));
-}
 
 function attachmentLabel(attachment: NonNullable<Message["attachments"]>[number]): string {
   const kind = attachment.kind === "path-ref" || attachment.kind === "file" ? "file" : attachment.kind;
@@ -234,6 +230,7 @@ export const MessageRow = memo(function MessageRow({
   onDeny,
   onRegenerate,
   onBranch,
+  onCopyTranscript,
 }: {
   message: Message;
   isLast: boolean;
@@ -244,12 +241,15 @@ export const MessageRow = memo(function MessageRow({
   onDeny: () => void;
   onRegenerate: () => void;
   onBranch: () => void;
+  onCopyTranscript?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(
     message.kind === "reasoning" || message.kind === "tool",
   );
   const [menuOpen, setMenuOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const isAgent = message.authorKind === "agent";
   const isUser = message.authorKind === "user";
   const isReasoning = message.kind === "reasoning";
@@ -261,7 +261,7 @@ export const MessageRow = memo(function MessageRow({
 
   const handleCopy = useCallback(async () => {
     try {
-      await copyToClipboard(message.content);
+      await copyTextToClipboard(message.content);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
@@ -276,6 +276,49 @@ export const MessageRow = memo(function MessageRow({
     setMenuOpen(false);
   }, [message.content]);
 
+  // Highlight the bubble's text so the user can extend/copy it manually.
+  const selectBubbleText = useCallback(() => {
+    const el = contentRef.current;
+    const selection = window.getSelection();
+    if (!el || !selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, []);
+
+  // Copy the active selection if any, otherwise fall back to the whole message.
+  const copySelection = useCallback(async () => {
+    const selected = currentSelectionText();
+    if (selected) {
+      try {
+        await copyTextToClipboard(selected);
+      } catch {
+        // Selection copy may fail in restricted environments; ignore quietly.
+      }
+      return;
+    }
+    await handleCopy();
+  }, [handleCopy]);
+
+  const handleContextMenu = useCallback((event: ReactMouseEvent) => {
+    if (message.content.trim().length === 0) return;
+    event.preventDefault();
+    setMenuOpen(false);
+    setContextMenu({ x: event.clientX, y: event.clientY });
+  }, [message.content]);
+
+  const contextActions = buildBubbleActions({
+    hasContent: message.content.trim().length > 0,
+    onCopy: () => void handleCopy(),
+    onSelectText: selectBubbleText,
+    onCopySelection: () => void copySelection(),
+    onCopyTranscript,
+  });
+
+  const bubbleTime = formatBubbleTime(message.createdAt);
+  const showBubbleTime = !isReasoning && !isTool && !isRuntime && bubbleTime.length > 0;
+
   return (
     <article
       className={`message ${message.authorKind} ${isReasoning ? "message-reasoning" : ""} ${
@@ -284,6 +327,7 @@ export const MessageRow = memo(function MessageRow({
         showMeta ? "" : "message-grouped"
       }`.trim()}
       key={message.id}
+      onContextMenu={handleContextMenu}
     >
       {isAgent && (
         <div className={`message-avatar ${isLoading ? "message-avatar-active" : ""}`} aria-hidden="true">
@@ -329,7 +373,7 @@ export const MessageRow = memo(function MessageRow({
             )}
           </div>
         ) : (
-          <div className="message-content">
+          <div className="message-content" ref={contentRef}>
             {isUser ? (
             <p>{message.content}</p>
             ) : (
@@ -402,6 +446,15 @@ export const MessageRow = memo(function MessageRow({
             )}
           </div>
         )}
+        {showBubbleTime && (
+          <time
+            className="message-bubble-time"
+            dateTime={new Date(message.createdAt).toISOString()}
+            title={formatBubbleTimeAbsolute(message.createdAt)}
+          >
+            {bubbleTime}
+          </time>
+        )}
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-attachments">
             {message.attachments.map((attachment) => (
@@ -424,6 +477,14 @@ export const MessageRow = memo(function MessageRow({
           </div>
         )}
       </div>
+      {contextMenu && (
+        <BubbleContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          actions={contextActions}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </article>
   );
 });
