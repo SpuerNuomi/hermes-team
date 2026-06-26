@@ -616,6 +616,7 @@ export interface RemoteConnectionConfig {
   mode: "local" | "remote" | "ssh";
   remoteUrl: string;
   apiKey: string;
+  localChatTransport: "auto" | "dashboard" | "legacy";
   remoteChatTransport: "auto" | "dashboard" | "legacy";
   sshChatTransport: "auto" | "dashboard" | "legacy";
   ssh: SshConnectionConfig;
@@ -625,6 +626,7 @@ export interface NetworkSettings {
   profile?: string | null;
   forceIpv4: boolean;
   proxy: string;
+  localChatTransport: "auto" | "dashboard" | "legacy";
   remoteChatTransport: "auto" | "dashboard" | "legacy";
   sshChatTransport: "auto" | "dashboard" | "legacy";
 }

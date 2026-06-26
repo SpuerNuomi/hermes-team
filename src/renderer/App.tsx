@@ -319,13 +319,14 @@ const defaultAppSettings: AppSettings = {
 const defaultNetworkSettings: NetworkSettings = {
   forceIpv4: false,
   proxy: "",
+  localChatTransport: "auto",
   remoteChatTransport: "auto",
   sshChatTransport: "auto",
 };
 const chatTransportOptions: Array<{ id: "auto" | "dashboard" | "legacy"; label: string; detail: string }> = [
-  { id: "auto", label: "Auto", detail: "优先 Dashboard，失败后回退旧传输" },
-  { id: "dashboard", label: "Dashboard", detail: "只使用 Hermes dashboard transport" },
-  { id: "legacy", label: "Legacy", detail: "保持旧 remote/SSH transport" },
+  { id: "auto", label: "Auto", detail: "优先 Dashboard，失败后回退 /v1/runs SSE" },
+  { id: "dashboard", label: "Dashboard", detail: "只使用 Hermes dashboard WebSocket transport" },
+  { id: "legacy", label: "Legacy", detail: "只使用 /v1/runs SSE 传输" },
 ];
 
 const emptyModelForm: ModelForm = {
@@ -405,6 +406,7 @@ const defaultRemoteConnectionConfig: RemoteConnectionConfig = {
   mode: "local",
   remoteUrl: "http://127.0.0.1:8642",
   apiKey: "",
+  localChatTransport: "auto",
   remoteChatTransport: "auto",
   sshChatTransport: "auto",
   ssh: {
@@ -1574,6 +1576,7 @@ export function App() {
       setNetworkSettings(saved);
       setRemoteConfig((current) => ({
         ...current,
+        localChatTransport: saved.localChatTransport,
         remoteChatTransport: saved.remoteChatTransport,
         sshChatTransport: saved.sshChatTransport,
       }));
@@ -2799,6 +2802,7 @@ export function App() {
       setRemoteConfig(saved);
       setNetworkSettings((current) => ({
         ...current,
+        localChatTransport: saved.localChatTransport,
         remoteChatTransport: saved.remoteChatTransport,
         sshChatTransport: saved.sshChatTransport,
       }));
@@ -4971,6 +4975,11 @@ export function App() {
                     />
                   </label>
                   <div className="transport-grid">
+                    <TransportSelector
+                      label="Local chat transport"
+                      value={networkSettings.localChatTransport}
+                      onChange={(localChatTransport) => void updateNetworkSettings({ localChatTransport })}
+                    />
                     <TransportSelector
                       label="Remote chat transport"
                       value={networkSettings.remoteChatTransport}
