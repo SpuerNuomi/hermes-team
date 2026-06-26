@@ -487,11 +487,12 @@ export interface RunHermesAgentInput {
 
 export interface RunHermesAgentOutput {
   content: string;
+  events?: RuntimeStreamEvent[];
 }
 
 export interface RuntimeStreamEvent {
   taskId: string;
-  kind: "start" | "delta" | "reasoning" | "tool" | "done" | "error";
+  kind: "start" | "delta" | "reasoning" | "tool" | "done" | "error" | "usage";
   delta: string;
   content: string;
   message: string;
@@ -1027,9 +1028,25 @@ export async function createHermesCronJob(input: {
   prompt?: string;
   name?: string;
   deliver?: string;
+  repeat?: number;
+  skills?: string[];
 }): Promise<CronJobActionResult> {
   ensureTauriRuntime();
   return invoke<CronJobActionResult>("create_hermes_cron_job", { input });
+}
+
+export async function editHermesCronJob(input: {
+  profile?: string;
+  jobId: string;
+  schedule?: string;
+  prompt?: string;
+  name?: string;
+  deliver?: string;
+  repeat?: number;
+  skills?: string[];
+}): Promise<CronJobActionResult> {
+  ensureTauriRuntime();
+  return invoke<CronJobActionResult>("edit_hermes_cron_job", { input });
 }
 
 export async function removeHermesCronJob(input: {
@@ -1371,7 +1388,7 @@ export async function runHermesTaskStream(params: {
   binding?: CapabilityBinding;
   messages: Message[];
   baseUrl?: string;
-}): Promise<string> {
+}): Promise<RunHermesAgentOutput> {
   ensureTauriRuntime();
   const history = historyForMessages(params.messages);
   const output = await invoke<RunHermesAgentOutput>("run_hermes_agent_stream", {
@@ -1392,7 +1409,7 @@ export async function runHermesTaskStream(params: {
   if (!output.content.trim()) {
     throw new Error("Hermes 返回了空内容。");
   }
-  return output.content;
+  return output;
 }
 
 export function buildSessionSummary(state: OrchestrationState): HermesTeamSessionSummary {

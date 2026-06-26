@@ -14,6 +14,10 @@ use tauri::{AppHandle, Emitter};
 static CANCELLED_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static SSH_TUNNEL_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 static SSH_TUNNEL_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static STREAM_EVENT_SNAPSHOTS: OnceLock<Mutex<HashMap<String, Vec<RuntimeStreamEvent>>>> =
+    OnceLock::new();
+static TOOL_EVENT_PREVIEWS: OnceLock<Mutex<HashMap<String, HashMap<String, String>>>> =
+    OnceLock::new();
 
 #[tauri::command]
 fn app_ready() -> &'static str {
@@ -731,6 +735,21 @@ struct CreateCronJobInput {
     prompt: Option<String>,
     name: Option<String>,
     deliver: Option<String>,
+    repeat: Option<u64>,
+    skills: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditCronJobInput {
+    profile: Option<String>,
+    job_id: String,
+    schedule: Option<String>,
+    prompt: Option<String>,
+    name: Option<String>,
+    deliver: Option<String>,
+    repeat: Option<u64>,
+    skills: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -913,6 +932,7 @@ struct RunHermesAgentInput {
 #[derive(Debug, Serialize)]
 struct RunHermesAgentOutput {
     content: String,
+    events: Vec<RuntimeStreamEvent>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -941,6 +961,8 @@ struct ParsedToolEvent {
     status: String,
     preview: String,
     result: String,
+    duration: String,
+    error: bool,
 }
 
 struct RuntimeEndpoint {
@@ -2290,14 +2312,29 @@ async fn create_hermes_cron_job(input: CreateCronJobInput) -> Result<CronJobActi
     if schedule.is_empty() {
         return Ok(cron_action_error("schedule 不能为空。"));
     }
+    let skills: Vec<String> = input
+        .skills
+        .unwrap_or_default()
+        .into_iter()
+        .map(|skill| skill.trim().to_string())
+        .filter(|skill| !skill.is_empty())
+        .collect();
     let config = read_connection_config()?;
     if config.mode == "remote" || config.mode == "ssh" {
-        let body = json!({
+        let mut body = json!({
             "name": input.name.unwrap_or_default(),
             "schedule": schedule,
             "prompt": input.prompt.unwrap_or_default(),
             "deliver": input.deliver.unwrap_or_else(|| "local".to_string()),
         });
+        if let Some(map) = body.as_object_mut() {
+            if let Some(repeat) = input.repeat {
+                map.insert("repeat".to_string(), json!(repeat));
+            }
+            if !skills.is_empty() {
+                map.insert("skills".to_string(), json!(skills));
+            }
+        }
         return remote_cron_request("POST", "/api/jobs", Some(body), input.profile.as_deref());
     }
 
@@ -2327,6 +2364,112 @@ async fn create_hermes_cron_job(input: CreateCronJobInput) -> Result<CronJobActi
     {
         args.push("--deliver".to_string());
         args.push(deliver.to_string());
+    }
+    if let Some(repeat) = input.repeat {
+        args.push("--repeat".to_string());
+        args.push(repeat.to_string());
+    }
+    for skill in &skills {
+        args.push("--skill".to_string());
+        args.push(skill.clone());
+    }
+    run_cron_command(&args, input.profile.as_deref())
+}
+
+#[tauri::command]
+async fn edit_hermes_cron_job(input: EditCronJobInput) -> Result<CronJobActionResult, String> {
+    let job_id = input.job_id.trim();
+    if job_id.is_empty() {
+        return Ok(cron_action_error("job id 不能为空。"));
+    }
+    let skills: Option<Vec<String>> = input.skills.map(|list| {
+        list.into_iter()
+            .map(|skill| skill.trim().to_string())
+            .filter(|skill| !skill.is_empty())
+            .collect()
+    });
+    let schedule = input
+        .schedule
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let prompt = input
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let name = input
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let deliver = input
+        .deliver
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let config = read_connection_config()?;
+    if config.mode == "remote" || config.mode == "ssh" {
+        let mut body = serde_json::Map::new();
+        if let Some(schedule) = schedule {
+            body.insert("schedule".to_string(), json!(schedule));
+        }
+        if let Some(prompt) = prompt {
+            body.insert("prompt".to_string(), json!(prompt));
+        }
+        if let Some(name) = name {
+            body.insert("name".to_string(), json!(name));
+        }
+        if let Some(deliver) = deliver {
+            body.insert("deliver".to_string(), json!(deliver));
+        }
+        if let Some(repeat) = input.repeat {
+            body.insert("repeat".to_string(), json!(repeat));
+        }
+        if let Some(skills) = &skills {
+            body.insert("skills".to_string(), json!(skills));
+        }
+        let encoded = encode_path_segment(job_id);
+        let path = format!("/api/jobs/{encoded}");
+        return remote_cron_request(
+            "PATCH",
+            &path,
+            Some(serde_json::Value::Object(body)),
+            input.profile.as_deref(),
+        );
+    }
+
+    let mut args = vec!["edit".to_string(), job_id.to_string()];
+    if let Some(schedule) = schedule {
+        args.push("--schedule".to_string());
+        args.push(schedule.to_string());
+    }
+    if let Some(prompt) = prompt {
+        args.push("--prompt".to_string());
+        args.push(prompt.to_string());
+    }
+    if let Some(name) = name {
+        args.push("--name".to_string());
+        args.push(name.to_string());
+    }
+    if let Some(deliver) = deliver {
+        args.push("--deliver".to_string());
+        args.push(deliver.to_string());
+    }
+    if let Some(repeat) = input.repeat {
+        args.push("--repeat".to_string());
+        args.push(repeat.to_string());
+    }
+    match &skills {
+        Some(list) if !list.is_empty() => {
+            for skill in list {
+                args.push("--skill".to_string());
+                args.push(skill.clone());
+            }
+        }
+        Some(_) => args.push("--clear-skills".to_string()),
+        None => {}
     }
     run_cron_command(&args, input.profile.as_deref())
 }
@@ -3678,7 +3821,10 @@ async fn run_hermes_agent(input: RunHermesAgentInput) -> Result<RunHermesAgentOu
         ));
     }
 
-    Ok(RunHermesAgentOutput { content })
+    Ok(RunHermesAgentOutput {
+        content,
+        events: Vec::new(),
+    })
 }
 
 #[tauri::command]
@@ -3690,6 +3836,7 @@ async fn run_hermes_agent_stream(
         .task_id
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
+    reset_stream_event_snapshot(&task_id);
     if is_task_cancelled(Some(&task_id)) {
         return Err("任务已取消。".to_string());
     }
@@ -3749,69 +3896,11 @@ async fn run_hermes_agent_stream(
         },
     )?;
 
-    // Match Hermes Desktop first: use the session chat stream so events carry
-    // a stable session id and can be reconciled with state.db history.
     if let Some(runs_input) = user_content.as_str() {
-        if gateway_supports_session_chat_stream(
-            &endpoint.base_url,
-            endpoint.auth.as_deref(),
-            &task_id,
-        ) {
-            let mut session_body = json!({
-                "title": truncate(runs_input, 80),
-            });
-            if let Some(context_folder) = input.context_folder.as_deref() {
-                if let Some(object) = session_body.as_object_mut() {
-                    object.insert("cwd".to_string(), json!(context_folder));
-                }
-            }
-            if let Ok(Some(session_id)) = http_create_gateway_session(
-                &endpoint.base_url,
-                &session_body.to_string(),
-                endpoint.auth.as_deref(),
-                Some(&task_id),
-            ) {
-                match http_stream_session_chat(
-                    &app,
-                    &task_id,
-                    &endpoint.base_url,
-                    &session_id,
-                    runs_input,
-                    endpoint.auth.as_deref(),
-                ) {
-                    Ok(Some(content)) => {
-                        emit_stream_event(
-                            &app,
-                            RuntimeStreamEvent {
-                                task_id,
-                                kind: "done".to_string(),
-                                delta: String::new(),
-                                content: content.clone(),
-                                message: "Hermes session stream completed".to_string(),
-                            },
-                        )?;
-                        return Ok(RunHermesAgentOutput { content });
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let _ = emit_stream_event(
-                            &app,
-                            RuntimeStreamEvent {
-                                task_id,
-                                kind: "error".to_string(),
-                                delta: String::new(),
-                                content: String::new(),
-                                message: error.clone(),
-                            },
-                        );
-                        return Err(error);
-                    }
-                }
-            }
-        }
-
-        // Fallback: native run event stream for gateways without session chat.
+        // Match Hermes Desktop: prefer the native runs transport for normal
+        // no-attachment chat because that stream carries tool_progress_events.
         if gateway_supports_runs(&endpoint.base_url, endpoint.auth.as_deref(), &task_id) {
+            trace_stream_event("transport", "runs");
             let mut instructions = input.system_prompt.clone();
             if let Some(content) = context_message
                 .as_ref()
@@ -3849,14 +3938,15 @@ async fn run_hermes_agent_stream(
                     emit_stream_event(
                         &app,
                         RuntimeStreamEvent {
-                            task_id,
+                            task_id: task_id.clone(),
                             kind: "done".to_string(),
                             delta: String::new(),
                             content: content.clone(),
                             message: "Hermes stream completed".to_string(),
                         },
                     )?;
-                    return Ok(RunHermesAgentOutput { content });
+                    let events = take_stream_event_snapshot(&task_id);
+                    return Ok(RunHermesAgentOutput { content, events });
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -3874,6 +3964,68 @@ async fn run_hermes_agent_stream(
                 }
             }
         }
+
+        // Fallback: session chat stream keeps state.db/session compatibility,
+        // but some gateway versions do not expose full tool progress here.
+        if gateway_supports_session_chat_stream(
+            &endpoint.base_url,
+            endpoint.auth.as_deref(),
+            &task_id,
+        ) {
+            trace_stream_event("transport", "session-chat-stream");
+            let mut session_body = json!({
+                "title": truncate(runs_input, 80),
+            });
+            if let Some(context_folder) = input.context_folder.as_deref() {
+                if let Some(object) = session_body.as_object_mut() {
+                    object.insert("cwd".to_string(), json!(context_folder));
+                }
+            }
+            if let Ok(Some(session_id)) = http_create_gateway_session(
+                &endpoint.base_url,
+                &session_body.to_string(),
+                endpoint.auth.as_deref(),
+                Some(&task_id),
+            ) {
+                match http_stream_session_chat(
+                    &app,
+                    &task_id,
+                    &endpoint.base_url,
+                    &session_id,
+                    runs_input,
+                    endpoint.auth.as_deref(),
+                ) {
+                    Ok(Some(content)) => {
+                        emit_stream_event(
+                            &app,
+                            RuntimeStreamEvent {
+                                task_id: task_id.clone(),
+                                kind: "done".to_string(),
+                                delta: String::new(),
+                                content: content.clone(),
+                                message: "Hermes session stream completed".to_string(),
+                            },
+                        )?;
+                        let events = take_stream_event_snapshot(&task_id);
+                        return Ok(RunHermesAgentOutput { content, events });
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = emit_stream_event(
+                            &app,
+                            RuntimeStreamEvent {
+                                task_id,
+                                kind: "error".to_string(),
+                                delta: String::new(),
+                                content: String::new(),
+                                message: error.clone(),
+                            },
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
 
     match http_stream_chat_completion(
@@ -3884,10 +4036,11 @@ async fn run_hermes_agent_stream(
         endpoint.auth.as_deref(),
     ) {
         Ok(content) => {
+            trace_stream_event("transport", "chat-completions");
             emit_stream_event(
                 &app,
                 RuntimeStreamEvent {
-                    task_id,
+                    task_id: task_id.clone(),
                     kind: "done".to_string(),
                     delta: String::new(),
                     content: content.clone(),
@@ -3897,7 +4050,8 @@ async fn run_hermes_agent_stream(
             if content.trim().is_empty() {
                 Err("Hermes Runtime 流式响应中没有可显示内容。".to_string())
             } else {
-                Ok(RunHermesAgentOutput { content })
+                let events = take_stream_event_snapshot(&task_id);
+                Ok(RunHermesAgentOutput { content, events })
             }
         }
         Err(error) => {
@@ -4390,8 +4544,94 @@ fn context_folder_system_message(context_folder: Option<&str>) -> Option<serde_j
 }
 
 fn emit_stream_event(app: &AppHandle, event: RuntimeStreamEvent) -> Result<(), String> {
+    remember_stream_event(&event);
     app.emit("hermes-agent-stream", event)
         .map_err(|error| format!("发送 Hermes 流式事件失败：{error}"))
+}
+
+fn stream_event_snapshots() -> &'static Mutex<HashMap<String, Vec<RuntimeStreamEvent>>> {
+    STREAM_EVENT_SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn reset_stream_event_snapshot(task_id: &str) {
+    if let Ok(mut snapshots) = stream_event_snapshots().lock() {
+        snapshots.insert(task_id.to_string(), Vec::new());
+    }
+    if let Ok(mut previews) = tool_event_previews().lock() {
+        previews.remove(task_id);
+    }
+}
+
+fn remember_stream_event(event: &RuntimeStreamEvent) {
+    if let Ok(mut snapshots) = stream_event_snapshots().lock() {
+        snapshots
+            .entry(event.task_id.clone())
+            .or_default()
+            .push(event.clone());
+    }
+}
+
+fn take_stream_event_snapshot(task_id: &str) -> Vec<RuntimeStreamEvent> {
+    let events = stream_event_snapshots()
+        .lock()
+        .ok()
+        .and_then(|mut snapshots| snapshots.remove(task_id))
+        .unwrap_or_default();
+    if let Ok(mut previews) = tool_event_previews().lock() {
+        previews.remove(task_id);
+    }
+    events
+}
+
+fn tool_event_previews() -> &'static Mutex<HashMap<String, HashMap<String, String>>> {
+    TOOL_EVENT_PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_tool_preview(task_id: &str, call_id: &str, preview: &str) {
+    let trimmed = preview.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if let Ok(mut previews) = tool_event_previews().lock() {
+        previews
+            .entry(task_id.to_string())
+            .or_default()
+            .insert(call_id.to_string(), trimmed.to_string());
+    }
+}
+
+fn remembered_tool_preview(task_id: &str, call_id: &str) -> String {
+    tool_event_previews()
+        .lock()
+        .ok()
+        .and_then(|previews| previews.get(task_id).and_then(|items| items.get(call_id).cloned()))
+        .unwrap_or_default()
+}
+
+fn trace_stream_event(label: &str, detail: &str) {
+    let sanitized = detail
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\t')
+        .take(240)
+        .collect::<String>();
+    if let Ok(home) = app_home() {
+        let log_dir = home.join("logs");
+        let _ = fs::create_dir_all(&log_dir);
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs().to_string())
+            .unwrap_or_else(|_| "0".to_string());
+        let line = format!(
+            "{ts} {label} {sanitized}\n",
+        );
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("stream-events.log"))
+            .and_then(|mut file| file.write_all(line.as_bytes()));
+    }
+    #[cfg(debug_assertions)]
+    eprintln!("[hermes-team stream] {label}: {sanitized}");
 }
 
 fn http_stream_chat_completion(
@@ -5265,6 +5505,11 @@ fn process_run_sse_text(
                 object.insert("event".to_string(), json!(event_type));
             }
         }
+        let event_name_for_trace = value
+            .get("event")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        trace_stream_event("run-sse", event_name_for_trace);
         match handle_run_event(
             app,
             task_id,
@@ -5279,6 +5524,50 @@ fn process_run_sse_text(
         }
     }
     Ok(RunSignal::Continue)
+}
+
+/// Pull token usage out of a run event, if present. The gateway attaches a
+/// `usage` object to completion-style events; we look in the common locations
+/// and normalise to `(prompt_tokens, total_tokens)`. Returns `None` when no
+/// usage is carried so the UI can degrade gracefully instead of showing zeros.
+fn extract_run_usage(value: &serde_json::Value) -> Option<(u64, u64)> {
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/payload/usage"))
+        .or_else(|| value.pointer("/response/usage"))
+        .or_else(|| value.pointer("/data/usage"))
+        .or_else(|| value.pointer("/message/usage"))?;
+    let obj = usage.as_object()?;
+    let read = |keys: &[&str]| -> u64 {
+        for key in keys {
+            if let Some(num) = obj.get(*key).and_then(|item| item.as_u64()) {
+                return num;
+            }
+        }
+        0
+    };
+    let prompt = read(&[
+        "prompt_tokens",
+        "promptTokens",
+        "input_tokens",
+        "inputTokens",
+    ]);
+    let completion = read(&[
+        "completion_tokens",
+        "completionTokens",
+        "output_tokens",
+        "outputTokens",
+    ]);
+    let total_raw = read(&["total_tokens", "totalTokens"]);
+    let total = if total_raw > 0 {
+        total_raw
+    } else {
+        prompt + completion
+    };
+    if prompt == 0 && total == 0 {
+        return None;
+    }
+    Some((prompt, total))
 }
 
 /// Translate a single Hermes `/v1/runs` event into UI stream events.
@@ -5296,6 +5585,19 @@ fn handle_run_event(
         .get("event")
         .and_then(|item| item.as_str())
         .unwrap_or("");
+
+    if let Some((prompt_tokens, total_tokens)) = extract_run_usage(value) {
+        emit_stream_event(
+            app,
+            RuntimeStreamEvent {
+                task_id: task_id.to_string(),
+                kind: "usage".to_string(),
+                delta: String::new(),
+                content: prompt_tokens.to_string(),
+                message: total_tokens.to_string(),
+            },
+        )?;
+    }
 
     match event_name {
         "message.delta" | "assistant.delta" => {
@@ -5445,7 +5747,12 @@ fn handle_run_event(
             if is_tool_event_name(event_name) {
                 let status = tool_event_status(event_name);
                 let payload = value.get("payload").unwrap_or(value);
-                let tool_event = tool_event_from_payload(event_name, payload, &status);
+                let mut tool_event = tool_event_from_payload(event_name, payload, &status);
+                if !tool_event.preview.trim().is_empty() {
+                    remember_tool_preview(task_id, &tool_event.call_id, &tool_event.preview);
+                } else {
+                    tool_event.preview = remembered_tool_preview(task_id, &tool_event.call_id);
+                }
                 if tool_event.name == "_thinking" {
                     let text = if !tool_event.result.trim().is_empty() {
                         tool_event.result.clone()
@@ -5477,6 +5784,7 @@ fn handle_run_event(
                         message: tool_event.call_id,
                     },
                 )?;
+                trace_stream_event("emit-tool", &format!("{} {}", event_name, tool_event.name));
             }
             Ok(RunSignal::Continue)
         }
@@ -5681,6 +5989,8 @@ fn gateway_tool_event(event_type: &str, value: &serde_json::Value) -> Option<Par
         status,
         preview,
         result,
+        duration: String::new(),
+        error: false,
     })
 }
 
@@ -5765,6 +6075,13 @@ fn tool_event_from_payload(
             .unwrap_or_else(|| fallback_status.to_string()),
         preview,
         result,
+        duration: stream_json_string(payload.get("duration"))
+            .or_else(|| stream_json_string(payload.get("duration_s")))
+            .unwrap_or_default(),
+        error: payload
+            .get("error")
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false),
     }
 }
 
@@ -5789,14 +6106,40 @@ fn format_tool_event_content(event: &ParsedToolEvent) -> String {
         "failed" => "failed",
         _ => "running",
     };
-    let mut lines = vec![format!("{status} · {}", event.name)];
+    let title = tool_event_title(&event.name, &event.preview);
+    let mut lines = vec![format!("{status} · {title}")];
     if !event.preview.trim().is_empty() && event.preview.trim() != event.name {
         lines.push(event.preview.trim().to_string());
     }
     if !event.result.trim().is_empty() {
         lines.push(event.result.trim().to_string());
     }
+    if !event.duration.trim().is_empty() {
+        lines.push(format!("duration: {}s", event.duration.trim()));
+    }
+    if event.error {
+        lines.push("error: true".to_string());
+    }
     lines.join("\n")
+}
+
+fn tool_event_title(name: &str, preview: &str) -> String {
+    let detail = preview.trim();
+    if detail.is_empty() || detail == name {
+        return name.to_string();
+    }
+    match name {
+        "read_file" => format!("read: {detail}"),
+        "write_file" => format!("write: {detail}"),
+        "patch" => format!("patch: {detail}"),
+        "search_files" => format!("search: {detail}"),
+        "skill_view" => format!("skill view ({detail})"),
+        "skills_list" => format!("skills list ({detail})"),
+        "terminal" => format!("Ran · {detail}"),
+        "web_search" => format!("Searched · {detail}"),
+        "web_extract" => format!("Read · {detail}"),
+        _ => name.to_string(),
+    }
 }
 
 fn parse_completion_content(body: &str) -> Result<String, String> {
@@ -10820,6 +11163,7 @@ pub fn run() {
             discover_provider_models,
             list_hermes_cron_jobs,
             create_hermes_cron_job,
+            edit_hermes_cron_job,
             remove_hermes_cron_job,
             pause_hermes_cron_job,
             resume_hermes_cron_job,
@@ -10949,5 +11293,50 @@ mod tests {
         assert_eq!(tool.call_id, "api_1:search_files");
         assert_eq!(tool.status, "running");
         assert_eq!(tool.preview, "查找配置");
+    }
+
+    #[test]
+    fn formats_tool_events_with_hermes_desktop_style_titles() {
+        let read = ParsedToolEvent {
+            call_id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            status: "completed".to_string(),
+            preview: "/tmp/config.yaml".to_string(),
+            result: String::new(),
+            duration: "0.1".to_string(),
+            error: false,
+        };
+        assert_eq!(
+            format_tool_event_content(&read),
+            "completed · read: /tmp/config.yaml\n/tmp/config.yaml\nduration: 0.1s"
+        );
+
+        let search = ParsedToolEvent {
+            call_id: "call_2".to_string(),
+            name: "search_files".to_string(),
+            status: "running".to_string(),
+            preview: "eval".to_string(),
+            result: String::new(),
+            duration: String::new(),
+            error: false,
+        };
+        assert_eq!(
+            format_tool_event_content(&search),
+            "running · search: eval\neval"
+        );
+
+        let skill = ParsedToolEvent {
+            call_id: "call_3".to_string(),
+            name: "skill_view".to_string(),
+            status: "completed".to_string(),
+            preview: "code-reviewer".to_string(),
+            result: String::new(),
+            duration: String::new(),
+            error: false,
+        };
+        assert_eq!(
+            format_tool_event_content(&skill),
+            "completed · skill view (code-reviewer)\ncode-reviewer"
+        );
     }
 }

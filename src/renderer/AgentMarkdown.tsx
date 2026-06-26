@@ -3,6 +3,20 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Copy } from "lucide-react";
 
+type MarkdownNode = {
+  type: string;
+  value?: string;
+  children?: MarkdownNode[];
+  data?: {
+    hProperties?: Record<string, unknown>;
+  };
+};
+
+type AutoCodeSegment = {
+  value: string;
+  kind?: "path" | "code";
+};
+
 type SyntaxHighlighterComponent = ComponentType<{
   children: string;
   language?: string;
@@ -67,6 +81,67 @@ function loadHighlighter(): Promise<void> {
 
 function copyText(value: string): void {
   void navigator.clipboard?.writeText(value);
+}
+
+const AUTO_CODE_PATTERN =
+  /(\/(?:Users|Volumes|var|private|tmp|opt|usr|etc|home)\/[^\s，。；、)）\]}>"'`]+(?::\d+)?|\b[\w.-]+\.(?:php|ts|tsx|js|jsx|json|ya?ml|md|rs|go|java|sql|css|scss)(?::\d+)?\b|\$[A-Za-z_]\w*(?:\[[^\]\n]{1,48}\])?|\b(?:select|insert|update|delete)\b\s+[^，。；\n]{1,120}|\b[A-Za-z_][\w:.$>-]{1,80}\([^()\n]{0,100}\)|\b(?:eval|exec|shell_exec|unserialize|serialize|file_get_contents|escapeshellarg|clone)\b)/gi;
+
+function splitAutoCodeText(value: string): AutoCodeSegment[] {
+  const segments: AutoCodeSegment[] = [];
+  let cursor = 0;
+  for (const match of value.matchAll(AUTO_CODE_PATTERN)) {
+    const matched = match[0];
+    const index = match.index ?? 0;
+    if (!matched.trim()) continue;
+    if (index > cursor) {
+      segments.push({ value: value.slice(cursor, index) });
+    }
+    segments.push({
+      value: matched,
+      kind: matched.startsWith("/") || /\.[A-Za-z0-9]+(?::\d+)?$/.test(matched) ? "path" : "code",
+    });
+    cursor = index + matched.length;
+  }
+  if (cursor < value.length) {
+    segments.push({ value: value.slice(cursor) });
+  }
+  return segments.length > 0 ? segments : [{ value }];
+}
+
+function remarkAutoCodeHints() {
+  return function transform(tree: MarkdownNode) {
+    transformChildren(tree);
+  };
+}
+
+function transformChildren(node: MarkdownNode) {
+  if (!node.children) return;
+  const nextChildren: MarkdownNode[] = [];
+  for (const child of node.children) {
+    if (child.type === "text" && child.value) {
+      for (const segment of splitAutoCodeText(child.value)) {
+        if (!segment.kind) {
+          nextChildren.push({ type: "text", value: segment.value });
+        } else {
+          nextChildren.push({
+            type: "inlineCode",
+            value: segment.value,
+            data: {
+              hProperties: {
+                className: segment.kind === "path" ? "inline-code-path" : "inline-code-token",
+              },
+            },
+          });
+        }
+      }
+      continue;
+    }
+    if (!["code", "inlineCode", "link", "html"].includes(child.type)) {
+      transformChildren(child);
+    }
+    nextChildren.push(child);
+  }
+  node.children = nextChildren;
 }
 
 function DiffView({ code }: { code: string }) {
@@ -202,7 +277,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
 }) {
   return (
     <Markdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkAutoCodeHints]}
       components={{
         a: ({ href, children: linkChildren }) => (
           <a

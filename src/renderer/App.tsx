@@ -2,11 +2,18 @@ import {
   Activity,
   AlertTriangle,
   BrainCircuit,
+  CalendarClock,
   CheckCircle2,
   CircleDot,
+  Clock,
   GitBranch,
   FolderPlus,
   History,
+  Pause,
+  Pencil,
+  Play,
+  Repeat,
+  X,
   MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
@@ -41,6 +48,7 @@ import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
 import type { Message, MessageAttachment, WorkspaceMode } from "../core/types";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
+import { buildLabel } from "./buildInfo";
 import { ChatView } from "./ChatView";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
@@ -55,6 +63,7 @@ import {
   cancelHermesTask,
   checkForAppUpdates,
   createHermesCronJob,
+  editHermesCronJob,
   createHermesProfile,
   deleteHermesTeamSession,
   deleteHermesProfile,
@@ -217,11 +226,19 @@ type SkillInstallForm = {
   category: string;
   name: string;
 };
+type CronFrequency = "minutes" | "hourly" | "daily" | "weekly" | "custom";
 type CronJobForm = {
   name: string;
-  schedule: string;
   prompt: string;
-  deliver: string;
+  deliverTargets: string[];
+  repeatTimes: string;
+  skills: string[];
+  freq: CronFrequency;
+  minuteInterval: number;
+  hour: number;
+  minute: number;
+  weekdays: number[];
+  customCron: string;
 };
 type MessagingEnvDrafts = Record<string, Record<string, string>>;
 type RuntimeEvent = {
@@ -317,10 +334,25 @@ const emptySkillInstallForm: SkillInstallForm = {
 
 const emptyCronJobForm: CronJobForm = {
   name: "",
-  schedule: "daily 09:00",
   prompt: "",
-  deliver: "local",
+  deliverTargets: ["local"],
+  repeatTimes: "",
+  skills: [],
+  freq: "daily",
+  minuteInterval: 30,
+  hour: 9,
+  minute: 0,
+  weekdays: [1, 2, 3, 4, 5],
+  customCron: "*/30 * * * *",
 };
+
+const CRON_DELIVER_OPTIONS: { id: string; label: string }[] = [
+  { id: "origin", label: "origin" },
+  { id: "local", label: "local" },
+  { id: "telegram", label: "telegram" },
+  { id: "discord", label: "discord" },
+  { id: "slack", label: "slack" },
+];
 
 const defaultRemoteConnectionConfig: RemoteConnectionConfig = {
   mode: "local",
@@ -365,6 +397,248 @@ function formatCronDate(value?: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatCronRelative(value?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const diff = date.getTime() - Date.now();
+  const past = diff < 0;
+  const suffix = past ? "前" : "后";
+  const minutes = Math.round(Math.abs(diff) / 60000);
+  if (minutes < 1) return past ? "刚刚" : "即将";
+  if (minutes < 60) return `${minutes} 分钟${suffix}`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  if (hours < 24) return `${hours}h${remMinutes ? ` ${remMinutes}m` : ""}${suffix}`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天${suffix}`;
+}
+
+const CRON_STATE_META: Record<string, { label: string; cls: string }> = {
+  active: { label: "Active", cls: "schedule-state-active" },
+  paused: { label: "Paused", cls: "schedule-state-paused" },
+  completed: { label: "Completed", cls: "schedule-state-completed" },
+};
+
+function cronStateMeta(state: string): { label: string; cls: string } {
+  return CRON_STATE_META[state] ?? { label: state || "Unknown", cls: "schedule-state-paused" };
+}
+
+const CRON_FREQ_OPTIONS: { id: CronFrequency; label: string }[] = [
+  { id: "minutes", label: "分钟" },
+  { id: "hourly", label: "小时" },
+  { id: "daily", label: "每天" },
+  { id: "weekly", label: "每周" },
+  { id: "custom", label: "自定义 Cron" },
+];
+
+const CRON_WEEKDAYS: { value: number; short: string; long: string }[] = [
+  { value: 1, short: "一", long: "周一" },
+  { value: 2, short: "二", long: "周二" },
+  { value: 3, short: "三", long: "周三" },
+  { value: 4, short: "四", long: "周四" },
+  { value: 5, short: "五", long: "周五" },
+  { value: 6, short: "六", long: "周六" },
+  { value: 0, short: "日", long: "周日" },
+];
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function parseCronField(field: string, min: number, max: number): Set<number> | null {
+  const result = new Set<number>();
+  for (const part of field.split(",")) {
+    if (!part) return null;
+    let step = 1;
+    let range = part;
+    const slash = part.split("/");
+    if (slash.length === 2) {
+      range = slash[0];
+      step = Number(slash[1]);
+      if (!Number.isInteger(step) || step < 1) return null;
+    } else if (slash.length > 2) {
+      return null;
+    }
+    let lo: number;
+    let hi: number;
+    if (range === "*") {
+      lo = min;
+      hi = max;
+    } else if (range.includes("-")) {
+      const [a, b] = range.split("-");
+      lo = Number(a);
+      hi = Number(b);
+    } else {
+      const value = Number(range);
+      lo = value;
+      hi = value;
+    }
+    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
+      return null;
+    }
+    for (let i = lo; i <= hi; i += step) result.add(i);
+  }
+  return result.size ? result : null;
+}
+
+function validateCronExpression(expr: string): string | null {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return "Cron 需为 5 段（分 时 日 月 周）";
+  const specs: [number, number][] = [
+    [0, 59],
+    [0, 23],
+    [1, 31],
+    [1, 12],
+    [0, 7],
+  ];
+  for (let i = 0; i < 5; i += 1) {
+    if (!parseCronField(fields[i], specs[i][0], specs[i][1])) {
+      return `第 ${i + 1} 段无效：${fields[i]}`;
+    }
+  }
+  return null;
+}
+
+function nextCronRun(expr: string, from: Date = new Date()): Date | null {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+  const minute = parseCronField(fields[0], 0, 59);
+  const hour = parseCronField(fields[1], 0, 23);
+  const dom = parseCronField(fields[2], 1, 31);
+  const month = parseCronField(fields[3], 1, 12);
+  const dow = parseCronField(fields[4], 0, 7);
+  if (!minute || !hour || !dom || !month || !dow) return null;
+  if (dow.has(7)) dow.add(0);
+  const domRestricted = fields[2] !== "*";
+  const dowRestricted = fields[4] !== "*";
+  const cursor = new Date(from.getTime());
+  cursor.setSeconds(0, 0);
+  cursor.setMinutes(cursor.getMinutes() + 1);
+  for (let i = 0; i < 535680; i += 1) {
+    const matchDom = dom.has(cursor.getDate());
+    const matchDow = dow.has(cursor.getDay());
+    const dayOk =
+      domRestricted && dowRestricted ? matchDom || matchDow : matchDom && matchDow;
+    if (
+      month.has(cursor.getMonth() + 1) &&
+      dayOk &&
+      hour.has(cursor.getHours()) &&
+      minute.has(cursor.getMinutes())
+    ) {
+      return new Date(cursor.getTime());
+    }
+    cursor.setMinutes(cursor.getMinutes() + 1);
+  }
+  return null;
+}
+
+function serializeCronSchedule(form: CronJobForm): { value: string; error: string | null } {
+  switch (form.freq) {
+    case "minutes": {
+      const n = form.minuteInterval;
+      if (!Number.isInteger(n) || n < 1 || n > 59) {
+        return { value: "", error: "分钟间隔需在 1–59 之间" };
+      }
+      return { value: `*/${n} * * * *`, error: null };
+    }
+    case "hourly": {
+      const m = form.minute;
+      if (!Number.isInteger(m) || m < 0 || m > 59) {
+        return { value: "", error: "分钟需在 0–59 之间" };
+      }
+      return { value: `${m} * * * *`, error: null };
+    }
+    case "daily": {
+      if (form.hour < 0 || form.hour > 23 || form.minute < 0 || form.minute > 59) {
+        return { value: "", error: "时间无效" };
+      }
+      return { value: `${form.minute} ${form.hour} * * *`, error: null };
+    }
+    case "weekly": {
+      if (!form.weekdays.length) {
+        return { value: "", error: "请至少选择一天" };
+      }
+      if (form.hour < 0 || form.hour > 23 || form.minute < 0 || form.minute > 59) {
+        return { value: "", error: "时间无效" };
+      }
+      const days = [...form.weekdays].sort((a, b) => a - b).join(",");
+      return { value: `${form.minute} ${form.hour} * * ${days}`, error: null };
+    }
+    case "custom":
+    default: {
+      const expr = form.customCron.trim();
+      if (!expr) return { value: "", error: "请输入 Cron 表达式" };
+      const error = validateCronExpression(expr);
+      return { value: error ? "" : expr, error };
+    }
+  }
+}
+
+function describeCronSchedule(form: CronJobForm): string {
+  switch (form.freq) {
+    case "minutes":
+      return `每 ${form.minuteInterval} 分钟`;
+    case "hourly":
+      return `每小时第 ${form.minute} 分钟`;
+    case "daily":
+      return `每天 ${pad2(form.hour)}:${pad2(form.minute)}`;
+    case "weekly": {
+      const names = CRON_WEEKDAYS.filter((day) => form.weekdays.includes(day.value)).map(
+        (day) => day.long,
+      );
+      return `${names.join("、")} ${pad2(form.hour)}:${pad2(form.minute)}`;
+    }
+    case "custom":
+    default:
+      return "自定义 Cron 表达式";
+  }
+}
+
+function parseCronToForm(schedule: string): Partial<CronJobForm> {
+  const fields = schedule.trim().split(/\s+/);
+  if (fields.length === 5) {
+    const [mi, h, dom, mon, dow] = fields;
+    if (dom === "*" && mon === "*") {
+      const minuteMatch = /^\*\/(\d+)$/.exec(mi);
+      if (minuteMatch && h === "*" && dow === "*") {
+        return { freq: "minutes", minuteInterval: Number(minuteMatch[1]) };
+      }
+      if (/^\d+$/.test(mi) && h === "*" && dow === "*") {
+        return { freq: "hourly", minute: Number(mi) };
+      }
+      if (/^\d+$/.test(mi) && /^\d+$/.test(h) && dow === "*") {
+        return { freq: "daily", hour: Number(h), minute: Number(mi) };
+      }
+      if (/^\d+$/.test(mi) && /^\d+$/.test(h) && /^[0-7](,[0-7])*$/.test(dow)) {
+        const weekdays = Array.from(
+          new Set(dow.split(",").map((value) => (Number(value) === 7 ? 0 : Number(value)))),
+        );
+        return { freq: "weekly", hour: Number(h), minute: Number(mi), weekdays };
+      }
+    }
+  }
+  return { freq: "custom", customCron: schedule };
+}
+
+function cronFormFromJob(job: CronJobInfo): CronJobForm {
+  return {
+    ...emptyCronJobForm,
+    name: job.name && job.name !== "(unnamed)" ? job.name : "",
+    prompt: job.prompt ?? "",
+    deliverTargets: job.deliver.length ? job.deliver : ["local"],
+    repeatTimes: job.repeat?.times != null ? String(job.repeat.times) : "",
+    skills: job.skills ?? [],
+    ...parseCronToForm(job.schedule),
+  };
 }
 
 function formatFileSize(bytes: number): string {
@@ -486,6 +760,8 @@ export function App() {
   const [skillInstallForm, setSkillInstallForm] = useState<SkillInstallForm>(emptySkillInstallForm);
   const [models, setModels] = useState<SavedModel[]>([]);
   const [activeModel, setActiveModel] = useState<ActiveModelConfig | null>(null);
+  const [tokenUsage, setTokenUsage] = useState<{ promptTokens: number; totalTokens: number } | null>(null);
+  const [sessionStartedAt, setSessionStartedAt] = useState<number>(() => Date.now());
   const [auxiliaryModels, setAuxiliaryModels] = useState<AuxiliaryModelConfig[]>([]);
   const [registryLibrary, setRegistryLibrary] = useState<RegistryLibraryProvider[]>([]);
   const [modelForm, setModelForm] = useState<ModelForm>(emptyModelForm);
@@ -511,6 +787,15 @@ export function App() {
   const [mcpCatalogBusyName, setMcpCatalogBusyName] = useState<string | null>(null);
   const [skillBusy, setSkillBusy] = useState(false);
   const [cronBusy, setCronBusy] = useState(false);
+  const [cronOperatingId, setCronOperatingId] = useState<string | null>(null);
+  const [cronEditId, setCronEditId] = useState<string | null>(null);
+  const [cronSkillDraft, setCronSkillDraft] = useState("");
+  const cronNameInputRef = useRef<HTMLInputElement>(null);
+  const cronSchedulePreview = useMemo(() => serializeCronSchedule(cronForm), [cronForm]);
+  const cronNextRun = useMemo(
+    () => (cronSchedulePreview.value ? nextCronRun(cronSchedulePreview.value) : null),
+    [cronSchedulePreview.value],
+  );
   const [messagingBusy, setMessagingBusy] = useState(false);
   const [discoveryBusy, setDiscoveryBusy] = useState(false);
   const [installBusy, setInstallBusy] = useState(false);
@@ -692,6 +977,14 @@ export function App() {
         detail: "Hermes Gateway 已进入流式输出。",
         level: "info",
       });
+      return;
+    }
+    if (event.kind === "usage") {
+      const promptTokens = Number(event.content) || 0;
+      const totalTokens = Number(event.message) || 0;
+      if (promptTokens > 0 || totalTokens > 0) {
+        setTokenUsage({ promptTokens, totalTokens });
+      }
       return;
     }
     if (event.kind === "error") {
@@ -1288,11 +1581,24 @@ export function App() {
     }
   };
 
-  const createCronJobFromForm = async () => {
-    const schedule = cronForm.schedule.trim();
+  const startCronEdit = (job: CronJobInfo) => {
+    setCronEditId(job.id);
+    setCronForm(cronFormFromJob(job));
+    setCronSkillDraft("");
+    cronNameInputRef.current?.focus();
+  };
+
+  const cancelCronEdit = () => {
+    setCronEditId(null);
+    setCronForm(emptyCronJobForm);
+    setCronSkillDraft("");
+  };
+
+  const submitCronForm = async () => {
+    const { value: schedule, error: scheduleError } = serializeCronSchedule(cronForm);
     const prompt = cronForm.prompt.trim();
-    if (!schedule) {
-      setNotice("Schedule 不能为空。");
+    if (scheduleError || !schedule) {
+      setNotice(`Schedule 无效：${scheduleError ?? "请检查调度设置"}`);
       return;
     }
     if (!prompt) {
@@ -1300,22 +1606,49 @@ export function App() {
       return;
     }
     const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    const deliver = cronForm.deliverTargets.join(",") || "local";
+    const repeatRaw = cronForm.repeatTimes.trim();
+    let repeat: number | undefined;
+    if (repeatRaw) {
+      const parsed = Number(repeatRaw);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        setNotice("重复次数需为正整数，或留空表示一直运行。");
+        return;
+      }
+      repeat = parsed;
+    }
+    const editing = cronEditId;
     setCronBusy(true);
     try {
-      const result = await createHermesCronJob({
-        profile: targetProfile,
-        schedule,
-        prompt,
-        name: cronForm.name.trim() || undefined,
-        deliver: cronForm.deliver.trim() || "local",
-      });
-      handleCronActionResult(result, "Schedule 已创建。");
+      const result = editing
+        ? await editHermesCronJob({
+            profile: targetProfile,
+            jobId: editing,
+            schedule,
+            prompt,
+            name: cronForm.name.trim() || undefined,
+            deliver,
+            repeat,
+            skills: cronForm.skills,
+          })
+        : await createHermesCronJob({
+            profile: targetProfile,
+            schedule,
+            prompt,
+            name: cronForm.name.trim() || undefined,
+            deliver,
+            repeat,
+            skills: cronForm.skills.length ? cronForm.skills : undefined,
+          });
+      handleCronActionResult(result, editing ? "Schedule 已更新。" : "Schedule 已创建。");
       if (result.success) {
+        setCronEditId(null);
         setCronForm(emptyCronJobForm);
+        setCronSkillDraft("");
         await refreshCronJobs(targetProfile);
       }
     } catch (error) {
-      setNotice(`创建 Schedule 失败：${runtimeErrorMessage(error)}`);
+      setNotice(`${editing ? "更新" : "创建"} Schedule 失败：${runtimeErrorMessage(error)}`);
     } finally {
       setCronBusy(false);
     }
@@ -1329,6 +1662,7 @@ export function App() {
     const confirmed = operation === "remove" ? window.confirm(`删除 Schedule「${job.name}」？`) : true;
     if (!confirmed) return;
     setCronBusy(true);
+    setCronOperatingId(job.id);
     try {
       const input = { profile: targetProfile, jobId: job.id };
       const result =
@@ -1353,6 +1687,7 @@ export function App() {
       setNotice(`Schedule 操作失败：${runtimeErrorMessage(error)}`);
     } finally {
       setCronBusy(false);
+      setCronOperatingId(null);
     }
   };
 
@@ -1784,6 +2119,8 @@ export function App() {
     setDraft("");
     setDraftAttachments([]);
       setRuntimeEvents([]);
+      setTokenUsage(null);
+      setSessionStartedAt(Date.now());
       setActiveView("team");
       setNotice("已打开新会话。发送第一条消息后会进入 Session 历史。");
 
@@ -3436,31 +3773,67 @@ export function App() {
             <Plus size={18} />
             <span>新建聊天</span>
           </button>
-          <button
-            className={`workspace-item ${
-              activeView === "team" && !scratchSession ? "active" : ""
-            }`}
-            type="button"
-            onClick={() => setActiveView("team")}
-          >
-            <MessageSquareText size={18} />
-            <span>聊天</span>
-          </button>
-          <button
-            className={`workspace-item ${activeView === "settings" ? "active" : ""}`}
-            type="button"
-            onClick={() => {
-              setActiveView("settings");
-              void refreshInstallStatus();
-              void refreshHermesCapabilities();
-              void refreshMessagingPlatforms();
-              void refreshCronJobs();
-              void refreshHermesLogs();
-            }}
-          >
-            <Settings size={18} />
-            <span>设置</span>
-          </button>
+
+          <div className="nav-group">
+            <p className="nav-group-label">工作区</p>
+            <button
+              className={`workspace-item ${
+                activeView === "team" && !scratchSession ? "active" : ""
+              }`}
+              type="button"
+              onClick={() => setActiveView("team")}
+              title="聊天"
+              aria-label="聊天"
+            >
+              <MessageSquareText size={18} />
+              <span>聊天</span>
+            </button>
+          </div>
+
+          <div className="nav-group">
+            <p className="nav-group-label">自动化</p>
+            <button
+              className={`workspace-item ${
+                activeView === "settings" && activeSettingsPanel === "schedules" ? "active" : ""
+              }`}
+              type="button"
+              onClick={() => {
+                setActiveView("settings");
+                setActiveSettingsPanel("schedules");
+                void refreshInstallStatus();
+                void refreshCronJobs();
+              }}
+              title="定时任务"
+              aria-label="定时任务"
+            >
+              <CalendarClock size={18} />
+              <span>定时任务</span>
+            </button>
+          </div>
+
+          <div className="nav-group">
+            <p className="nav-group-label">系统</p>
+            <button
+              className={`workspace-item ${
+                activeView === "settings" && activeSettingsPanel !== "schedules" ? "active" : ""
+              }`}
+              type="button"
+              onClick={() => {
+                setActiveView("settings");
+                setActiveSettingsPanel((current) => (current === "schedules" ? "overview" : current));
+                void refreshInstallStatus();
+                void refreshHermesCapabilities();
+                void refreshMessagingPlatforms();
+                void refreshCronJobs();
+                void refreshHermesLogs();
+              }}
+              title="设置"
+              aria-label="设置"
+            >
+              <Settings size={18} />
+              <span>设置</span>
+            </button>
+          </div>
         </nav>
 
         {!sidebarCollapsed && (
@@ -3472,47 +3845,6 @@ export function App() {
           />
         )}
 
-        {!sidebarCollapsed && (
-        <section className="sidebar-panel">
-          <p className="panel-label">Hermes Runtime</p>
-          <div className={`runtime-badge ${runtimeStatus.state}`}>
-            <CircleDot size={14} />
-            <span>{runtimeStatus.message}</span>
-          </div>
-          <button className="refresh-runtime" type="button" onClick={() => void refreshRuntime()}>
-            <RefreshCw size={14} />
-            <span>刷新 Runtime</span>
-          </button>
-          <button
-            className="refresh-runtime"
-            disabled={gatewayBusy}
-            type="button"
-            onClick={() => void startGateway()}
-          >
-            <Plug size={14} />
-            <span>{gatewayBusy ? "启动中..." : "启动 Gateway"}</span>
-          </button>
-          <button
-            className="refresh-runtime"
-            disabled={keyBusy}
-            type="button"
-            onClick={() => void createApiKey()}
-          >
-            <Settings size={14} />
-            <span>{keyBusy ? "生成中..." : "生成 API key"}</span>
-          </button>
-          {profiles.length > 0 && (
-            <div className="profile-list">
-              {profiles.map((profile) => (
-                <span className={profile.active ? "active" : ""} key={profile.name}>
-                  {profile.name}
-                  {profile.hasApiKey ? "" : " · no key"}
-                </span>
-              ))}
-            </div>
-          )}
-        </section>
-        )}
       </aside>
 
       <section className={`timeline ${activeView !== "team" ? "utility-view" : ""}`}>
@@ -4612,30 +4944,268 @@ export function App() {
 
                 <div className="model-panel">
                   <div className="model-form">
+                    {cronEditId && (
+                      <div className="cron-edit-banner model-form-wide">
+                        <Pencil size={13} />
+                        <span>正在编辑任务，保存后将更新现有排程。</span>
+                        <button type="button" onClick={cancelCronEdit}>
+                          取消
+                        </button>
+                      </div>
+                    )}
                     <label>
                       <span>名称</span>
                       <input
+                        ref={cronNameInputRef}
                         value={cronForm.name}
                         onChange={(event) => setCronForm((current) => ({ ...current, name: event.target.value }))}
                         placeholder="每日摘要"
                       />
                     </label>
                     <label>
-                      <span>Schedule</span>
+                      <span>重复次数</span>
                       <input
-                        value={cronForm.schedule}
-                        onChange={(event) => setCronForm((current) => ({ ...current, schedule: event.target.value }))}
-                        placeholder="daily 09:00 / hourly / */30 * * * *"
+                        type="number"
+                        min={1}
+                        value={cronForm.repeatTimes}
+                        onChange={(event) => setCronForm((current) => ({ ...current, repeatTimes: event.target.value }))}
+                        placeholder="留空 = 一直运行"
                       />
                     </label>
-                    <label>
-                      <span>Deliver</span>
-                      <input
-                        value={cronForm.deliver}
-                        onChange={(event) => setCronForm((current) => ({ ...current, deliver: event.target.value }))}
-                        placeholder="local / telegram / slack"
-                      />
-                    </label>
+                    <div className="cron-builder model-form-wide">
+                      <span className="cron-builder-title">调度频率</span>
+                      <div className="cron-freq-tabs">
+                        {CRON_FREQ_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            type="button"
+                            className={cronForm.freq === option.id ? "active" : ""}
+                            onClick={() => setCronForm((current) => ({ ...current, freq: option.id }))}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="cron-builder-controls">
+                        {cronForm.freq === "minutes" && (
+                          <div className="cron-control-row">
+                            <span>每</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={59}
+                              value={cronForm.minuteInterval}
+                              onChange={(event) =>
+                                setCronForm((current) => ({
+                                  ...current,
+                                  minuteInterval: clampInt(event.target.value, 1, 59, 30),
+                                }))
+                              }
+                            />
+                            <span>分钟执行一次</span>
+                          </div>
+                        )}
+                        {cronForm.freq === "hourly" && (
+                          <div className="cron-control-row">
+                            <span>每小时第</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={59}
+                              value={cronForm.minute}
+                              onChange={(event) =>
+                                setCronForm((current) => ({
+                                  ...current,
+                                  minute: clampInt(event.target.value, 0, 59, 0),
+                                }))
+                              }
+                            />
+                            <span>分钟执行</span>
+                          </div>
+                        )}
+                        {(cronForm.freq === "daily" || cronForm.freq === "weekly") && (
+                          <>
+                            {cronForm.freq === "weekly" && (
+                              <div className="cron-weekday-row">
+                                {CRON_WEEKDAYS.map((day) => (
+                                  <button
+                                    key={day.value}
+                                    type="button"
+                                    className={`cron-weekday ${cronForm.weekdays.includes(day.value) ? "active" : ""}`}
+                                    onClick={() =>
+                                      setCronForm((current) => ({
+                                        ...current,
+                                        weekdays: current.weekdays.includes(day.value)
+                                          ? current.weekdays.filter((value) => value !== day.value)
+                                          : [...current.weekdays, day.value],
+                                      }))
+                                    }
+                                  >
+                                    {day.short}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <div className="cron-control-row">
+                              <span>时间</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={23}
+                                value={cronForm.hour}
+                                onChange={(event) =>
+                                  setCronForm((current) => ({
+                                    ...current,
+                                    hour: clampInt(event.target.value, 0, 23, 9),
+                                  }))
+                                }
+                              />
+                              <span className="cron-colon">:</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={59}
+                                value={cronForm.minute}
+                                onChange={(event) =>
+                                  setCronForm((current) => ({
+                                    ...current,
+                                    minute: clampInt(event.target.value, 0, 59, 0),
+                                  }))
+                                }
+                              />
+                            </div>
+                          </>
+                        )}
+                        {cronForm.freq === "custom" && (
+                          <div className="cron-control-row">
+                            <input
+                              className="cron-custom-input"
+                              value={cronForm.customCron}
+                              placeholder="*/30 * * * *"
+                              onChange={(event) =>
+                                setCronForm((current) => ({ ...current, customCron: event.target.value }))
+                              }
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className={`cron-builder-preview ${cronSchedulePreview.error ? "cron-preview-invalid" : ""}`}>
+                        {cronSchedulePreview.error ? (
+                          <span className="cron-preview-error">
+                            <AlertTriangle size={13} />
+                            {cronSchedulePreview.error}
+                          </span>
+                        ) : (
+                          <>
+                            <code className="cron-preview-expr">{cronSchedulePreview.value}</code>
+                            <span className="cron-preview-desc">{describeCronSchedule(cronForm)}</span>
+                            {cronNextRun && (
+                              <span className="cron-preview-next">
+                                下次将在 {formatCronRelative(cronNextRun.toISOString())}（
+                                {formatCronDate(cronNextRun.toISOString())}）运行
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="cron-field model-form-wide">
+                      <span className="cron-field-label">投递目标</span>
+                      <div className="cron-chip-row">
+                        {CRON_DELIVER_OPTIONS.map((option) => {
+                          const selected = cronForm.deliverTargets.includes(option.id);
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              className={`cron-toggle-chip ${selected ? "active" : ""}`}
+                              onClick={() =>
+                                setCronForm((current) => ({
+                                  ...current,
+                                  deliverTargets: selected
+                                    ? current.deliverTargets.filter((value) => value !== option.id)
+                                    : [...current.deliverTargets, option.id],
+                                }))
+                              }
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <span className="cron-field-hint">未选时默认投递到 local（保存到 cron 输出目录）。</span>
+                    </div>
+
+                    <div className="cron-field model-form-wide">
+                      <span className="cron-field-label">关联技能（可选）</span>
+                      <div className="cron-chip-row">
+                        {cronForm.skills.length === 0 && (
+                          <span className="cron-field-hint">未关联技能时按默认会话运行。</span>
+                        )}
+                        {cronForm.skills.map((skill) => (
+                          <span key={skill} className="cron-skill-chip">
+                            {skill}
+                            <button
+                              type="button"
+                              aria-label={`移除 ${skill}`}
+                              onClick={() =>
+                                setCronForm((current) => ({
+                                  ...current,
+                                  skills: current.skills.filter((value) => value !== skill),
+                                }))
+                              }
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="cron-skill-add">
+                        <input
+                          value={cronSkillDraft}
+                          placeholder="技能名，回车添加"
+                          onChange={(event) => setCronSkillDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              const next = cronSkillDraft.trim();
+                              if (next && !cronForm.skills.includes(next)) {
+                                setCronForm((current) => ({ ...current, skills: [...current.skills, next] }));
+                              }
+                              setCronSkillDraft("");
+                            }
+                          }}
+                        />
+                      </div>
+                      {skills.length > 0 && (
+                        <div className="cron-skill-suggest">
+                          {skills
+                            .filter((skill) => !cronForm.skills.includes(skill.name))
+                            .slice(0, 8)
+                            .map((skill) => (
+                              <button
+                                key={skill.dirName || skill.name}
+                                type="button"
+                                className="cron-skill-suggest-chip"
+                                onClick={() =>
+                                  setCronForm((current) => ({
+                                    ...current,
+                                    skills: current.skills.includes(skill.name)
+                                      ? current.skills
+                                      : [...current.skills, skill.name],
+                                  }))
+                                }
+                              >
+                                + {skill.name}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+
                     <label className="model-form-wide">
                       <span>Prompt</span>
                       <textarea
@@ -4645,54 +5215,161 @@ export function App() {
                       />
                     </label>
                     <div className="model-form-actions">
-                      <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => void createCronJobFromForm()}>
+                      <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => void submitCronForm()}>
                         <Save size={14} />
-                        <span>创建</span>
+                        <span>{cronEditId ? "保存修改" : "创建"}</span>
                       </button>
-                      <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => setCronForm(emptyCronJobForm)}>
-                        <Plus size={14} />
-                        <span>重置</span>
-                      </button>
+                      {cronEditId ? (
+                        <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={cancelCronEdit}>
+                          <X size={14} />
+                          <span>取消编辑</span>
+                        </button>
+                      ) : (
+                        <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => setCronForm(emptyCronJobForm)}>
+                          <Plus size={14} />
+                          <span>重置</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="model-list">
-                    {cronJobs.length > 0 ? (
-                      cronJobs.map((job) => (
-                        <article className={`model-card ${job.state === "active" ? "active" : ""}`} key={job.id}>
-                          <div>
-                            <strong>{job.name}</strong>
-                            <span>{job.schedule} · {job.state}</span>
-                            <small>
-                              next {formatCronDate(job.nextRunAt)} · deliver {job.deliver.join(", ") || "local"}
-                            </small>
-                            {job.lastError && <small className="warning-text">{job.lastError}</small>}
-                          </div>
-                          <div className="model-card-actions">
-                            <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "trigger")}>
-                              <Plug size={14} />
-                              <span>运行</span>
-                            </button>
-                            {job.state === "paused" ? (
-                              <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "resume")}>
-                                <Power size={14} />
-                                <span>恢复</span>
+                  <div className="schedule-list">
+                    {cronBusy && cronJobs.length === 0 ? (
+                      <>
+                        <div className="schedule-skeleton" />
+                        <div className="schedule-skeleton" />
+                      </>
+                    ) : cronJobs.length > 0 ? (
+                      cronJobs.map((job) => {
+                        const meta = cronStateMeta(job.state);
+                        const nextRelative = formatCronRelative(job.nextRunAt);
+                        const lastRelative = formatCronRelative(job.lastRunAt);
+                        const lastKind = job.lastError ? "fail" : job.lastRunAt ? "ok" : "none";
+                        const deliverTargets = job.deliver.length ? job.deliver : ["local"];
+                        const operating = cronOperatingId === job.id;
+                        return (
+                          <article
+                            className={`schedule-card schedule-${job.state} ${cronEditId === job.id ? "schedule-card-editing" : ""}`}
+                            key={job.id}
+                          >
+                            <div className="schedule-card-main">
+                              <div className="schedule-card-title">
+                                <strong>{job.name}</strong>
+                                <span className={`schedule-badge ${meta.cls}`}>{meta.label}</span>
+                                {cronEditId === job.id && <span className="schedule-editing-tag">编辑中</span>}
+                              </div>
+                              <div className="schedule-card-meta">
+                                <span className="schedule-meta-item">
+                                  <Clock size={13} />
+                                  {job.schedule}
+                                </span>
+                                {job.repeat?.times != null && (
+                                  <span className="schedule-meta-item">
+                                    <Repeat size={13} />
+                                    已执行 {job.repeat.completed}/{job.repeat.times}
+                                  </span>
+                                )}
+                                <span
+                                  className="schedule-meta-item"
+                                  title={job.nextRunAt ? formatCronDate(job.nextRunAt) : undefined}
+                                >
+                                  下次 {nextRelative ?? formatCronDate(job.nextRunAt)}
+                                </span>
+                                <span
+                                  className={`schedule-meta-item schedule-last-${lastKind}`}
+                                  title={lastRelative ?? undefined}
+                                >
+                                  {lastKind === "fail" ? (
+                                    <AlertTriangle size={13} />
+                                  ) : lastKind === "ok" ? (
+                                    <CheckCircle2 size={13} />
+                                  ) : null}
+                                  上次 {lastKind === "fail" ? "失败" : lastKind === "ok" ? "成功" : "未运行"}
+                                </span>
+                              </div>
+                              {job.prompt && <p className="schedule-card-prompt">{job.prompt}</p>}
+                              <div className="schedule-card-deliver">
+                                <span className="schedule-deliver-label">投递</span>
+                                {deliverTargets.map((target) => (
+                                  <span className="schedule-chip" key={target}>
+                                    {target}
+                                  </span>
+                                ))}
+                              </div>
+                              {job.lastError && (
+                                <details className="schedule-error">
+                                  <summary>上次失败原因</summary>
+                                  <pre>{job.lastError}</pre>
+                                </details>
+                              )}
+                            </div>
+                            <div className="schedule-card-actions">
+                              <button
+                                className="schedule-action"
+                                disabled={cronBusy}
+                                type="button"
+                                onClick={() => void runCronJobOperation(job, "trigger")}
+                              >
+                                {operating ? (
+                                  <RefreshCw className="schedule-spin" size={14} />
+                                ) : (
+                                  <Play size={14} />
+                                )}
+                                <span>运行</span>
                               </button>
-                            ) : (
-                              <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "pause")}>
-                                <StopCircle size={14} />
-                                <span>暂停</span>
+                              <button
+                                className="schedule-action"
+                                disabled={cronBusy}
+                                type="button"
+                                onClick={() => startCronEdit(job)}
+                              >
+                                <Pencil size={14} />
+                                <span>编辑</span>
                               </button>
-                            )}
-                            <button disabled={cronBusy} type="button" onClick={() => void runCronJobOperation(job, "remove")}>
-                              <Trash2 size={14} />
-                              <span>删除</span>
-                            </button>
-                          </div>
-                        </article>
-                      ))
+                              {job.state === "paused" ? (
+                                <button
+                                  className="schedule-action"
+                                  disabled={cronBusy}
+                                  type="button"
+                                  onClick={() => void runCronJobOperation(job, "resume")}
+                                >
+                                  <Power size={14} />
+                                  <span>恢复</span>
+                                </button>
+                              ) : (
+                                <button
+                                  className="schedule-action"
+                                  disabled={cronBusy}
+                                  type="button"
+                                  onClick={() => void runCronJobOperation(job, "pause")}
+                                >
+                                  <Pause size={14} />
+                                  <span>暂停</span>
+                                </button>
+                              )}
+                              <button
+                                className="schedule-action schedule-action-danger"
+                                disabled={cronBusy}
+                                type="button"
+                                onClick={() => void runCronJobOperation(job, "remove")}
+                              >
+                                <Trash2 size={14} />
+                                <span>删除</span>
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })
                     ) : (
-                      <p className="empty-note">当前 profile 还没有 cron jobs；这里读取真实 `cron/jobs.json` 或远程 `/api/jobs`。</p>
+                      <div className="schedule-empty">
+                        <Clock size={26} />
+                        <strong>还没有定时任务</strong>
+                        <span>创建一个排程，让 Hermes 按时自动执行 prompt 并投递结果。</span>
+                        <button type="button" onClick={() => cronNameInputRef.current?.focus()}>
+                          <Plus size={14} />
+                          <span>新建第一个定时任务</span>
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -5382,6 +6059,7 @@ export function App() {
           activityText={activeRuntimeEvent?.detail}
           profiles={profiles}
           models={models}
+          skills={skills}
           currentProfile={currentChatProfile}
           contextFolder={chatBinding?.workDir ?? null}
           worktreeVisible={worktreeVisible}
@@ -5605,8 +6283,109 @@ export function App() {
         </section>
       </aside>
       )}
+
+      <footer className="status-bar" aria-label="运行状态">
+        <button
+          type="button"
+          className={`status-pill status-action status-${runtimeStatus.state}`}
+          onClick={() => void refreshRuntime()}
+          title="点击刷新 Hermes Runtime"
+        >
+          <CircleDot size={12} />
+          <span>{runtimeStatus.message}</span>
+        </button>
+        <span className="status-seg">
+          <span className="status-key">profile</span>
+          <span className="status-val">{profiles.find((item) => item.active)?.name ?? "—"}</span>
+        </span>
+        <span className="status-seg">
+          <span className="status-key">model</span>
+          <span className="status-val">
+            {activeModel?.model
+              ? `${activeModel.provider ? `${activeModel.provider}/` : ""}${activeModel.model}`
+              : "未配置"}
+          </span>
+        </span>
+        <ContextUsageStat used={tokenUsage?.promptTokens ?? 0} window={activeModel?.contextLength ?? 0} />
+        <span className="status-spacer" />
+        <span className="status-seg" title="当前会话已运行时长">
+          <Clock size={12} className="status-ico" />
+          <SessionTimer startedAt={sessionStartedAt} />
+        </span>
+        <button
+          type="button"
+          className="status-seg status-action"
+          disabled={gatewayBusy}
+          onClick={() => {
+            if (installStatus?.gatewayRunning) void refreshRuntime({ autoStart: false });
+            else void startGateway();
+          }}
+          title={installStatus?.gatewayRunning ? "Gateway 运行中（点击刷新）" : "点击启动 Gateway"}
+        >
+          <span className={`status-led ${installStatus?.gatewayRunning ? "on" : ""}`} />
+          <span className="status-val">
+            {gatewayBusy ? "启动中..." : installStatus?.gatewayRunning ? "gateway up" : "gateway down"}
+          </span>
+        </button>
+        <span className="status-tag" title="版本 / 距最新 tag 的提交数 / commit">
+          {buildLabel() || "Hermes Team"}
+        </span>
+      </footer>
     </main>
   );
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) {
+    const value = (n / 1_000_000).toFixed(1);
+    return `${value.endsWith(".0") ? value.slice(0, -2) : value}M`;
+  }
+  if (n >= 1000) {
+    const value = (n / 1000).toFixed(1);
+    return `${value.endsWith(".0") ? value.slice(0, -2) : value}k`;
+  }
+  return String(Math.round(n));
+}
+
+function ContextUsageStat({ used, window: ctxWindow }: { used: number; window: number }) {
+  const hasWindow = ctxWindow > 0;
+  const hasUsed = used > 0;
+  const pct = hasWindow && hasUsed ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
+  const usedLabel = hasUsed ? formatTokens(used) : "—";
+  const windowLabel = hasWindow ? formatTokens(ctxWindow) : "—";
+  return (
+    <span
+      className="status-seg status-ctx"
+      title="上下文占用：最近一轮 prompt tokens / 模型上下文窗口"
+    >
+      <span className="status-key">ctx</span>
+      <span className="status-ctx-bar" aria-hidden>
+        <span
+          className={`status-ctx-fill ${pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""}`}
+          style={{ width: `${pct}%` }}
+        />
+      </span>
+      <span className="status-val">
+        {usedLabel}/{windowLabel}
+        {hasUsed && hasWindow ? ` · ${pct}%` : ""}
+      </span>
+    </span>
+  );
+}
+
+function SessionTimer({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const total = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const label = hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+  return <span className="status-val status-mono">{label}</span>;
 }
 
 function StatusRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {

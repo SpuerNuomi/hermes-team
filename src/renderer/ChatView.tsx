@@ -19,7 +19,22 @@ import { useInputHistory } from "./chatInput/useInputHistory";
 import { ChatControls } from "./ChatControls";
 import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
 import { WorktreePanel } from "./WorktreePanel";
-import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtime/hermes-runtime";
+import type { ActiveModelConfig, HermesProfileInfo, InstalledSkillInfo, SavedModel } from "../runtime/hermes-runtime";
+
+type SlashMenuItem =
+  | { kind: "command"; command: SlashCommand }
+  | { kind: "skill"; skill: InstalledSkillInfo };
+
+const SLASH_CATEGORY_LABELS: Record<SlashCommand["category"], string> = {
+  chat: "会话控制",
+  agent: "Agent 指令",
+  tools: "工具",
+  info: "信息",
+};
+
+function slashGroupLabel(item: SlashMenuItem): string {
+  return item.kind === "command" ? SLASH_CATEGORY_LABELS[item.command.category] : "Skills";
+}
 
 function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -54,6 +69,7 @@ export function ChatView({
   activityText,
   profiles,
   models,
+  skills,
   currentProfile,
   contextFolder,
   worktreeVisible,
@@ -92,6 +108,7 @@ export function ChatView({
   activityText?: string;
   profiles: HermesProfileInfo[];
   models: SavedModel[];
+  skills: InstalledSkillInfo[];
   currentProfile: string;
   contextFolder: string | null;
   worktreeVisible: boolean;
@@ -151,15 +168,25 @@ export function ChatView({
     applyText: applyHistoryText,
   });
 
-  const filteredSlashCommands = useMemo(
-    () =>
-      slashMenuOpen
-        ? SLASH_COMMANDS.filter((command) =>
-            command.name.toLowerCase().startsWith(slashFilter.toLowerCase()),
-          )
-        : [],
-    [slashMenuOpen, slashFilter],
-  );
+  const filteredSlashItems = useMemo<SlashMenuItem[]>(() => {
+    if (!slashMenuOpen) return [];
+    const filter = slashFilter.toLowerCase();
+    const term = filter.replace(/^\//, "");
+    const commands: SlashMenuItem[] = SLASH_COMMANDS.filter((command) =>
+      command.name.toLowerCase().startsWith(filter),
+    ).map((command) => ({ kind: "command", command }));
+    const skillItems: SlashMenuItem[] = skills
+      .filter((skill) => {
+        if (!term) return true;
+        return (
+          skill.dirName.toLowerCase().includes(term) ||
+          skill.name.toLowerCase().includes(term) ||
+          skill.category.toLowerCase().includes(term)
+        );
+      })
+      .map((skill) => ({ kind: "skill", skill }));
+    return [...commands, ...skillItems];
+  }, [slashMenuOpen, slashFilter, skills]);
   const visibleMessages = useMemo(() => {
     return messages.filter((message) => {
       if (message.authorName === "Runtime activity") return false;
@@ -228,8 +255,23 @@ export function ChatView({
     onSend();
   }
 
-  function handleSlashSelect(command: SlashCommand) {
+  function insertDraftPrefix(prefix: string) {
+    onDraftChange(prefix);
+    window.requestAnimationFrame(() => {
+      autoResize();
+      inputRef.current?.focus();
+    });
+  }
+
+  function handleSlashSelect(item: SlashMenuItem) {
     setSlashMenuOpen(false);
+    if (item.kind === "skill") {
+      // Mirror the `/name` convention: drop the skill slug into the draft and
+      // let the user describe the task before sending.
+      insertDraftPrefix(`/${item.skill.dirName} `);
+      return;
+    }
+    const command = item.command;
     if (command.name === "/new") {
       onNewChat();
       return;
@@ -242,11 +284,7 @@ export function ChatView({
       onSend(command.name);
       return;
     }
-    onDraftChange(`${command.name} `);
-    window.requestAnimationFrame(() => {
-      autoResize();
-      inputRef.current?.focus();
-    });
+    insertDraftPrefix(`${command.name} `);
   }
 
   function handleInputChange(event: ChangeEvent<HTMLTextAreaElement>) {
@@ -281,24 +319,24 @@ export function ChatView({
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event) || composingRef.current) return;
 
-    if (slashMenuOpen && filteredSlashCommands.length > 0) {
+    if (slashMenuOpen && filteredSlashItems.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
         setSlashSelectedIndex((index) =>
-          index < filteredSlashCommands.length - 1 ? index + 1 : 0,
+          index < filteredSlashItems.length - 1 ? index + 1 : 0,
         );
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
         setSlashSelectedIndex((index) =>
-          index > 0 ? index - 1 : filteredSlashCommands.length - 1,
+          index > 0 ? index - 1 : filteredSlashItems.length - 1,
         );
         return;
       }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        handleSlashSelect(filteredSlashCommands[slashSelectedIndex]);
+        handleSlashSelect(filteredSlashItems[slashSelectedIndex]);
         return;
       }
       if (event.key === "Escape") {
@@ -394,25 +432,39 @@ export function ChatView({
         }}
         onDrop={handleDrop}
       >
-        {slashMenuOpen && filteredSlashCommands.length > 0 && (
+        {slashMenuOpen && filteredSlashItems.length > 0 && (
           <div className="slash-menu" ref={slashMenuRef}>
             <div className="slash-menu-header">
               <Slash size={12} />
-              Commands
+              Commands &amp; Skills
             </div>
             <div className="slash-menu-list">
-              {filteredSlashCommands.map((command, index) => (
-                <button
-                  className={`slash-menu-item ${index === slashSelectedIndex ? "slash-menu-item-active" : ""}`}
-                  key={command.name}
-                  type="button"
-                  onClick={() => handleSlashSelect(command)}
-                  onMouseEnter={() => setSlashSelectedIndex(index)}
-                >
-                  <span className="slash-menu-item-name">{command.name}</span>
-                  <span className="slash-menu-item-desc">{command.description}</span>
-                </button>
-              ))}
+              {filteredSlashItems.map((item, index) => {
+                const group = slashGroupLabel(item);
+                const showGroup = index === 0 || slashGroupLabel(filteredSlashItems[index - 1]) !== group;
+                const name = item.kind === "command" ? item.command.name : `/${item.skill.dirName}`;
+                const desc =
+                  item.kind === "command"
+                    ? item.command.description
+                    : item.skill.description || item.skill.category || "Skill";
+                return (
+                  <div key={item.kind === "command" ? item.command.name : `skill-${item.skill.dirName}`}>
+                    {showGroup && <div className="slash-menu-group">{group}</div>}
+                    <button
+                      className={`slash-menu-item ${index === slashSelectedIndex ? "slash-menu-item-active" : ""}`}
+                      type="button"
+                      onClick={() => handleSlashSelect(item)}
+                      onMouseEnter={() => setSlashSelectedIndex(index)}
+                    >
+                      <span className="slash-menu-item-name">
+                        {name}
+                        {item.kind === "skill" && <span className="slash-menu-item-badge">skill</span>}
+                      </span>
+                      <span className="slash-menu-item-desc">{desc}</span>
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
