@@ -865,6 +865,28 @@ export async function writeHermesPersona(input: {
   return invoke<PersonaContent>("write_hermes_persona", { input });
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
+}
+
+export async function transcribeHermesAudio(
+  audio: Uint8Array,
+  mimeType: string,
+  profile?: string,
+): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("transcribe_hermes_audio", {
+    audioBase64: bytesToBase64(audio),
+    mimeType,
+    profile,
+  });
+}
+
 export async function addHermesMemoryEntry(input: {
   profile?: string;
   content: string;

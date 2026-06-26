@@ -4028,6 +4028,85 @@ async fn probe_hermes_gateway(
     })
 }
 
+/// Transcribe a recorded audio clip through the Hermes API server.
+///
+/// Mirrors the upstream desktop voice-input backend: the Python API server owns
+/// STT provider selection (`stt.provider`: local faster-whisper, Groq, OpenAI
+/// Whisper, ElevenLabs, …), so we POST the recording to
+/// `/api/audio/transcribe` on the active connection's gateway rather than
+/// assuming the chat model endpoint exposes a Whisper-compatible route. The
+/// renderer's browser STT path is primary; this command is the recorder
+/// fallback for environments (e.g. WebView without a speech backend) where the
+/// browser `SpeechRecognition` API is unavailable.
+#[tauri::command]
+async fn transcribe_hermes_audio(
+    audio_base64: String,
+    mime_type: Option<String>,
+    profile: Option<String>,
+) -> Result<String, String> {
+    let trimmed = audio_base64.trim();
+    if trimmed.is_empty() {
+        return Err("没有录到音频。".to_string());
+    }
+
+    use base64::Engine;
+    if base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map(|bytes| bytes.is_empty())
+        .unwrap_or(true)
+    {
+        return Err("录音内容为空或无法解码。".to_string());
+    }
+
+    let profile = normalize_profile(profile.as_deref());
+    let endpoint = resolve_connection_endpoint(profile.as_deref(), None)?;
+
+    let safe_mime = mime_type
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "audio/webm".to_string());
+    let data_url = format!("data:{safe_mime};base64,{trimmed}");
+    let body = serde_json::json!({
+        "data_url": data_url,
+        "mime_type": safe_mime,
+    })
+    .to_string();
+
+    let response = http_request(
+        &endpoint.base_url,
+        "POST",
+        "/api/audio/transcribe",
+        Some(&body),
+        endpoint.auth.as_deref(),
+    )
+    .map_err(|error| format!("语音转写请求失败：{error}"))?;
+
+    if response.status == 404 {
+        return Err(
+            "当前 Hermes Gateway 未启用语音转写接口（/api/audio/transcribe）。请在 profile 中配置 STT（如 faster-whisper / Groq / OpenAI Whisper）。"
+                .to_string(),
+        );
+    }
+    if !(200..300).contains(&response.status) {
+        return Err(format!(
+            "语音转写失败（HTTP {}）：{}",
+            response.status,
+            truncate(&response.body, 200)
+        ));
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(&response.body)
+        .map_err(|_| "语音转写返回了无效响应。".to_string())?;
+    let text = value
+        .get("transcript")
+        .and_then(|item| item.as_str())
+        .or_else(|| value.get("text").and_then(|item| item.as_str()))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Ok(text)
+}
+
 #[tauri::command]
 async fn run_hermes_agent(input: RunHermesAgentInput) -> Result<RunHermesAgentOutput, String> {
     let task_id = input.task_id.clone();
@@ -5822,7 +5901,18 @@ fn process_run_sse_text(
 /// `usage` object to completion-style events; we look in the common locations
 /// and normalise to `(prompt_tokens, total_tokens)`. Returns `None` when no
 /// usage is carried so the UI can degrade gracefully instead of showing zeros.
-fn extract_run_usage(value: &serde_json::Value) -> Option<(u64, u64)> {
+/// Normalised token usage pulled from a run event. Cache fields are populated
+/// only when the gateway/provider carries prompt-cache stats; they stay 0
+/// otherwise so the UI can degrade gracefully.
+#[derive(Debug, Default, Clone, Copy)]
+struct RunUsage {
+    prompt: u64,
+    total: u64,
+    cache_read: u64,
+    cache_write: u64,
+}
+
+fn extract_run_usage(value: &serde_json::Value) -> Option<RunUsage> {
     let usage = value
         .get("usage")
         .or_else(|| value.pointer("/payload/usage"))
@@ -5856,10 +5946,42 @@ fn extract_run_usage(value: &serde_json::Value) -> Option<(u64, u64)> {
     } else {
         prompt + completion
     };
+    // Prompt-cache stats, when present. Backends disagree on naming:
+    // gateway-normalised `cache_read_tokens`/`cache_write_tokens`, the dashboard
+    // stream's `cache_read`/`cache_write`, Anthropic-native
+    // `cache_read_input_tokens`/`cache_creation_input_tokens`, or OpenAI-style
+    // `prompt_tokens_details.cached_tokens` (read only). Probe all of them so the
+    // gauge shows cache hits whenever the transport exposes them.
+    let mut cache_read = read(&[
+        "cache_read_tokens",
+        "cacheReadTokens",
+        "cache_read_input_tokens",
+        "cacheReadInputTokens",
+        "cache_read",
+        "cached_tokens",
+    ]);
+    if cache_read == 0 {
+        cache_read = usage
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(0);
+    }
+    let cache_write = read(&[
+        "cache_write_tokens",
+        "cacheWriteTokens",
+        "cache_creation_input_tokens",
+        "cacheCreationInputTokens",
+        "cache_write",
+    ]);
     if prompt == 0 && total == 0 {
         return None;
     }
-    Some((prompt, total))
+    Some(RunUsage {
+        prompt,
+        total,
+        cache_read,
+        cache_write,
+    })
 }
 
 /// Translate a single Hermes `/v1/runs` event into UI stream events.
@@ -5878,15 +6000,23 @@ fn handle_run_event(
         .and_then(|item| item.as_str())
         .unwrap_or("");
 
-    if let Some((prompt_tokens, total_tokens)) = extract_run_usage(value) {
+    if let Some(usage) = extract_run_usage(value) {
+        // Carry prompt-cache stats (read,write) in `delta` only when present,
+        // so the gauge tooltip can show cache hits without changing the event
+        // shape for backends that omit them.
+        let cache_delta = if usage.cache_read > 0 || usage.cache_write > 0 {
+            format!("{},{}", usage.cache_read, usage.cache_write)
+        } else {
+            String::new()
+        };
         emit_stream_event(
             app,
             RuntimeStreamEvent {
                 task_id: task_id.to_string(),
                 kind: "usage".to_string(),
-                delta: String::new(),
-                content: prompt_tokens.to_string(),
-                message: total_tokens.to_string(),
+                delta: cache_delta,
+                content: usage.prompt.to_string(),
+                message: usage.total.to_string(),
             },
         )?;
     }
@@ -11601,6 +11731,7 @@ pub fn run() {
             ensure_hermes_gateway,
             stop_hermes_gateway,
             probe_hermes_gateway,
+            transcribe_hermes_audio,
             select_attachment_files,
             select_context_folder,
             stage_attachment_file,

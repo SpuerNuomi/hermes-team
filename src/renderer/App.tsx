@@ -780,7 +780,12 @@ export function App() {
   const [skillInstallForm, setSkillInstallForm] = useState<SkillInstallForm>(emptySkillInstallForm);
   const [models, setModels] = useState<SavedModel[]>([]);
   const [activeModel, setActiveModel] = useState<ActiveModelConfig | null>(null);
-  const [tokenUsage, setTokenUsage] = useState<{ promptTokens: number; totalTokens: number } | null>(null);
+  const [tokenUsage, setTokenUsage] = useState<{
+    promptTokens: number;
+    totalTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  } | null>(null);
   const [sessionStartedAt, setSessionStartedAt] = useState<number>(() => Date.now());
   const [auxiliaryModels, setAuxiliaryModels] = useState<AuxiliaryModelConfig[]>([]);
   const [registryLibrary, setRegistryLibrary] = useState<RegistryLibraryProvider[]>([]);
@@ -1018,8 +1023,18 @@ export function App() {
     if (event.kind === "usage") {
       const promptTokens = Number(event.content) || 0;
       const totalTokens = Number(event.message) || 0;
+      // Optional prompt-cache stats arrive as "read,write" in `delta` when the
+      // gateway/provider exposes them; absent on backends that don't.
+      const [cacheReadRaw, cacheWriteRaw] = (event.delta || "").split(",");
+      const cacheReadTokens = Number(cacheReadRaw) || 0;
+      const cacheWriteTokens = Number(cacheWriteRaw) || 0;
       if (promptTokens > 0 || totalTokens > 0) {
-        setTokenUsage({ promptTokens, totalTokens });
+        setTokenUsage({
+          promptTokens,
+          totalTokens,
+          cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+          cacheWriteTokens: cacheWriteTokens > 0 ? cacheWriteTokens : undefined,
+        });
       }
       return;
     }
@@ -6524,7 +6539,12 @@ export function App() {
           skills={skills}
           contextUsage={
             activeModel?.contextLength && tokenUsage?.promptTokens
-              ? { used: tokenUsage.promptTokens, window: activeModel.contextLength }
+              ? {
+                  used: tokenUsage.promptTokens,
+                  window: activeModel.contextLength,
+                  cacheReadTokens: tokenUsage.cacheReadTokens,
+                  cacheWriteTokens: tokenUsage.cacheWriteTokens,
+                }
               : null
           }
           readiness={
@@ -6805,7 +6825,12 @@ export function App() {
               : "未配置"}
           </span>
         </span>
-        <ContextUsageStat used={tokenUsage?.promptTokens ?? 0} window={activeModel?.contextLength ?? 0} />
+        <ContextUsageStat
+          used={tokenUsage?.promptTokens ?? 0}
+          window={activeModel?.contextLength ?? 0}
+          cacheReadTokens={tokenUsage?.cacheReadTokens}
+          cacheWriteTokens={tokenUsage?.cacheWriteTokens}
+        />
         <span className="status-spacer" />
         <span className="status-seg" title="当前会话已运行时长">
           <Clock size={12} className="status-ico" />
@@ -6861,16 +6886,36 @@ function formatTokens(n: number): string {
   return String(Math.round(n));
 }
 
-function ContextUsageStat({ used, window: ctxWindow }: { used: number; window: number }) {
+function ContextUsageStat({
+  used,
+  window: ctxWindow,
+  cacheReadTokens,
+  cacheWriteTokens,
+}: {
+  used: number;
+  window: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}) {
   const hasWindow = ctxWindow > 0;
   const hasUsed = used > 0;
   const pct = hasWindow && hasUsed ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
   const usedLabel = hasUsed ? formatTokens(used) : "—";
   const windowLabel = hasWindow ? formatTokens(ctxWindow) : "—";
+  const hasCache = (cacheReadTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0;
+  const cacheHitPct =
+    hasUsed && (cacheReadTokens ?? 0) > 0
+      ? Math.min(100, Math.round(((cacheReadTokens ?? 0) / used) * 100))
+      : 0;
+  const cacheTitle = hasCache
+    ? `\n缓存命中 ${cacheHitPct}% · 读 ${formatTokens(cacheReadTokens ?? 0)} / 写 ${formatTokens(
+        cacheWriteTokens ?? 0,
+      )}`
+    : "";
   return (
     <span
       className="status-seg status-ctx"
-      title="上下文占用：最近一轮 prompt tokens / 模型上下文窗口"
+      title={`上下文占用：最近一轮 prompt tokens / 模型上下文窗口${cacheTitle}`}
     >
       <span className="status-key">ctx</span>
       <span className="status-ctx-bar" aria-hidden>

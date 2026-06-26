@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   Link,
   MessageSquarePlus,
+  Mic,
   Paperclip,
   Plus,
   Slash,
@@ -34,6 +35,7 @@ import { filesFromClipboard } from "./attachmentProcessing";
 import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
 import { useInputHistory } from "./chatInput/useInputHistory";
+import { useVoiceInput } from "./chatInput/useVoiceInput";
 import { ChatControls } from "./ChatControls";
 import { ClarifyCard } from "./ClarifyCard";
 import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
@@ -124,17 +126,37 @@ function gaugeTokens(n: number): string {
   return String(Math.round(n));
 }
 
-function ChatContextGauge({ used, window: ctxWindow }: { used: number; window: number }) {
+function ChatContextGauge({
+  used,
+  window: ctxWindow,
+  cacheReadTokens,
+  cacheWriteTokens,
+}: {
+  used: number;
+  window: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}) {
   const pct = ctxWindow > 0 ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
   const size = 22;
   const stroke = 3;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
   const filled = (pct / 100) * circumference;
+  const hasCache = (cacheReadTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0;
+  const cacheHitPct =
+    used > 0 && (cacheReadTokens ?? 0) > 0
+      ? Math.min(100, Math.round(((cacheReadTokens ?? 0) / used) * 100))
+      : 0;
+  const cacheTitle = hasCache
+    ? `\n缓存命中 ${cacheHitPct}% · 读 ${gaugeTokens(cacheReadTokens ?? 0)} / 写 ${gaugeTokens(
+        cacheWriteTokens ?? 0,
+      )}`
+    : "";
   return (
     <div
       className="chat-ctx-gauge"
-      title={`上下文占用 ${pct}% · ${gaugeTokens(used)}/${gaugeTokens(ctxWindow)} tokens`}
+      title={`上下文占用 ${pct}% · ${gaugeTokens(used)}/${gaugeTokens(ctxWindow)} tokens${cacheTitle}`}
       role="img"
       aria-label={`上下文占用 ${pct}%`}
     >
@@ -243,7 +265,12 @@ export function ChatView({
   profiles: HermesProfileInfo[];
   models: SavedModel[];
   skills: InstalledSkillInfo[];
-  contextUsage: { used: number; window: number } | null;
+  contextUsage: {
+    used: number;
+    window: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  } | null;
   readiness: { ok: boolean; message?: string; fixLabel?: string; onFix?: () => void };
   currentProfile: string;
   contextFolder: string | null;
@@ -319,6 +346,25 @@ export function ChatView({
     currentInput: draft,
     applyText: applyHistoryText,
   });
+
+  // Voice input. Snapshot whatever was already typed when recording starts
+  // (`voiceBaseRef`), then rebuild the field as `base + livetranscript` on every
+  // result so the SpeechRecognition path streams in live. The recorder fallback
+  // delivers one final result on stop.
+  const voiceBaseRef = useRef("");
+  const handleVoiceResult = useCallback(
+    (text: string, isFinal: boolean) => {
+      const base = voiceBaseRef.current;
+      const next = base.trim() ? (text ? `${base.trimEnd()} ${text}` : base) : text;
+      onDraftChange(next);
+      window.requestAnimationFrame(() => {
+        autoResize();
+        if (isFinal) inputRef.current?.focus();
+      });
+    },
+    [autoResize, onDraftChange],
+  );
+  const voice = useVoiceInput(handleVoiceResult, currentProfile);
 
   const filteredSlashItems = useMemo<SlashMenuItem[]>(() => {
     if (!slashMenuOpen) return [];
@@ -1111,6 +1157,32 @@ export function ChatView({
                 </div>
               )}
             </div>
+            {voice.supported && (
+              <button
+                className={`chat-mic-btn ${voice.recording ? "recording" : ""}`}
+                type="button"
+                disabled={isLoading || voice.transcribing}
+                aria-pressed={voice.recording}
+                title={
+                  voice.transcribing
+                    ? "正在转写…"
+                    : voice.recording
+                      ? "停止录音"
+                      : voice.error
+                        ? `语音输入（上次：${voice.error}）`
+                        : "语音输入"
+                }
+                aria-label={voice.recording ? "停止录音" : "语音输入"}
+                onClick={() => {
+                  if (!voice.recording && !voice.transcribing) {
+                    voiceBaseRef.current = draft;
+                  }
+                  voice.toggle();
+                }}
+              >
+                <Mic size={16} />
+              </button>
+            )}
             {contextFolder && (
               <button
                 className="chat-meta-chip chat-meta-chip-active"
@@ -1138,7 +1210,12 @@ export function ChatView({
             />
             <div className="chat-input-toolbar-spacer" />
             {contextUsage && contextUsage.window > 0 && contextUsage.used > 0 && (
-              <ChatContextGauge used={contextUsage.used} window={contextUsage.window} />
+              <ChatContextGauge
+                used={contextUsage.used}
+                window={contextUsage.window}
+                cacheReadTokens={contextUsage.cacheReadTokens}
+                cacheWriteTokens={contextUsage.cacheWriteTokens}
+              />
             )}
             <button
               className="chat-quickask-btn"
