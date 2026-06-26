@@ -149,6 +149,15 @@ export interface UpdateStatus {
   updateAvailable?: string | null;
   message: string;
   logPath: string;
+  releaseRepo: string;
+  autoCheck: boolean;
+  checked: boolean;
+  checkOk: boolean;
+  latestVersion?: string | null;
+  releaseName?: string | null;
+  releaseNotes?: string | null;
+  releaseUrl?: string | null;
+  publishedAt?: string | null;
 }
 
 export interface UpdateRunResult {
@@ -788,6 +797,16 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
 export async function setAutoUpgradeEnabled(enabled: boolean): Promise<UpdateStatus> {
   ensureTauriRuntime();
   return invoke<UpdateStatus>("set_auto_upgrade_enabled", { enabled });
+}
+
+export async function setAutoCheckEnabled(enabled: boolean): Promise<UpdateStatus> {
+  ensureTauriRuntime();
+  return invoke<UpdateStatus>("set_auto_check_enabled", { enabled });
+}
+
+export async function setUpdateReleaseRepo(repo: string): Promise<UpdateStatus> {
+  ensureTauriRuntime();
+  return invoke<UpdateStatus>("set_update_release_repo", { repo });
 }
 
 export async function checkForAppUpdates(): Promise<UpdateStatus> {
