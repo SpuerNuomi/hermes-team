@@ -3493,6 +3493,28 @@ textarea:focus {
   vertical-align: middle;
 }
 
+.at-menu-item-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.at-menu-item-name svg {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.at-menu-empty {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 .chat-attachment-error {
   margin-bottom: 8px;
   color: #ff9a93;

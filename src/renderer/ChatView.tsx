@@ -2,9 +2,12 @@ import {
   Activity,
   AlertTriangle,
   ArrowUp,
+  AtSign,
   ClipboardPaste,
+  File as FileIcon,
   FolderOpen,
   FolderTree,
+  Image as ImageIcon,
   Link,
   MessageSquarePlus,
   Paperclip,
@@ -34,7 +37,20 @@ import { useInputHistory } from "./chatInput/useInputHistory";
 import { ChatControls } from "./ChatControls";
 import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
 import { WorktreePanel } from "./WorktreePanel";
-import type { ActiveModelConfig, HermesProfileInfo, InstalledSkillInfo, SavedModel } from "../runtime/hermes-runtime";
+import {
+  readDirectory,
+  type ActiveModelConfig,
+  type DirectoryEntryInfo,
+  type HermesProfileInfo,
+  type InstalledSkillInfo,
+  type SavedModel,
+} from "../runtime/hermes-runtime";
+
+interface AtFileEntry {
+  name: string;
+  path: string;
+  rel: string;
+}
 
 type SlashMenuItem =
   | { kind: "command"; command: SlashCommand }
@@ -213,11 +229,17 @@ export function ChatView({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashMenuRef = useRef<HTMLDivElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  const atMenuRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashFilter, setSlashFilter] = useState("");
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [atMenuOpen, setAtMenuOpen] = useState(false);
+  const [atFilter, setAtFilter] = useState("");
+  const [atSelectedIndex, setAtSelectedIndex] = useState(0);
+  const [atFiles, setAtFiles] = useState<AtFileEntry[]>([]);
+  const [atLoading, setAtLoading] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const autoResize = useCallback(() => {
@@ -262,6 +284,15 @@ export function ChatView({
       .map((skill) => ({ kind: "skill", skill }));
     return [...commands, ...skillItems];
   }, [slashMenuOpen, slashFilter, skills]);
+
+  const filteredAtFiles = useMemo<AtFileEntry[]>(() => {
+    if (!atMenuOpen) return [];
+    const term = atFilter.toLowerCase();
+    const matched = term
+      ? atFiles.filter((file) => file.rel.toLowerCase().includes(term) || file.name.toLowerCase().includes(term))
+      : atFiles;
+    return matched.slice(0, 50);
+  }, [atMenuOpen, atFilter, atFiles]);
   const visibleMessages = useMemo(() => {
     return messages.filter((message) => {
       if (message.authorName === "Runtime activity") return false;
@@ -342,6 +373,69 @@ export function ChatView({
     };
   }, [addMenuOpen]);
 
+  // Load a flat, capped file list from the bound context folder so `@` can
+  // reference real files. Re-runs when the folder changes.
+  useEffect(() => {
+    let cancelled = false;
+    if (!contextFolder) {
+      setAtFiles([]);
+      return undefined;
+    }
+    setAtLoading(true);
+    (async () => {
+      const out: AtFileEntry[] = [];
+      const maxFiles = 800;
+      const maxDepth = 4;
+      const skipDirs = new Set([".git", "node_modules", "target", "dist", ".next", ".venv", "__pycache__"]);
+      async function walk(dir: string, depth: number) {
+        if (cancelled || out.length >= maxFiles || depth > maxDepth) return;
+        let entries: DirectoryEntryInfo[] = [];
+        try {
+          entries = await readDirectory(dir);
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          if (cancelled || out.length >= maxFiles) return;
+          if (entry.isDir) {
+            if (skipDirs.has(entry.name) || entry.name.startsWith(".")) continue;
+            await walk(entry.path, depth + 1);
+          } else if (entry.isFile) {
+            const rel = entry.path.startsWith(contextFolder!)
+              ? entry.path.slice(contextFolder!.length).replace(/^[\\/]/, "")
+              : entry.name;
+            out.push({ name: entry.name, path: entry.path, rel });
+          }
+        }
+      }
+      await walk(contextFolder, 0);
+      if (!cancelled) {
+        setAtFiles(out);
+        setAtLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [contextFolder]);
+
+  useEffect(() => {
+    if (!atMenuOpen) return undefined;
+    function handleClickOutside(event: MouseEvent) {
+      if (atMenuRef.current && !atMenuRef.current.contains(event.target as Node)) {
+        setAtMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [atMenuOpen]);
+
+  useEffect(() => {
+    if (!atMenuOpen) return;
+    const active = atMenuRef.current?.querySelector(".slash-menu-item-active");
+    active?.scrollIntoView({ block: "nearest" });
+  }, [atSelectedIndex, atMenuOpen]);
+
   function sendCurrentDraft() {
     const text = draft.trim();
     if (text) history.push(text);
@@ -382,6 +476,7 @@ export function ChatView({
 
   function handleInputChange(event: ChangeEvent<HTMLTextAreaElement>) {
     const value = event.target.value;
+    const caret = event.target.selectionStart ?? value.length;
     onDraftChange(value);
     window.requestAnimationFrame(autoResize);
 
@@ -392,6 +487,43 @@ export function ChatView({
     } else if (slashMenuOpen) {
       setSlashMenuOpen(false);
     }
+
+    const atMatch = /(?:^|\s)@([^@\s]*)$/.exec(value.slice(0, caret));
+    if (atMatch) {
+      setAtMenuOpen(true);
+      setAtFilter(atMatch[1]);
+      setAtSelectedIndex(0);
+    } else if (atMenuOpen) {
+      setAtMenuOpen(false);
+    }
+  }
+
+  function handleAtSelect(file: AtFileEntry) {
+    setAtMenuOpen(false);
+    const el = inputRef.current;
+    const value = draft;
+    const caret = el?.selectionStart ?? value.length;
+    const before = value.slice(0, caret);
+    const after = value.slice(caret);
+    const atMatch = /(?:^|\s)@([^@\s]*)$/.exec(before);
+    const insertText = `@${file.rel || file.name} `;
+    let next: string;
+    let newCaret: number;
+    if (atMatch) {
+      const start = caret - atMatch[1].length - 1;
+      next = value.slice(0, start) + insertText + after;
+      newCaret = start + insertText.length;
+    } else {
+      next = before + insertText + after;
+      newCaret = before.length + insertText.length;
+    }
+    onDraftChange(next);
+    onAddAttachment(file.path);
+    window.requestAnimationFrame(() => {
+      autoResize();
+      el?.focus();
+      el?.setSelectionRange(newCaret, newCaret);
+    });
   }
 
   function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -440,6 +572,29 @@ export function ChatView({
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isImeComposing(event) || composingRef.current) return;
+
+    if (atMenuOpen && filteredAtFiles.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setAtSelectedIndex((index) => (index < filteredAtFiles.length - 1 ? index + 1 : 0));
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setAtSelectedIndex((index) => (index > 0 ? index - 1 : filteredAtFiles.length - 1));
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        handleAtSelect(filteredAtFiles[atSelectedIndex]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAtMenuOpen(false);
+        return;
+      }
+    }
 
     if (slashMenuOpen && filteredSlashItems.length > 0) {
       if (event.key === "ArrowDown") {
@@ -599,6 +754,41 @@ export function ChatView({
             </div>
           </div>
         )}
+        {atMenuOpen && (
+          <div className="slash-menu at-menu" ref={atMenuRef}>
+            <div className="slash-menu-header">
+              <AtSign size={12} />
+              引用文件
+            </div>
+            {!contextFolder ? (
+              <div className="at-menu-empty">
+                先用 <Plus size={12} /> 绑定上下文文件夹后即可用 @ 引用文件。
+              </div>
+            ) : atLoading && atFiles.length === 0 ? (
+              <div className="at-menu-empty">正在读取文件…</div>
+            ) : filteredAtFiles.length === 0 ? (
+              <div className="at-menu-empty">没有匹配的文件。</div>
+            ) : (
+              <div className="slash-menu-list">
+                {filteredAtFiles.map((file, index) => (
+                  <button
+                    className={`slash-menu-item ${index === atSelectedIndex ? "slash-menu-item-active" : ""}`}
+                    key={file.path}
+                    type="button"
+                    onClick={() => handleAtSelect(file)}
+                    onMouseEnter={() => setAtSelectedIndex(index)}
+                  >
+                    <span className="slash-menu-item-name at-menu-item-name">
+                      <FileIcon size={13} />
+                      {file.name}
+                    </span>
+                    <span className="slash-menu-item-desc">{file.rel}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {draftAttachments.length > 0 && (
           <div className="draft-attachments">
             {draftAttachments.map((attachment) => (
@@ -697,6 +887,18 @@ export function ChatView({
                   >
                     <Paperclip size={15} />
                     <span>文件…</span>
+                  </button>
+                  <button
+                    className="composer-add-menu-item"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      onPickAttachments();
+                    }}
+                  >
+                    <ImageIcon size={15} />
+                    <span>图片…</span>
                   </button>
                   <button
                     className="composer-add-menu-item"
