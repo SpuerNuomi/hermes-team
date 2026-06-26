@@ -770,8 +770,9 @@ button {
 }
 
 .recent-session {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -779,11 +780,19 @@ button {
   color: #d7e0ea;
   padding: 9px 10px;
   text-align: left;
+  cursor: pointer;
 }
 
 .recent-session:hover {
   background: #1c232c;
   border-color: #2a313c;
+}
+
+.recent-session-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
 }
 
 .recent-session strong,
@@ -795,12 +804,49 @@ button {
 }
 
 .recent-session strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 13px;
 }
 
 .recent-session span {
   color: #9aa6b2;
   font-size: 12px;
+}
+
+.recent-session-pin {
+  flex: none;
+  color: #ffd27d;
+}
+
+.recent-session-options {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: #9aa6b2;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  opacity: 0;
+}
+
+.recent-session:hover .recent-session-options,
+.recent-session:focus-within .recent-session-options {
+  opacity: 1;
+}
+
+.recent-session-options:hover {
+  color: #e6edf3;
+  background: #283039;
+}
+
+.recent-pinned-head {
+  color: #ffd27d;
 }
 
 .session-context-folder {
@@ -5369,6 +5415,183 @@ textarea:focus {
 .session-delete-warning {
   color: #ff9a93 !important;
   font-weight: 700;
+}
+
+.refresh-runtime.is-active {
+  color: #cfe9ff;
+  background: #16314a;
+  border-color: #2f5d86;
+}
+
+.session-card-body {
+  min-width: 0;
+}
+
+.session-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: #161b22;
+  border: 1px solid #2a313c;
+  border-radius: 8px;
+}
+
+.session-bulk-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 5px 9px;
+  color: #d7e0ea;
+  background: #0d1117;
+  border: 1px solid #2a313c;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.session-bulk-bar button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.session-bulk-bar .danger-action {
+  color: #ff9a93;
+  background: #2a1311;
+  border-color: #5c2620;
+}
+
+.session-bulk-count {
+  color: #9aa6b2;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.session-select-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  padding: 2px;
+  color: #9aa6b2;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.session-select-toggle:hover {
+  color: #cfe9ff;
+}
+
+.mini-list article.session-selected {
+  border-color: #2f5d86;
+  background: #13202d;
+}
+
+.mini-list article.session-pinned {
+  border-color: #4a4326;
+}
+
+.session-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-pin-badge {
+  flex: none;
+  color: #ffd27d;
+}
+
+.session-move-wrap {
+  position: relative;
+}
+
+.session-move-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  width: 220px;
+  padding: 6px;
+  background: #161b22;
+  border: 1px solid #2a313c;
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+}
+
+.session-move-menu-label,
+.sidebar-session-menu-label {
+  margin: 4px 8px;
+  color: #9aa6b2;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.session-move-menu-scroll,
+.sidebar-session-menu-scroll {
+  display: grid;
+  gap: 2px;
+  max-height: 184px;
+  overflow-y: auto;
+}
+
+.session-move-menu-empty,
+.sidebar-session-menu-empty {
+  padding: 8px;
+  color: #76808c;
+  font-size: 12px;
+}
+
+.session-move-menu-item,
+.sidebar-session-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  color: #d7e0ea;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font-size: 13px;
+  text-align: left;
+}
+
+.session-move-menu-item:hover,
+.sidebar-session-menu-item:hover {
+  background: #1c232c;
+}
+
+.session-move-menu-name,
+.sidebar-session-menu-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-move-menu-divider,
+.sidebar-session-menu-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: #2a313c;
+}
+
+.sidebar-session-menu {
+  position: fixed;
+  z-index: 80;
+  padding: 6px;
+  background: #161b22;
+  border: 1px solid #2a313c;
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
 
 .skill-manager {

@@ -80,6 +80,9 @@ import {
   listHermesCronScripts,
   createHermesProfile,
   deleteHermesTeamSession,
+  deleteHermesTeamSessions,
+  setHermesTeamSessionPinned,
+  setHermesTeamSessionFolder,
   deleteHermesProfile,
   discoverProviderModels,
   ensureHermesGateway,
@@ -2554,6 +2557,91 @@ export function App() {
     }
   };
 
+  const bulkDeleteSessions = async (sessionIds: string[]) => {
+    const ids = Array.from(new Set(sessionIds.map((id) => id.trim()).filter(Boolean)));
+    if (ids.length === 0) return;
+    if (ids.includes(state.workspace.id) && hasActiveSessionTasks(state)) {
+      setNotice("当前会话仍有运行中的 Agent，请先等待完成或终止任务后再删除。");
+      return;
+    }
+    const previous = sessionsRef.current;
+    const removed = new Set(ids);
+    setSessions((current) => current.filter((session) => !removed.has(session.id)));
+    try {
+      const next = await deleteHermesTeamSessions(ids);
+      setSessions(normalizeLoadedSessions(next));
+      if (removed.has(state.workspace.id)) {
+        const nextState = buildFreshOrchestrationState(mode);
+        parallelTrackerRef.current.clear(state.workspace.id);
+        serialTrackerRef.current.clear(state.workspace.id);
+        cancelledTaskIdsRef.current.clear();
+        setModeState(nextState.workspace.mode);
+        setState(nextState);
+        setDraft("");
+        setDraftAttachments([]);
+        setRuntimeEvents([]);
+        setActiveView("team");
+        void saveHermesTeamState(nextState).catch(() => undefined);
+      }
+      setNotice(`已删除 ${ids.length} 个会话。`);
+    } catch (error) {
+      setSessions(previous);
+      setNotice(`批量删除会话失败：${runtimeErrorMessage(error)}`);
+    }
+  };
+
+  const togglePinSession = async (sessionId: string) => {
+    const current = sessionsRef.current.find((session) => session.id === sessionId);
+    if (!current) return;
+    const nextPinned = !current.pinned;
+    const previous = sessionsRef.current;
+    setSessions((items) =>
+      items.map((session) =>
+        session.id === sessionId ? { ...session, pinned: nextPinned } : session,
+      ),
+    );
+    try {
+      const next = await setHermesTeamSessionPinned(sessionId, nextPinned);
+      setSessions(normalizeLoadedSessions(next));
+      setNotice(nextPinned ? "已置顶会话。" : "已取消置顶。");
+    } catch (error) {
+      setSessions(previous);
+      setNotice(`更新置顶状态失败：${runtimeErrorMessage(error)}`);
+    }
+  };
+
+  const moveSessionToFolder = async (sessionId: string, folder: string | null) => {
+    const normalized = folder?.trim() || null;
+    const current = sessionsRef.current.find((session) => session.id === sessionId);
+    if (current && (current.contextFolder ?? null) === normalized) return;
+    const previous = sessionsRef.current;
+    setSessions((items) =>
+      items.map((session) =>
+        session.id === sessionId
+          ? { ...session, contextFolder: normalized, folderEdited: true }
+          : session,
+      ),
+    );
+    try {
+      const next = await setHermesTeamSessionFolder(sessionId, normalized);
+      setSessions(normalizeLoadedSessions(next));
+      setNotice(normalized ? `已移动会话到：${basename(normalized)}` : "已移出分组。");
+    } catch (error) {
+      setSessions(previous);
+      setNotice(`移动会话失败：${runtimeErrorMessage(error)}`);
+    }
+  };
+
+  const pickFolderForSession = async (sessionId: string) => {
+    try {
+      const selected = await selectContextFolder();
+      if (!selected) return;
+      await moveSessionToFolder(sessionId, selected.path);
+    } catch (error) {
+      setNotice(`选择文件夹失败：${runtimeErrorMessage(error)}`);
+    }
+  };
+
   const updateAgentProfile = (agentId: string, hermesProfile: string) => {
     setState((current) => ({
       ...current,
@@ -4485,6 +4573,9 @@ export function App() {
             formatTime={formatTime}
             onRestore={(session) => void restoreSession(session)}
             onShowAll={() => setActiveView("sessions")}
+            onTogglePin={(sessionId) => void togglePinSession(sessionId)}
+            onMoveToFolder={(sessionId, folder) => void moveSessionToFolder(sessionId, folder)}
+            onPickFolder={(sessionId) => void pickFolderForSession(sessionId)}
           />
         )}
 
@@ -6899,6 +6990,10 @@ export function App() {
             onRefresh={() => void refreshLocalSessions()}
             onRename={(sessionId, title) => void renameSession(sessionId, title)}
             onDelete={(sessionId) => void deleteSession(sessionId)}
+            onBulkDelete={(sessionIds) => void bulkDeleteSessions(sessionIds)}
+            onTogglePin={(sessionId) => void togglePinSession(sessionId)}
+            onMoveToFolder={(sessionId, folder) => void moveSessionToFolder(sessionId, folder)}
+            onPickFolder={(sessionId) => void pickFolderForSession(sessionId)}
             desktopSessions={desktopSessions}
             desktopBusy={desktopSessionsBusy}
             onRefreshDesktopSessions={() => void refreshDesktopSessions()}
@@ -7541,13 +7636,16 @@ function normalizeLoadedState(saved: OrchestrationState): OrchestrationState {
 }
 
 function normalizeLoadedSessions(sessions: HermesTeamSessionSummary[]): HermesTeamSessionSummary[] {
-  return sessions.map((session) => {
+  const normalized = sessions.map((session) => {
     const state = normalizeLoadedState(session.state);
     const defaultAgentId = state.workspace.defaultAgentId ?? state.agents[0]?.id;
-    const contextFolder =
-      session.contextFolder ??
-      state.bindings.find((binding) => binding.agentId === defaultAgentId)?.workDir?.trim() ??
-      null;
+    // A manually moved session keeps its stored folder verbatim (including an
+    // explicit "no folder"); otherwise fall back to the agent binding's workDir.
+    const contextFolder = session.folderEdited
+      ? session.contextFolder ?? null
+      : session.contextFolder ??
+        state.bindings.find((binding) => binding.agentId === defaultAgentId)?.workDir?.trim() ??
+        null;
     return {
       ...session,
       title:
@@ -7555,12 +7653,19 @@ function normalizeLoadedSessions(sessions: HermesTeamSessionSummary[]): HermesTe
         session.title === LEGACY_AGENT_WORKSPACE_NAME
           ? DEFAULT_WORKSPACE_NAME
           : session.title,
+      pinned: session.pinned ?? false,
       contextFolder,
       state,
       messageCount: state.messages.length,
       taskCount: state.tasks.length,
     };
   });
+  // Mirror the backend ordering: pinned first, then most-recently-updated.
+  return normalized.sort(
+    (left, right) =>
+      Number(right.pinned ?? false) - Number(left.pinned ?? false) ||
+      right.updatedAt - left.updatedAt,
+  );
 }
 
 function sessionSummaryForSave(
@@ -7569,11 +7674,16 @@ function sessionSummaryForSave(
 ): HermesTeamSessionSummary {
   const summary = buildSessionSummary(state);
   const existing = sessions.find((session) => session.id === summary.id);
-  if (!existing?.titleEdited) return summary;
+  if (!existing) return summary;
+  // Carry over user-controlled fields (pin, manual move, edited title) so the
+  // periodic auto-save of the active session doesn't clobber them.
   return {
     ...summary,
-    title: existing.title,
-    titleEdited: true,
+    title: existing.titleEdited ? existing.title : summary.title,
+    titleEdited: existing.titleEdited,
+    pinned: existing.pinned ?? false,
+    folderEdited: existing.folderEdited,
+    contextFolder: existing.folderEdited ? existing.contextFolder ?? null : summary.contextFolder,
   };
 }
 

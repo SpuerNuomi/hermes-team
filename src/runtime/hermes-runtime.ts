@@ -519,6 +519,10 @@ export interface HermesTeamSessionSummary {
   workspaceId: string;
   title: string;
   titleEdited?: boolean;
+  /** Pinned sessions float to the top of the list and survive truncation. */
+  pinned?: boolean;
+  /** True once the context folder was set manually (pin/move), so auto-save keeps it. */
+  folderEdited?: boolean;
   messageCount: number;
   taskCount: number;
   updatedAt: number;
@@ -1296,6 +1300,29 @@ export async function updateHermesTeamSessionTitle(
 export async function deleteHermesTeamSession(sessionId: string): Promise<HermesTeamSessionSummary[]> {
   ensureTauriRuntime();
   return invoke<HermesTeamSessionSummary[]>("delete_hermes_team_session", { sessionId });
+}
+
+export async function deleteHermesTeamSessions(
+  sessionIds: string[],
+): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("delete_hermes_team_sessions", { sessionIds });
+}
+
+export async function setHermesTeamSessionPinned(
+  sessionId: string,
+  pinned: boolean,
+): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("set_hermes_team_session_pinned", { sessionId, pinned });
+}
+
+export async function setHermesTeamSessionFolder(
+  sessionId: string,
+  folder: string | null,
+): Promise<HermesTeamSessionSummary[]> {
+  ensureTauriRuntime();
+  return invoke<HermesTeamSessionSummary[]>("set_hermes_team_session_folder", { sessionId, folder });
 }
 
 export async function openExternalUrl(url: string): Promise<boolean> {

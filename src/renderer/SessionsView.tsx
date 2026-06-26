@@ -1,10 +1,27 @@
-import { Check, Database, FolderOpen, History, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import {
+  Check,
+  CheckSquare,
+  Database,
+  FolderInput,
+  FolderOpen,
+  History,
+  Pencil,
+  Pin,
+  PinOff,
+  Plus,
+  RefreshCw,
+  Search,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type {
   HermesStateSearchResult,
   HermesStateSessionSummary,
   HermesTeamSessionSummary,
 } from "../runtime/hermes-runtime";
+import { SessionMoveMenu, type SessionProject } from "./SessionMoveMenu";
 
 function folderName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
@@ -18,6 +35,10 @@ export function SessionsView({
   onRefresh,
   onRename,
   onDelete,
+  onBulkDelete,
+  onTogglePin,
+  onMoveToFolder,
+  onPickFolder,
   desktopSessions,
   desktopBusy,
   onRefreshDesktopSessions,
@@ -31,6 +52,10 @@ export function SessionsView({
   onRefresh: () => void;
   onRename: (sessionId: string, title: string) => void;
   onDelete: (sessionId: string) => void;
+  onBulkDelete: (sessionIds: string[]) => void;
+  onTogglePin: (sessionId: string) => void;
+  onMoveToFolder: (sessionId: string, folder: string | null) => void;
+  onPickFolder: (sessionId: string) => void;
   desktopSessions: HermesStateSessionSummary[];
   desktopBusy: boolean;
   onRefreshDesktopSessions: () => void;
@@ -43,6 +68,10 @@ export function SessionsView({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [desktopResults, setDesktopResults] = useState<HermesStateSearchResult[]>([]);
   const [desktopSearching, setDesktopSearching] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+  const [moveMenuId, setMoveMenuId] = useState<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
   const trimmedQuery = query.trim();
   const searchDesktopRef = useRef(onSearchDesktopSessions);
@@ -54,6 +83,32 @@ export function SessionsView({
         : sessions,
     [normalizedQuery, sessions],
   );
+
+  const projects = useMemo<SessionProject[]>(() => {
+    const byPath = new Map<string, SessionProject>();
+    for (const session of sessions) {
+      const folder = session.contextFolder?.trim();
+      if (folder && !byPath.has(folder)) {
+        byPath.set(folder, { path: folder, name: folderName(folder) });
+      }
+    }
+    return Array.from(byPath.values());
+  }, [sessions]);
+
+  // Keep selection in sync with the available sessions (e.g. after deletes).
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (current.size === 0) return current;
+      const valid = new Set(sessions.map((session) => session.id));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of current) {
+        if (valid.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [sessions]);
 
   // Full-text search over the profile's state.db (FTS5 when available), debounced
   // so we don't fire a sqlite query on every keystroke.
@@ -102,6 +157,56 @@ export function SessionsView({
     setEditingTitle("");
   };
 
+  const toggleSelectMode = () => {
+    setSelectMode((current) => {
+      const next = !current;
+      if (!next) {
+        setSelectedIds(new Set());
+        setPendingBulkDelete(false);
+      } else {
+        setEditingSessionId(null);
+        setPendingDeleteId(null);
+        setMoveMenuId(null);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelected = (sessionId: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const visibleIds = visibleSessions.map((session) => session.id);
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+
+  const toggleSelectAll = () => {
+    setSelectedIds((current) => {
+      if (allVisibleSelected) {
+        const next = new Set(current);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      }
+      const next = new Set(current);
+      for (const id of visibleIds) next.add(id);
+      return next;
+    });
+  };
+
+  const confirmBulkDelete = () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    onBulkDelete(ids);
+    setSelectedIds(new Set());
+    setPendingBulkDelete(false);
+    setSelectMode(false);
+  };
+
   return (
     <>
       <header className="workspace-header">
@@ -126,6 +231,15 @@ export function SessionsView({
               <Plus size={14} />
               <span>新建聊天</span>
             </button>
+            <button
+              className={`refresh-runtime ${selectMode ? "is-active" : ""}`}
+              type="button"
+              onClick={toggleSelectMode}
+              disabled={sessions.length === 0}
+            >
+              <CheckSquare size={14} />
+              <span>{selectMode ? "退出选择" : "选择"}</span>
+            </button>
             <button className="refresh-runtime" type="button" onClick={onRefresh}>
               <RefreshCw size={14} />
               <span>刷新</span>
@@ -145,13 +259,64 @@ export function SessionsView({
               </button>
             )}
           </label>
+          {selectMode && (
+            <div className="session-bulk-bar">
+              <button type="button" onClick={toggleSelectAll} disabled={visibleIds.length === 0}>
+                {allVisibleSelected ? <CheckSquare size={14} /> : <Square size={14} />}
+                <span>{allVisibleSelected ? "取消全选" : "全选"}</span>
+              </button>
+              <span className="session-bulk-count">已选 {selectedIds.size} 个</span>
+              {pendingBulkDelete ? (
+                <>
+                  <span className="session-delete-warning">确认删除选中的 {selectedIds.size} 个会话？</span>
+                  <button className="danger-action" type="button" onClick={confirmBulkDelete}>
+                    <Trash2 size={13} />
+                    <span>删除</span>
+                  </button>
+                  <button type="button" onClick={() => setPendingBulkDelete(false)}>
+                    <X size={13} />
+                    <span>取消</span>
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="danger-action"
+                  type="button"
+                  onClick={() => setPendingBulkDelete(true)}
+                  disabled={selectedIds.size === 0}
+                >
+                  <Trash2 size={13} />
+                  <span>删除所选</span>
+                </button>
+              )}
+            </div>
+          )}
           <div className="mini-list">
             {sessions.length === 0 ? (
               <p className="empty-note">还没有会话。发送第一条消息后会自动保存。</p>
             ) : visibleSessions.length > 0 ? (
               visibleSessions.map((session) => (
-                <article key={session.id}>
-                  <div>
+                <article
+                  key={session.id}
+                  className={`${session.pinned ? "session-pinned" : ""} ${
+                    selectMode && selectedIds.has(session.id) ? "session-selected" : ""
+                  }`}
+                >
+                  {selectMode && (
+                    <button
+                      type="button"
+                      className="session-select-toggle"
+                      onClick={() => toggleSelected(session.id)}
+                      aria-label={selectedIds.has(session.id) ? "取消选择" : "选择会话"}
+                    >
+                      {selectedIds.has(session.id) ? (
+                        <CheckSquare size={18} />
+                      ) : (
+                        <Square size={18} />
+                      )}
+                    </button>
+                  )}
+                  <div className="session-card-body">
                     {editingSessionId === session.id ? (
                       <input
                         className="session-title-input"
@@ -165,7 +330,12 @@ export function SessionsView({
                         autoFocus
                       />
                     ) : (
-                      <strong>{session.title}</strong>
+                      <strong className="session-title-row">
+                        {session.pinned && (
+                          <Pin size={12} className="session-pin-badge" aria-label="已置顶" />
+                        )}
+                        {session.title}
+                      </strong>
                     )}
                     <span>
                       {formatTime(session.updatedAt)} · {session.messageCount} messages
@@ -180,60 +350,99 @@ export function SessionsView({
                       <span className="session-delete-warning">确认删除这个会话？</span>
                     )}
                   </div>
-                  <div className="mini-actions">
-                    {editingSessionId === session.id ? (
-                      <>
-                        <button type="button" onClick={() => confirmRename(session.id)}>
-                          <Check size={13} />
-                          <span>保存</span>
-                        </button>
-                        <button type="button" onClick={cancelRename}>
-                          <X size={13} />
-                          <span>取消</span>
-                        </button>
-                      </>
-                    ) : pendingDeleteId === session.id ? (
-                      <>
-                        <button
-                          className="danger-action"
-                          type="button"
-                          onClick={() => {
-                            onDelete(session.id);
-                            setPendingDeleteId(null);
-                          }}
-                        >
-                          <Trash2 size={13} />
-                          <span>删除</span>
-                        </button>
-                        <button type="button" onClick={() => setPendingDeleteId(null)}>
-                          <X size={13} />
-                          <span>取消</span>
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button type="button" onClick={() => onRestore(session)}>
-                          恢复
-                        </button>
-                        <button type="button" onClick={() => startRename(session)} title="重命名">
-                          <Pencil size={13} />
-                          <span>重命名</span>
-                        </button>
-                        <button
-                          className="danger-action"
-                          type="button"
-                          onClick={() => {
-                            setEditingSessionId(null);
-                            setPendingDeleteId(session.id);
-                          }}
-                          title="删除"
-                        >
-                          <Trash2 size={13} />
-                          <span>删除</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
+                  {!selectMode && (
+                    <div className="mini-actions">
+                      {editingSessionId === session.id ? (
+                        <>
+                          <button type="button" onClick={() => confirmRename(session.id)}>
+                            <Check size={13} />
+                            <span>保存</span>
+                          </button>
+                          <button type="button" onClick={cancelRename}>
+                            <X size={13} />
+                            <span>取消</span>
+                          </button>
+                        </>
+                      ) : pendingDeleteId === session.id ? (
+                        <>
+                          <button
+                            className="danger-action"
+                            type="button"
+                            onClick={() => {
+                              onDelete(session.id);
+                              setPendingDeleteId(null);
+                            }}
+                          >
+                            <Trash2 size={13} />
+                            <span>删除</span>
+                          </button>
+                          <button type="button" onClick={() => setPendingDeleteId(null)}>
+                            <X size={13} />
+                            <span>取消</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => onRestore(session)}>
+                            恢复
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onTogglePin(session.id)}
+                            title={session.pinned ? "取消置顶" : "置顶"}
+                          >
+                            {session.pinned ? <PinOff size={13} /> : <Pin size={13} />}
+                            <span>{session.pinned ? "取消置顶" : "置顶"}</span>
+                          </button>
+                          <div className="session-move-wrap">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMoveMenuId((current) =>
+                                  current === session.id ? null : session.id,
+                                )
+                              }
+                              title="移动到分组"
+                            >
+                              <FolderInput size={13} />
+                              <span>移动</span>
+                            </button>
+                            {moveMenuId === session.id && (
+                              <SessionMoveMenu
+                                projects={projects}
+                                currentFolder={session.contextFolder ?? null}
+                                onClose={() => setMoveMenuId(null)}
+                                onMove={(folder) => {
+                                  onMoveToFolder(session.id, folder);
+                                  setMoveMenuId(null);
+                                }}
+                                onPickFolder={() => {
+                                  onPickFolder(session.id);
+                                  setMoveMenuId(null);
+                                }}
+                              />
+                            )}
+                          </div>
+                          <button type="button" onClick={() => startRename(session)} title="重命名">
+                            <Pencil size={13} />
+                            <span>重命名</span>
+                          </button>
+                          <button
+                            className="danger-action"
+                            type="button"
+                            onClick={() => {
+                              setEditingSessionId(null);
+                              setPendingDeleteId(session.id);
+                            }}
+                            title="删除"
+                          >
+                            <Trash2 size={13} />
+                            <span>删除</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </article>
               ))
             ) : (

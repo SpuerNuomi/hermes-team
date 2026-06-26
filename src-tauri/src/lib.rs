@@ -2931,6 +2931,30 @@ fn write_hermes_team_sessions(sessions: &[serde_json::Value]) -> Result<(), Stri
     fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
 }
 
+fn session_is_pinned(session: &serde_json::Value) -> bool {
+    session
+        .get("pinned")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn session_updated_at(session: &serde_json::Value) -> u64 {
+    session
+        .get("updatedAt")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
+}
+
+/// Pinned sessions float to the top (so they survive the 50-row truncation),
+/// then everything is ordered by most-recently-updated first.
+fn sort_hermes_team_sessions(sessions: &mut [serde_json::Value]) {
+    sessions.sort_by(|left, right| {
+        session_is_pinned(right)
+            .cmp(&session_is_pinned(left))
+            .then(session_updated_at(right).cmp(&session_updated_at(left)))
+    });
+}
+
 #[tauri::command]
 async fn save_hermes_team_session(
     session: serde_json::Value,
@@ -2943,18 +2967,76 @@ async fn save_hermes_team_session(
         .to_string();
     sessions.retain(|item| item.get("id").and_then(|value| value.as_str()) != Some(id.as_str()));
     sessions.insert(0, session);
-    sessions.sort_by(|left, right| {
-        let left_time = left
-            .get("updatedAt")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        let right_time = right
-            .get("updatedAt")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        right_time.cmp(&left_time)
-    });
+    sort_hermes_team_sessions(&mut sessions);
     sessions.truncate(50);
+    write_hermes_team_sessions(&sessions)?;
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn set_hermes_team_session_pinned(
+    session_id: String,
+    pinned: bool,
+) -> Result<Vec<serde_json::Value>, String> {
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Err("Session id 不能为空。".to_string());
+    }
+    let mut sessions = load_hermes_team_sessions().await?;
+    let mut found = false;
+    for session in sessions.iter_mut() {
+        if session.get("id").and_then(|value| value.as_str()) == Some(id) {
+            if let Some(object) = session.as_object_mut() {
+                object.insert("pinned".to_string(), serde_json::Value::Bool(pinned));
+            }
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(format!("未找到 session：{id}"));
+    }
+    sort_hermes_team_sessions(&mut sessions);
+    write_hermes_team_sessions(&sessions)?;
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn set_hermes_team_session_folder(
+    session_id: String,
+    folder: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Err("Session id 不能为空。".to_string());
+    }
+    let normalized = folder
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let mut sessions = load_hermes_team_sessions().await?;
+    let mut found = false;
+    for session in sessions.iter_mut() {
+        if session.get("id").and_then(|value| value.as_str()) == Some(id) {
+            if let Some(object) = session.as_object_mut() {
+                object.insert(
+                    "contextFolder".to_string(),
+                    match &normalized {
+                        Some(path) => serde_json::Value::String(path.clone()),
+                        None => serde_json::Value::Null,
+                    },
+                );
+                // Mark the folder as user-edited so periodic auto-save (which
+                // recomputes contextFolder from the agent binding) preserves
+                // this manual move instead of overwriting it.
+                object.insert("folderEdited".to_string(), serde_json::Value::Bool(true));
+            }
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(format!("未找到 session：{id}"));
+    }
     write_hermes_team_sessions(&sessions)?;
     Ok(sessions)
 }
@@ -3006,6 +3088,33 @@ async fn delete_hermes_team_session(session_id: String) -> Result<Vec<serde_json
     sessions.retain(|item| item.get("id").and_then(|value| value.as_str()) != Some(id));
     if sessions.len() == before {
         return Err(format!("未找到 session：{id}"));
+    }
+    write_hermes_team_sessions(&sessions)?;
+    Ok(sessions)
+}
+
+#[tauri::command]
+async fn delete_hermes_team_sessions(
+    session_ids: Vec<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let ids: std::collections::HashSet<String> = session_ids
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return Err("未选择要删除的 session。".to_string());
+    }
+    let mut sessions = load_hermes_team_sessions().await?;
+    let before = sessions.len();
+    sessions.retain(|item| {
+        item.get("id")
+            .and_then(|value| value.as_str())
+            .map(|id| !ids.contains(id))
+            .unwrap_or(true)
+    });
+    if sessions.len() == before {
+        return Err("未找到要删除的 session。".to_string());
     }
     write_hermes_team_sessions(&sessions)?;
     Ok(sessions)
@@ -11912,7 +12021,10 @@ pub fn run() {
             load_hermes_team_sessions,
             save_hermes_team_session,
             update_hermes_team_session_title,
+            set_hermes_team_session_pinned,
+            set_hermes_team_session_folder,
             delete_hermes_team_session,
+            delete_hermes_team_sessions,
             list_hermes_state_sessions,
             search_hermes_state_sessions,
             load_hermes_state_session,
