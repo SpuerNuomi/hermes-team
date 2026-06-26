@@ -9,6 +9,7 @@ import {
   GitBranch,
   FolderPlus,
   FileCode2,
+  ExternalLink,
   History,
   MoreHorizontal,
   Pause,
@@ -133,6 +134,10 @@ import {
   readHermesMemoryDetails,
   readHermesLog,
   readHermesMemoryContent,
+  listHermesMemoryProviders,
+  activateHermesMemoryProvider,
+  deactivateHermesMemoryProvider,
+  setHermesMemoryProviderEnv,
   readHermesPersona,
   writeHermesPersona,
   readHermesSkillContent,
@@ -204,6 +209,8 @@ import {
   type PersonaContent,
   type MemoryDetails,
   type MemorySummary,
+  type MemoryProvidersResult,
+  type MemoryProviderInfo,
   type MessagingPlatformInfo,
   type MessagingPlatformsResponse,
   type NetworkSettings,
@@ -850,6 +857,9 @@ export function App() {
   const [newMemoryEntry, setNewMemoryEntry] = useState("");
   const [editingMemoryIndex, setEditingMemoryIndex] = useState<number | null>(null);
   const [editingMemoryDraft, setEditingMemoryDraft] = useState("");
+  const [memoryProviders, setMemoryProviders] = useState<MemoryProvidersResult | null>(null);
+  const [memoryProviderEnvDraft, setMemoryProviderEnvDraft] = useState<Record<string, string>>({});
+  const [memoryProviderBusy, setMemoryProviderBusy] = useState<string | null>(null);
   const [skillQuery, setSkillQuery] = useState("");
   const [skillCatalogQuery, setSkillCatalogQuery] = useState("");
   const [skillDetail, setSkillDetail] = useState<InstalledSkillInfo | BundledSkillInfo | null>(null);
@@ -1736,6 +1746,9 @@ export function App() {
       setNewMemoryEntry("");
       setEditingMemoryIndex(null);
       setEditingMemoryDraft("");
+      setMemoryProviders(null);
+      setMemoryProviderEnvDraft({});
+      setMemoryProviderBusy(null);
       setModels([]);
       setActiveModel(null);
       setAuxiliaryModels([]);
@@ -1756,6 +1769,7 @@ export function App() {
         nextMemory,
         nextMemoryDetails,
         nextMemoryContent,
+        nextMemoryProviders,
         nextPersona,
         nextModels,
         nextActiveModel,
@@ -1773,6 +1787,7 @@ export function App() {
         readHermesMemorySummary({ profile: targetProfile }),
         readHermesMemoryDetails({ profile: targetProfile }),
         readHermesMemoryContent({ profile: targetProfile }),
+        listHermesMemoryProviders({ profile: targetProfile }),
         readHermesPersona({ profile: targetProfile }),
         listHermesModels(),
         getHermesModelConfig({ profile: targetProfile }),
@@ -1796,6 +1811,7 @@ export function App() {
         memory: nextMemoryContent.memory,
         user: nextMemoryContent.user,
       });
+      setMemoryProviders(nextMemoryProviders);
       setPersonaContent(nextPersona);
       setPersonaDraft(nextPersona.content);
       setModels(nextModels);
@@ -3666,6 +3682,57 @@ export function App() {
       setNotice(`删除 Memory 失败：${runtimeErrorMessage(error)}`);
     } finally {
       setCapabilityBusy(false);
+    }
+  };
+
+  const activateMemoryProvider = async (name: string) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMemoryProviderBusy(name);
+    try {
+      const next = await activateHermesMemoryProvider({ profile: targetProfile, name });
+      setMemoryProviders(next);
+      setNotice(`已将记忆后端切换为 ${name}。`);
+    } catch (error) {
+      setNotice(`激活记忆后端失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMemoryProviderBusy(null);
+    }
+  };
+
+  const deactivateMemoryProvider = async () => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMemoryProviderBusy("__deactivate__");
+    try {
+      const next = await deactivateHermesMemoryProvider({ profile: targetProfile });
+      setMemoryProviders(next);
+      setNotice("已停用外部记忆后端，仅使用内置记忆。");
+    } catch (error) {
+      setNotice(`停用记忆后端失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMemoryProviderBusy(null);
+    }
+  };
+
+  const saveMemoryProviderEnv = async (envKey: string) => {
+    const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+    setMemoryProviderBusy(envKey);
+    try {
+      const next = await setHermesMemoryProviderEnv({
+        profile: targetProfile,
+        envKey,
+        value: memoryProviderEnvDraft[envKey] ?? "",
+      });
+      setMemoryProviders(next);
+      setMemoryProviderEnvDraft((current) => {
+        const updated = { ...current };
+        delete updated[envKey];
+        return updated;
+      });
+      setNotice(`${envKey} 已写入当前 profile 的 .env。`);
+    } catch (error) {
+      setNotice(`保存 ${envKey} 失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setMemoryProviderBusy(null);
     }
   };
 
@@ -6985,6 +7052,121 @@ export function App() {
                       </label>
                     </div>
                     {personaContent && <p className="empty-note">{personaContent.path}</p>}
+
+                    <div className="memory-providers">
+                      <div className="memory-providers-head">
+                        <h3>外部记忆后端</h3>
+                        <p className="empty-note">
+                          内置 MEMORY.md / USER.md 始终生效；可额外选择一个外部记忆后端，写入当前 profile 的 <code>memory.provider</code>。
+                          {memoryProviders?.activeProvider
+                            ? ` 当前已激活：${memoryProviders.activeProvider}。`
+                            : " 当前未启用外部后端。"}
+                        </p>
+                      </div>
+                      {memoryProviders && !memoryProviders.pluginsDirExists && (
+                        <p className="empty-note">
+                          未检测到本地记忆插件目录（{memoryProviders.pluginsDir}）。仍可写入配置与密钥，待 Hermes 安装对应插件后即可生效。
+                        </p>
+                      )}
+                      {memoryProviders && memoryProviders.providers.length > 0 ? (
+                        <div className="memory-providers-grid">
+                          {memoryProviders.providers.map((provider: MemoryProviderInfo) => {
+                            const statusLabel = provider.active
+                              ? "已激活"
+                              : !provider.installed
+                                ? "未安装"
+                                : provider.configured
+                                  ? "可激活"
+                                  : "需配置密钥";
+                            return (
+                              <article
+                                className={`memory-provider-card${provider.active ? " memory-provider-active" : ""}`}
+                                key={provider.name}
+                              >
+                                <div className="memory-provider-card-head">
+                                  <div>
+                                    <strong>{provider.label}</strong>
+                                    <span className={`memory-provider-status memory-provider-status-${provider.active ? "active" : provider.installed ? (provider.configured ? "ready" : "needs") : "missing"}`}>
+                                      {statusLabel}
+                                    </span>
+                                  </div>
+                                  {provider.website && (
+                                    <button
+                                      className="refresh-runtime"
+                                      type="button"
+                                      title="打开后端官网"
+                                      onClick={() => void openExternalUrl(provider.website ?? "")}
+                                    >
+                                      <ExternalLink size={13} />
+                                    </button>
+                                  )}
+                                </div>
+                                <p className="memory-provider-desc">{provider.description}</p>
+                                {provider.envVars.length > 0 && (
+                                  <div className="memory-provider-env">
+                                    {provider.envVars.map((envVar) => (
+                                      <label key={envVar.key}>
+                                        <span>
+                                          {envVar.key}
+                                          <span className={`memory-provider-env-flag${envVar.present ? " present" : ""}`}>
+                                            {envVar.present ? "已配置" : "未配置"}
+                                          </span>
+                                        </span>
+                                        <div className="memory-provider-env-row">
+                                          <input
+                                            type="password"
+                                            value={memoryProviderEnvDraft[envVar.key] ?? ""}
+                                            placeholder={envVar.present ? "已写入（输入可覆盖）" : `输入 ${envVar.key}`}
+                                            onChange={(event) =>
+                                              setMemoryProviderEnvDraft((current) => ({
+                                                ...current,
+                                                [envVar.key]: event.target.value,
+                                              }))
+                                            }
+                                          />
+                                          <button
+                                            className="refresh-runtime"
+                                            type="button"
+                                            disabled={memoryProviderBusy !== null || (memoryProviderEnvDraft[envVar.key] ?? "").trim() === ""}
+                                            onClick={() => void saveMemoryProviderEnv(envVar.key)}
+                                          >
+                                            <Save size={13} />
+                                            <span>保存</span>
+                                          </button>
+                                        </div>
+                                      </label>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className="memory-provider-actions">
+                                  {provider.active ? (
+                                    <button
+                                      className="refresh-runtime"
+                                      type="button"
+                                      disabled={memoryProviderBusy !== null}
+                                      onClick={() => void deactivateMemoryProvider()}
+                                    >
+                                      <span>{memoryProviderBusy === "__deactivate__" ? "停用中..." : "停用"}</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      className="refresh-runtime"
+                                      type="button"
+                                      disabled={memoryProviderBusy !== null}
+                                      onClick={() => void activateMemoryProvider(provider.name)}
+                                    >
+                                      <span>{memoryProviderBusy === provider.name ? "激活中..." : "激活"}</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="empty-note">未发现可用的记忆后端。</p>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <p className="empty-note">尚未读取 Memory 摘要。</p>

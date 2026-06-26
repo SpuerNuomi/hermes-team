@@ -297,6 +297,29 @@ export interface MemoryContent {
   userPath: string;
 }
 
+export interface MemoryProviderEnvVar {
+  key: string;
+  present: boolean;
+}
+
+export interface MemoryProviderInfo {
+  name: string;
+  label: string;
+  description: string;
+  installed: boolean;
+  active: boolean;
+  configured: boolean;
+  website?: string | null;
+  envVars: MemoryProviderEnvVar[];
+}
+
+export interface MemoryProvidersResult {
+  activeProvider: string | null;
+  pluginsDir: string;
+  pluginsDirExists: boolean;
+  providers: MemoryProviderInfo[];
+}
+
 export interface PersonaContent {
   content: string;
   path: string;
@@ -985,6 +1008,45 @@ export async function removeHermesMemoryEntry(input: {
 }): Promise<MemoryActionResult> {
   ensureTauriRuntime();
   return invoke<MemoryActionResult>("remove_hermes_memory_entry", { input });
+}
+
+export async function listHermesMemoryProviders(params: {
+  profile?: string;
+} = {}): Promise<MemoryProvidersResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryProvidersResult>("list_hermes_memory_providers", {
+    profile: params.profile,
+  });
+}
+
+export async function activateHermesMemoryProvider(input: {
+  profile?: string;
+  name: string;
+}): Promise<MemoryProvidersResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryProvidersResult>("activate_hermes_memory_provider", {
+    input,
+  });
+}
+
+export async function deactivateHermesMemoryProvider(params: {
+  profile?: string;
+} = {}): Promise<MemoryProvidersResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryProvidersResult>("deactivate_hermes_memory_provider", {
+    profile: params.profile,
+  });
+}
+
+export async function setHermesMemoryProviderEnv(input: {
+  profile?: string;
+  envKey: string;
+  value: string;
+}): Promise<MemoryProvidersResult> {
+  ensureTauriRuntime();
+  return invoke<MemoryProvidersResult>("set_hermes_memory_provider_env", {
+    input,
+  });
 }
 
 export async function getHermesModelConfig(params: {

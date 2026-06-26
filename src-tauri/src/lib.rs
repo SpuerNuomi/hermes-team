@@ -411,6 +411,50 @@ struct MemoryActionResult {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MemoryProviderEnvVar {
+    key: String,
+    present: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MemoryProviderInfo {
+    name: String,
+    label: String,
+    description: String,
+    installed: bool,
+    active: bool,
+    configured: bool,
+    website: Option<String>,
+    env_vars: Vec<MemoryProviderEnvVar>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryProvidersResult {
+    active_provider: Option<String>,
+    plugins_dir: String,
+    plugins_dir_exists: bool,
+    providers: Vec<MemoryProviderInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivateMemoryProviderInput {
+    profile: Option<String>,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetMemoryProviderEnvInput {
+    profile: Option<String>,
+    env_key: String,
+    value: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MemoryContent {
@@ -2056,6 +2100,54 @@ async fn remove_hermes_memory_entry(
 ) -> Result<MemoryActionResult, String> {
     let profile = normalize_profile(input.profile.as_deref());
     remove_memory_entry(profile.as_deref(), input.index)
+}
+
+#[tauri::command]
+async fn list_hermes_memory_providers(
+    profile: Option<String>,
+) -> Result<MemoryProvidersResult, String> {
+    let profile = normalize_profile(profile.as_deref());
+    discover_memory_providers(profile.as_deref())
+}
+
+#[tauri::command]
+async fn activate_hermes_memory_provider(
+    input: ActivateMemoryProviderInput,
+) -> Result<MemoryProvidersResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let name = input.name.trim();
+    if !is_valid_memory_provider_name(name) {
+        return Err(format!("无效的 Memory provider 名称：{name}"));
+    }
+    set_memory_provider_config(profile.as_deref(), Some(name))?;
+    discover_memory_providers(profile.as_deref())
+}
+
+#[tauri::command]
+async fn deactivate_hermes_memory_provider(
+    profile: Option<String>,
+) -> Result<MemoryProvidersResult, String> {
+    let profile = normalize_profile(profile.as_deref());
+    set_memory_provider_config(profile.as_deref(), None)?;
+    discover_memory_providers(profile.as_deref())
+}
+
+#[tauri::command]
+async fn set_hermes_memory_provider_env(
+    input: SetMemoryProviderEnvInput,
+) -> Result<MemoryProvidersResult, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let env_key = input.env_key.trim();
+    if !is_valid_env_key(env_key) {
+        return Err(format!("无效环境变量名：{env_key}"));
+    }
+    let value = input.value.trim();
+    if value.is_empty() {
+        remove_env_value(profile.as_deref(), env_key)?;
+    } else {
+        upsert_env_value(profile.as_deref(), env_key, value)?;
+    }
+    discover_memory_providers(profile.as_deref())
 }
 
 #[tauri::command]
@@ -12139,6 +12231,193 @@ fn memory_paths(profile: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
     Ok((memories_dir.join("MEMORY.md"), memories_dir.join("USER.md")))
 }
 
+struct KnownMemoryProvider {
+    name: &'static str,
+    label: &'static str,
+    description: &'static str,
+    website: Option<&'static str>,
+    env_vars: &'static [&'static str],
+}
+
+// External memory backends Hermes can be configured to use alongside the
+// built-in MEMORY.md/USER.md store. Discovery reflects what is actually
+// installed under the Hermes plugins directory; this table only supplies
+// human-readable labels, descriptions and the env vars each backend reads.
+const KNOWN_MEMORY_PROVIDERS: &[KnownMemoryProvider] = &[
+    KnownMemoryProvider {
+        name: "honcho",
+        label: "Honcho",
+        description: "AI 原生跨会话用户建模，支持辩证式问答与语义检索。",
+        website: Some("https://app.honcho.dev"),
+        env_vars: &["HONCHO_API_KEY"],
+    },
+    KnownMemoryProvider {
+        name: "hindsight",
+        label: "Hindsight",
+        description: "知识图谱 + 多策略检索的长期记忆后端。",
+        website: Some("https://ui.hindsight.vectorize.io"),
+        env_vars: &["HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID"],
+    },
+    KnownMemoryProvider {
+        name: "mem0",
+        label: "Mem0",
+        description: "服务端 LLM 事实抽取，支持语义检索与自动去重。",
+        website: Some("https://app.mem0.ai"),
+        env_vars: &["MEM0_API_KEY"],
+    },
+    KnownMemoryProvider {
+        name: "retaindb",
+        label: "RetainDB",
+        description: "云端记忆 API，提供混合检索与 7 种记忆类型。",
+        website: Some("https://retaindb.com"),
+        env_vars: &["RETAINDB_API_KEY"],
+    },
+    KnownMemoryProvider {
+        name: "supermemory",
+        label: "Supermemory",
+        description: "语义长期记忆，支持画像召回与实体抽取。",
+        website: Some("https://supermemory.ai"),
+        env_vars: &["SUPERMEMORY_API_KEY"],
+    },
+    KnownMemoryProvider {
+        name: "holographic",
+        label: "Holographic",
+        description: "本地 SQLite 事实库，FTS5 检索与可信度评分（无需 API Key）。",
+        website: None,
+        env_vars: &[],
+    },
+    KnownMemoryProvider {
+        name: "openviking",
+        label: "OpenViking",
+        description: "会话管理记忆，提供分层检索与知识浏览。",
+        website: None,
+        env_vars: &["OPENVIKING_ENDPOINT", "OPENVIKING_API_KEY"],
+    },
+    KnownMemoryProvider {
+        name: "byterover",
+        label: "Byterover",
+        description: "持久化知识树，通过 brv CLI 分层检索。",
+        website: Some("https://app.byterover.dev"),
+        env_vars: &["BRV_API_KEY"],
+    },
+];
+
+fn memory_plugins_dir() -> Result<PathBuf, String> {
+    Ok(hermes_home()?
+        .join("hermes-agent")
+        .join("plugins")
+        .join("memory"))
+}
+
+fn is_valid_memory_provider_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+// Persist (or clear) the active memory backend in the profile's config.yaml
+// under the canonical `memory.provider` key that Hermes reads at runtime.
+fn set_memory_provider_config(profile: Option<&str>, name: Option<&str>) -> Result<(), String> {
+    let home = profile_home(profile)?;
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("config.yaml");
+    let mut content = fs::read_to_string(&path).unwrap_or_default();
+    content = match name {
+        Some(value) => upsert_block_child(&content, "memory", "provider", &quote_yaml(value)),
+        None => remove_block_child(&content, "memory", "provider"),
+    };
+    fs::write(&path, ensure_trailing_newline(&content))
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
+fn discover_memory_providers(profile: Option<&str>) -> Result<MemoryProvidersResult, String> {
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    let active = read_nested_yaml_scalar(&config, &["memory", "provider"])
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let env_content = read_profile_file(profile, ".env")?.unwrap_or_default();
+
+    let plugins_dir = memory_plugins_dir()?;
+    let plugins_dir_exists = plugins_dir.is_dir();
+    let mut installed_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if plugins_dir_exists {
+        if let Ok(entries) = fs::read_dir(&plugins_dir) {
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Some(name) = entry.file_name().to_str() {
+                    if !name.starts_with('_') {
+                        installed_names.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut providers: Vec<MemoryProviderInfo> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for known in KNOWN_MEMORY_PROVIDERS {
+        seen.insert(known.name.to_string());
+        let env_vars: Vec<MemoryProviderEnvVar> = known
+            .env_vars
+            .iter()
+            .map(|key| MemoryProviderEnvVar {
+                key: (*key).to_string(),
+                present: read_env_value(&env_content, key)
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false),
+            })
+            .collect();
+        let configured = env_vars.iter().all(|item| item.present);
+        providers.push(MemoryProviderInfo {
+            name: known.name.to_string(),
+            label: known.label.to_string(),
+            description: known.description.to_string(),
+            installed: installed_names.contains(known.name),
+            active: active.as_deref() == Some(known.name),
+            configured,
+            website: known.website.map(str::to_string),
+            env_vars,
+        });
+    }
+
+    // Surface any extra memory plugins present on disk that are not in the
+    // curated catalog so users on custom installs still see/activate them.
+    for name in &installed_names {
+        if seen.contains(name) {
+            continue;
+        }
+        providers.push(MemoryProviderInfo {
+            name: name.clone(),
+            label: name.clone(),
+            description: "在 Hermes 安装中发现的记忆插件。".to_string(),
+            installed: true,
+            active: active.as_deref() == Some(name.as_str()),
+            configured: true,
+            website: None,
+            env_vars: Vec::new(),
+        });
+    }
+
+    providers.sort_by(|a, b| {
+        b.active
+            .cmp(&a.active)
+            .then(b.installed.cmp(&a.installed))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    Ok(MemoryProvidersResult {
+        active_provider: active,
+        plugins_dir: plugins_dir.to_string_lossy().to_string(),
+        plugins_dir_exists,
+        providers,
+    })
+}
+
 fn memory_limits(profile: Option<&str>) -> Result<(usize, usize), String> {
     let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
     let memory_limit = read_nested_yaml_scalar(&config, &["memory", "memory_char_limit"])
@@ -12352,6 +12631,10 @@ pub fn run() {
             add_hermes_memory_entry,
             update_hermes_memory_entry,
             remove_hermes_memory_entry,
+            list_hermes_memory_providers,
+            activate_hermes_memory_provider,
+            deactivate_hermes_memory_provider,
+            set_hermes_memory_provider_env,
             get_app_settings,
             save_app_settings,
             get_update_status,
@@ -12500,6 +12783,63 @@ mod tests {
         assert!(!is_unknown_subcommand_error(
             "doctor: gateway is not reachable"
         ));
+    }
+
+    #[test]
+    fn validates_memory_provider_names() {
+        assert!(is_valid_memory_provider_name("mem0"));
+        assert!(is_valid_memory_provider_name("retain-db_2"));
+        assert!(!is_valid_memory_provider_name(""));
+        assert!(!is_valid_memory_provider_name("bad name"));
+        assert!(!is_valid_memory_provider_name("drop;table"));
+    }
+
+    #[test]
+    fn memory_provider_yaml_roundtrip() {
+        // Activating writes the canonical `memory.provider` key Hermes reads,
+        // preserving sibling memory settings; deactivating removes only it.
+        let base = "memory:\n  memory_char_limit: 2200\n";
+        let activated = upsert_block_child(base, "memory", "provider", &quote_yaml("mem0"));
+        assert_eq!(
+            read_nested_yaml_scalar(&activated, &["memory", "provider"]).as_deref(),
+            Some("mem0")
+        );
+        assert_eq!(
+            read_nested_yaml_scalar(&activated, &["memory", "memory_char_limit"]).as_deref(),
+            Some("2200")
+        );
+        let switched = upsert_block_child(&activated, "memory", "provider", &quote_yaml("honcho"));
+        assert_eq!(
+            read_nested_yaml_scalar(&switched, &["memory", "provider"]).as_deref(),
+            Some("honcho")
+        );
+        let cleared = remove_block_child(&switched, "memory", "provider");
+        assert!(read_nested_yaml_scalar(&cleared, &["memory", "provider"]).is_none());
+        assert_eq!(
+            read_nested_yaml_scalar(&cleared, &["memory", "memory_char_limit"]).as_deref(),
+            Some("2200")
+        );
+    }
+
+    #[test]
+    fn memory_provider_catalog_covers_known_backends() {
+        // The curated catalog must keep parity with the upstream backend set
+        // so discovery surfaces them even before any plugin is installed.
+        for name in [
+            "honcho",
+            "hindsight",
+            "mem0",
+            "retaindb",
+            "supermemory",
+            "holographic",
+            "openviking",
+            "byterover",
+        ] {
+            assert!(
+                KNOWN_MEMORY_PROVIDERS.iter().any(|p| p.name == name),
+                "missing catalog entry for {name}"
+            );
+        }
     }
 
     #[test]
