@@ -11,6 +11,8 @@ use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
+mod dashboard;
+
 static CANCELLED_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static SSH_TUNNEL_PROCESS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 static SSH_TUNNEL_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -425,6 +427,8 @@ struct RemoteConnectionConfig {
     remote_url: String,
     api_key: String,
     #[serde(default = "default_remote_chat_transport")]
+    local_chat_transport: String,
+    #[serde(default = "default_remote_chat_transport")]
     remote_chat_transport: String,
     #[serde(default = "default_remote_chat_transport")]
     ssh_chat_transport: String,
@@ -447,6 +451,7 @@ struct NetworkSettings {
     profile: Option<String>,
     force_ipv4: bool,
     proxy: String,
+    local_chat_transport: String,
     remote_chat_transport: String,
     ssh_chat_transport: String,
 }
@@ -3816,6 +3821,7 @@ async fn get_remote_connection_config() -> Result<RemoteConnectionConfig, String
 async fn save_remote_connection_config(
     mut config: RemoteConnectionConfig,
 ) -> Result<RemoteConnectionConfig, String> {
+    config.local_chat_transport = normalize_remote_chat_transport(&config.local_chat_transport);
     config.remote_chat_transport = normalize_remote_chat_transport(&config.remote_chat_transport);
     config.ssh_chat_transport = normalize_remote_chat_transport(&config.ssh_chat_transport);
     validate_connection_config(&config)?;
@@ -3838,6 +3844,8 @@ async fn save_network_settings(settings: NetworkSettings) -> Result<NetworkSetti
         settings.proxy.trim(),
     )?;
     let mut connection = read_connection_config()?;
+    connection.local_chat_transport =
+        normalize_remote_chat_transport(&settings.local_chat_transport);
     connection.remote_chat_transport =
         normalize_remote_chat_transport(&settings.remote_chat_transport);
     connection.ssh_chat_transport = normalize_remote_chat_transport(&settings.ssh_chat_transport);
@@ -4571,6 +4579,75 @@ async fn run_hermes_agent_stream(
             message: "Hermes stream started".to_string(),
         },
     )?;
+
+    // Dashboard WebSocket JSON-RPC transport. Selected per connection mode
+    // (auto/dashboard/legacy). `legacy` skips it; `dashboard` requires it and
+    // surfaces failures; `auto` tries it and falls back to the SSE chain below
+    // when the dashboard is unavailable.
+    let (connection_mode, transport_preference) = resolve_chat_transport_preference();
+    if transport_preference != "legacy" {
+        if let Some(runs_input) = user_content.as_str() {
+            match dashboard::stream_dashboard_chat(
+                &app,
+                &task_id,
+                &connection_mode,
+                &endpoint.base_url,
+                endpoint.auth.as_deref(),
+                normalize_profile(input.profile.as_deref()).as_deref(),
+                &model,
+                runs_input,
+                &conversation_history,
+                input.context_folder.as_deref(),
+            ) {
+                Ok(dashboard::DashboardOutcome::Completed(content)) => {
+                    emit_stream_event(
+                        &app,
+                        RuntimeStreamEvent {
+                            task_id: task_id.clone(),
+                            kind: "done".to_string(),
+                            delta: String::new(),
+                            content: content.clone(),
+                            message: "Hermes dashboard stream completed".to_string(),
+                        },
+                    )?;
+                    if content.trim().is_empty() {
+                        return Err("Hermes dashboard 流式响应中没有可显示内容。".to_string());
+                    }
+                    let events = take_stream_event_snapshot(&task_id);
+                    return Ok(RunHermesAgentOutput { content, events });
+                }
+                Ok(dashboard::DashboardOutcome::Unavailable(reason)) => {
+                    if transport_preference == "dashboard" {
+                        let _ = emit_stream_event(
+                            &app,
+                            RuntimeStreamEvent {
+                                task_id: task_id.clone(),
+                                kind: "error".to_string(),
+                                delta: String::new(),
+                                content: String::new(),
+                                message: format!("Hermes dashboard 传输不可用：{reason}"),
+                            },
+                        );
+                        return Err(format!("Hermes dashboard 传输不可用：{reason}"));
+                    }
+                    trace_stream_event("dashboard-fallback", &reason);
+                }
+                Err(error) => {
+                    let _ = emit_stream_event(
+                        &app,
+                        RuntimeStreamEvent {
+                            task_id: task_id.clone(),
+                            kind: "error".to_string(),
+                            delta: String::new(),
+                            content: String::new(),
+                            message: error.clone(),
+                        },
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    }
 
     if let Some(runs_input) = user_content.as_str() {
         // Match Hermes Desktop: prefer the native runs transport for normal
@@ -7233,6 +7310,7 @@ fn default_connection_config() -> RemoteConnectionConfig {
         mode: "local".to_string(),
         remote_url: "http://127.0.0.1:8642".to_string(),
         api_key: String::new(),
+        local_chat_transport: default_remote_chat_transport(),
         remote_chat_transport: default_remote_chat_transport(),
         ssh_chat_transport: default_remote_chat_transport(),
         ssh: SshConnectionConfig {
@@ -7260,6 +7338,19 @@ fn normalize_remote_chat_transport(value: &str) -> String {
     }
 }
 
+/// Resolve `(connection_mode, chat_transport_preference)` for the active
+/// connection. The preference is `auto`/`dashboard`/`legacy` and is picked
+/// from the field that matches the current mode.
+fn resolve_chat_transport_preference() -> (String, String) {
+    let config = read_connection_config().unwrap_or_else(|_| default_connection_config());
+    let preference = match config.mode.as_str() {
+        "remote" => normalize_remote_chat_transport(&config.remote_chat_transport),
+        "ssh" => normalize_remote_chat_transport(&config.ssh_chat_transport),
+        _ => normalize_remote_chat_transport(&config.local_chat_transport),
+    };
+    (config.mode, preference)
+}
+
 fn read_network_settings(profile: Option<&str>) -> Result<NetworkSettings, String> {
     let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
     let connection = read_connection_config()?;
@@ -7270,6 +7361,7 @@ fn read_network_settings(profile: Option<&str>) -> Result<NetworkSettings, Strin
         profile: profile.map(str::to_string),
         force_ipv4,
         proxy: read_nested_yaml_scalar(&config, &["network", "proxy"]).unwrap_or_default(),
+        local_chat_transport: normalize_remote_chat_transport(&connection.local_chat_transport),
         remote_chat_transport: normalize_remote_chat_transport(&connection.remote_chat_transport),
         ssh_chat_transport: normalize_remote_chat_transport(&connection.ssh_chat_transport),
     })
