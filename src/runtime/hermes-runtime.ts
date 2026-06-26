@@ -905,6 +905,21 @@ export async function setHermesReasoningEffort(input: {
   return invoke<ReasoningEffort>("set_hermes_reasoning_effort", { input });
 }
 
+export async function getHermesFastMode(params: {
+  profile?: string;
+} = {}): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("get_hermes_fast_mode", { profile: params.profile });
+}
+
+export async function setHermesFastMode(input: {
+  profile?: string;
+  enabled: boolean;
+}): Promise<boolean> {
+  ensureTauriRuntime();
+  return invoke<boolean>("set_hermes_fast_mode", { input });
+}
+
 export async function listHermesModels(): Promise<SavedModel[]> {
   ensureTauriRuntime();
   return invoke<SavedModel[]>("list_hermes_models");

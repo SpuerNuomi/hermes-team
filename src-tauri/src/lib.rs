@@ -560,6 +560,13 @@ struct SetReasoningEffortInput {
     value: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetFastModeInput {
+    profile: Option<String>,
+    enabled: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderKeyInfo {
@@ -1831,6 +1838,19 @@ async fn set_hermes_reasoning_effort(input: SetReasoningEffortInput) -> Result<S
     let value = normalize_reasoning_effort(&input.value);
     write_reasoning_effort_config(profile.as_deref(), &value)?;
     read_reasoning_effort_config(profile.as_deref())
+}
+
+#[tauri::command]
+async fn get_hermes_fast_mode(profile: Option<String>) -> Result<bool, String> {
+    let profile = normalize_profile(profile.as_deref());
+    read_service_tier_fast(profile.as_deref())
+}
+
+#[tauri::command]
+async fn set_hermes_fast_mode(input: SetFastModeInput) -> Result<bool, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    write_service_tier_config(profile.as_deref(), input.enabled)?;
+    read_service_tier_fast(profile.as_deref())
 }
 
 #[tauri::command]
@@ -7819,6 +7839,31 @@ fn reasoning_effort_for_profile(profile: Option<&str>) -> Result<Option<String>,
     })
 }
 
+fn read_service_tier_fast(profile: Option<&str>) -> Result<bool, String> {
+    let config = read_profile_file(profile, "config.yaml")?.unwrap_or_default();
+    let tier = read_nested_yaml_scalar(&config, &["agent", "service_tier"])
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    Ok(tier == "fast" || tier == "priority")
+}
+
+fn write_service_tier_config(profile: Option<&str>, enabled: bool) -> Result<(), String> {
+    let home = profile_home(profile)?;
+    fs::create_dir_all(&home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("config.yaml");
+    let mut content = fs::read_to_string(&path).unwrap_or_default();
+    content = upsert_block_child(
+        &content,
+        "agent",
+        "service_tier",
+        &quote_yaml(if enabled { "fast" } else { "normal" }),
+    );
+    fs::write(&path, ensure_trailing_newline(&content))
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
 fn write_model_config(
     profile: Option<&str>,
     provider: &str,
@@ -11186,6 +11231,8 @@ pub fn run() {
             get_hermes_model_config,
             get_hermes_reasoning_effort,
             set_hermes_reasoning_effort,
+            get_hermes_fast_mode,
+            set_hermes_fast_mode,
             list_hermes_models,
             save_hermes_model,
             remove_hermes_model,

@@ -2928,6 +2928,17 @@ textarea:focus {
   font-weight: 800;
 }
 
+.fast-mode-toggle {
+  flex: 0 0 auto;
+  max-width: none;
+}
+
+.fast-mode-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .chat-control-trigger span {
   min-width: 0;
   overflow: hidden;

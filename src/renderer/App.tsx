@@ -59,6 +59,7 @@ import { ChatView } from "./ChatView";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
 import { WebPreviewPanel } from "./WebPreviewPanel";
+import { useFastMode } from "./useFastMode";
 import { useReasoningEffort } from "./useReasoningEffort";
 import {
   addHermesMemoryEntry,
@@ -3493,6 +3494,46 @@ export function App() {
       .catch((error) => appendReply(`命令执行失败：${runtimeErrorMessage(error)}`));
   };
 
+  const runFastModeCommand = (content: string) => {
+    const workspaceId = state.workspace.id;
+    const agent = state.agents[0];
+    const now = Date.now();
+    const userMessage: Message = {
+      id: `local-user-${now}`,
+      workspaceId,
+      authorKind: "user",
+      authorName: "You",
+      content,
+      createdAt: now,
+    };
+    setState((current) => ({ ...current, messages: [...current.messages, userMessage] }));
+    setDraft("");
+    setDraftAttachments([]);
+    const next = !fastMode;
+    const appendReply = (replyContent: string) => {
+      const replyMessage: Message = {
+        id: `local-agent-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        workspaceId,
+        authorKind: "agent",
+        authorId: agent?.id,
+        authorName: agent?.name ?? "Hermes",
+        content: replyContent,
+        createdAt: Date.now(),
+        replyToMessageId: userMessage.id,
+      };
+      setState((current) => ({ ...current, messages: [...current.messages, replyMessage] }));
+    };
+    void setFastMode(next)
+      .then(() =>
+        appendReply(
+          next
+            ? "**Fast Mode：开启** — 已为当前聊天 Profile 启用优先处理（更低延迟）。"
+            : "**Fast Mode：关闭** — 已恢复标准处理。",
+        ),
+      )
+      .catch((error) => appendReply(`切换 Fast Mode 失败：${runtimeErrorMessage(error)}`));
+  };
+
   const sendMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? draft).trim();
     if (!content && draftAttachments.length === 0) return;
@@ -3515,6 +3556,10 @@ export function App() {
       setDraft("");
       setDraftAttachments([]);
       clearChat();
+      return;
+    }
+    if (slashName === "/fast") {
+      runFastModeCommand(content);
       return;
     }
     if (isLocalReplyCommand(content)) {
@@ -3820,6 +3865,20 @@ export function App() {
   const selectReasoningEffort = async (value: typeof reasoningEffort) => {
     await setReasoningEffort(value);
     setNotice(`Reasoning effort 已保存到聊天 Profile「${currentChatProfile}」：${value}。`);
+  };
+  const { fastMode, setFastMode } = useFastMode(currentChatProfile);
+  const toggleFastMode = async () => {
+    const next = !fastMode;
+    try {
+      await setFastMode(next);
+      setNotice(
+        next
+          ? `Fast Mode 已开启（聊天 Profile「${currentChatProfile}」优先处理、更低延迟）。`
+          : `Fast Mode 已关闭（聊天 Profile「${currentChatProfile}」恢复标准处理）。`,
+      );
+    } catch (error) {
+      setNotice(`切换 Fast Mode 失败：${runtimeErrorMessage(error)}`);
+    }
   };
   const activeRuntimeEvent = activeTask
     ? runtimeEvents.find((event) => event.taskId === activeTask.id)
@@ -6204,6 +6263,7 @@ export function App() {
           worktreeVisible={worktreeVisible}
           activeModel={activeModel}
           reasoningEffort={reasoningEffort}
+          fastMode={fastMode}
           modelBusy={modelBusy}
           formatTime={formatTime}
           onDraftChange={setDraft}
@@ -6220,6 +6280,7 @@ export function App() {
           onSelectProfile={selectChatProfile}
           onSelectModel={(model) => void activateChatModel(model)}
           onSelectReasoningEffort={selectReasoningEffort}
+          onToggleFastMode={() => void toggleFastMode()}
           onOpenModels={() => {
             setActiveView("settings");
             setActiveSettingsPanel("models");

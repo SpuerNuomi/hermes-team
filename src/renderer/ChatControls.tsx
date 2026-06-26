@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Settings } from "lucide-react";
+import { Check, ChevronDown, Settings, Zap } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReasoningEffort } from "../core/reasoning";
 import type { ActiveModelConfig, HermesProfileInfo, SavedModel } from "../runtime/hermes-runtime";
@@ -10,10 +10,12 @@ export const ChatControls = memo(function ChatControls({
   currentProfile,
   activeModel,
   reasoningEffort,
+  fastMode,
   busy,
   onSelectProfile,
   onSelectModel,
   onSelectReasoningEffort,
+  onToggleFastMode,
   onOpenModels,
 }: {
   profiles: HermesProfileInfo[];
@@ -21,10 +23,12 @@ export const ChatControls = memo(function ChatControls({
   currentProfile: string;
   activeModel: ActiveModelConfig | null;
   reasoningEffort: ReasoningEffort;
+  fastMode: boolean;
   busy: boolean;
   onSelectProfile: (profile: string) => void;
   onSelectModel: (model: SavedModel) => void;
   onSelectReasoningEffort: (value: ReasoningEffort) => void | Promise<void>;
+  onToggleFastMode: () => void | Promise<void>;
   onOpenModels: () => void;
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
@@ -191,6 +195,18 @@ export const ChatControls = memo(function ChatControls({
         value={reasoningEffort}
         onChange={onSelectReasoningEffort}
       />
+
+      <button
+        className={`chat-control-trigger fast-mode-toggle ${fastMode ? "active" : ""}`}
+        disabled={busy}
+        type="button"
+        title={fastMode ? "Fast Mode 已开启（优先处理）" : "开启 Fast Mode（优先处理、更低延迟）"}
+        aria-pressed={fastMode}
+        onClick={() => void onToggleFastMode()}
+      >
+        <Zap size={12} />
+        <span>Fast</span>
+      </button>
     </div>
   );
 });

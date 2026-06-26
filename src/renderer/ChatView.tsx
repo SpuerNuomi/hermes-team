@@ -204,6 +204,7 @@ export function ChatView({
   worktreeVisible,
   activeModel,
   reasoningEffort,
+  fastMode,
   modelBusy,
   formatTime,
   onDraftChange,
@@ -221,6 +222,7 @@ export function ChatView({
   onSelectProfile,
   onSelectModel,
   onSelectReasoningEffort,
+  onToggleFastMode,
   onOpenModels,
   onSend,
   onStop,
@@ -246,6 +248,7 @@ export function ChatView({
   worktreeVisible: boolean;
   activeModel: ActiveModelConfig | null;
   reasoningEffort: ReasoningEffort;
+  fastMode: boolean;
   modelBusy: boolean;
   formatTime: (timestamp: number) => string;
   onDraftChange: (value: string) => void;
@@ -263,6 +266,7 @@ export function ChatView({
   onSelectProfile: (profile: string) => void;
   onSelectModel: (model: SavedModel) => void;
   onSelectReasoningEffort: (value: ReasoningEffort) => void | Promise<void>;
+  onToggleFastMode: () => void | Promise<void>;
   onOpenModels: () => void;
   onSend: (contentOverride?: string) => void;
   onStop: () => void;
@@ -1106,10 +1110,12 @@ export function ChatView({
               currentProfile={currentProfile}
               activeModel={activeModel}
               reasoningEffort={reasoningEffort}
+              fastMode={fastMode}
               busy={modelBusy}
               onSelectProfile={onSelectProfile}
               onSelectModel={onSelectModel}
               onSelectReasoningEffort={onSelectReasoningEffort}
+              onToggleFastMode={onToggleFastMode}
               onOpenModels={onOpenModels}
             />
             <div className="chat-input-toolbar-spacer" />
