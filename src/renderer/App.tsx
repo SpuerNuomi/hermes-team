@@ -60,6 +60,8 @@ import {
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
+import ProfileAvatar from "./ProfileAvatar";
+import ProfileDetailModal from "./ProfileDetailModal";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
 import { WebPreviewPanel } from "./WebPreviewPanel";
@@ -862,6 +864,7 @@ export function App() {
   const [credentialPool, setCredentialPool] = useState<CredentialPoolGroup[]>([]);
   const [poolForm, setPoolForm] = useState<PoolForm>(emptyPoolForm);
   const [profileForm, setProfileForm] = useState<ProfileForm>(emptyProfileForm);
+  const [detailProfileName, setDetailProfileName] = useState<string | null>(null);
   const [mcpForm, setMcpForm] = useState<McpForm>(emptyMcpForm);
   const [cronJobs, setCronJobs] = useState<CronJobInfo[]>([]);
   const [cronForm, setCronForm] = useState<CronJobForm>(emptyCronJobForm);
@@ -2722,13 +2725,15 @@ export function App() {
     }
   };
 
-  const deleteProfileByName = async (profile: HermesProfileInfo) => {
+  const deleteProfileByName = async (profile: HermesProfileInfo, skipConfirm = false) => {
     if (profile.isDefault) {
       setNotice("default profile 不能删除。");
       return;
     }
-    const confirmed = window.confirm(`删除 Profile「${profile.name}」？该操作会调用 Hermes CLI 删除对应 profile。`);
-    if (!confirmed) return;
+    if (!skipConfirm) {
+      const confirmed = window.confirm(`删除 Profile「${profile.name}」？该操作会调用 Hermes CLI 删除对应 profile。`);
+      if (!confirmed) return;
+    }
     setProfileBusy(true);
     try {
       const next = await deleteHermesProfile({ name: profile.name });
@@ -4908,6 +4913,12 @@ export function App() {
                       profiles.map((profile) => (
                         <article className={`profile-card ${profile.active ? "active" : ""}`} key={profile.name}>
                           <div className="profile-card-head">
+                            <ProfileAvatar
+                              name={profile.name}
+                              color={profile.color}
+                              avatar={profile.avatar}
+                              size={40}
+                            />
                             <div>
                               <strong>{profile.name}</strong>
                               <span>{profile.provider || "auto"} · {profile.model || "no model"}</span>
@@ -4923,6 +4934,10 @@ export function App() {
                             <span>{profile.hasApiKey ? "api key" : "no key"}</span>
                           </div>
                           <div className="model-card-actions profile-card-actions">
+                            <button type="button" onClick={() => setDetailProfileName(profile.name)}>
+                              <Settings size={14} />
+                              <span>详情</span>
+                            </button>
                             <button disabled={profileBusy || profile.active} type="button" onClick={() => void activateProfile(profile.name)}>
                               <Plug size={14} />
                               <span>{profile.active ? "已激活" : "激活"}</span>
@@ -7353,6 +7368,32 @@ export function App() {
           onSkip={finishOnboarding}
         />
       )}
+      {detailProfileName && (() => {
+        const detailProfile = profiles.find((item) => item.name === detailProfileName);
+        if (!detailProfile) return null;
+        return (
+          <ProfileDetailModal
+            profile={detailProfile}
+            busy={profileBusy}
+            onClose={() => setDetailProfileName(null)}
+            onProfilesChanged={(next) => {
+              if (next.length > 0) setProfiles(next);
+            }}
+            onRefresh={() => void refreshProfiles()}
+            onActivate={(name, openChat) => {
+              void activateProfile(name, openChat);
+              if (openChat) setDetailProfileName(null);
+            }}
+            onDeleted={(name) => {
+              const target = profiles.find((item) => item.name === name);
+              if (target) {
+                void deleteProfileByName(target, true);
+              }
+              setDetailProfileName(null);
+            }}
+          />
+        );
+      })()}
     </main>
   );
 }

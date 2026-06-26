@@ -62,6 +62,34 @@ struct HermesProfileInfo {
     has_soul: bool,
     skill_count: usize,
     gateway_running: bool,
+    color: Option<String>,
+    avatar: Option<String>,
+}
+
+/// Local presentation metadata for a profile (accent color + avatar data URL).
+/// Persisted as `profile-meta.json` inside the profile home so it survives
+/// restarts without touching the real Hermes runtime config.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileMeta {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    avatar: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetProfileColorInput {
+    name: String,
+    color: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetProfileAvatarInput {
+    name: String,
+    avatar: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1154,6 +1182,7 @@ async fn list_hermes_profiles() -> Result<Vec<HermesProfileInfo>, String> {
                 }
             });
             let gateway_running = gateway_is_ready(&gateway_url, api_key.as_deref());
+            let meta = read_profile_meta(&home);
             HermesProfileInfo {
                 gateway_url,
                 active: name == active,
@@ -1167,6 +1196,8 @@ async fn list_hermes_profiles() -> Result<Vec<HermesProfileInfo>, String> {
                 has_soul: home.join("SOUL.md").exists(),
                 skill_count: count_profile_skills(&home),
                 gateway_running,
+                color: meta.color,
+                avatar: meta.avatar,
             }
         })
         .collect())
@@ -1766,6 +1797,74 @@ async fn write_hermes_persona(input: WritePersonaInput) -> Result<PersonaContent
     fs::write(&path, ensure_trailing_newline(&input.content))
         .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))?;
     read_hermes_persona(input.profile).await
+}
+
+/// Read `profile-meta.json` (accent color + avatar) from a profile home,
+/// returning defaults when the file is absent or malformed.
+fn read_profile_meta(home: &Path) -> ProfileMeta {
+    let path = home.join("profile-meta.json");
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<ProfileMeta>(&raw).unwrap_or_default(),
+        Err(_) => ProfileMeta::default(),
+    }
+}
+
+/// Persist `profile-meta.json` for the given profile home, creating the
+/// directory if needed.
+fn write_profile_meta(home: &Path, meta: &ProfileMeta) -> Result<(), String> {
+    fs::create_dir_all(home)
+        .map_err(|error| format!("创建 {} 失败：{error}", home.to_string_lossy()))?;
+    let path = home.join("profile-meta.json");
+    let body = serde_json::to_string_pretty(meta)
+        .map_err(|error| format!("序列化 profile-meta 失败：{error}"))?;
+    fs::write(&path, body)
+        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+}
+
+#[tauri::command]
+async fn set_hermes_profile_color(
+    input: SetProfileColorInput,
+) -> Result<Vec<HermesProfileInfo>, String> {
+    let profile = normalize_profile(Some(&input.name));
+    let home = profile_home(profile.as_deref())?;
+    let mut meta = read_profile_meta(&home);
+    meta.color = input
+        .color
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    write_profile_meta(&home, &meta)?;
+    list_hermes_profiles().await
+}
+
+#[tauri::command]
+async fn set_hermes_profile_avatar(
+    input: SetProfileAvatarInput,
+) -> Result<Vec<HermesProfileInfo>, String> {
+    let avatar = input.avatar.trim().to_string();
+    if avatar.is_empty() {
+        return Err("头像内容不能为空。".to_string());
+    }
+    if !avatar.starts_with("data:image/") {
+        return Err("头像必须是 data:image/* data URL。".to_string());
+    }
+    let profile = normalize_profile(Some(&input.name));
+    let home = profile_home(profile.as_deref())?;
+    let mut meta = read_profile_meta(&home);
+    meta.avatar = Some(avatar);
+    write_profile_meta(&home, &meta)?;
+    list_hermes_profiles().await
+}
+
+#[tauri::command]
+async fn remove_hermes_profile_avatar(
+    input: ProfileNameInput,
+) -> Result<Vec<HermesProfileInfo>, String> {
+    let profile = normalize_profile(Some(&input.name));
+    let home = profile_home(profile.as_deref())?;
+    let mut meta = read_profile_meta(&home);
+    meta.avatar = None;
+    write_profile_meta(&home, &meta)?;
+    list_hermes_profiles().await
 }
 
 #[tauri::command]
@@ -11975,6 +12074,9 @@ pub fn run() {
             write_hermes_memory_content,
             read_hermes_persona,
             write_hermes_persona,
+            set_hermes_profile_color,
+            set_hermes_profile_avatar,
+            remove_hermes_profile_avatar,
             add_hermes_memory_entry,
             update_hermes_memory_entry,
             remove_hermes_memory_entry,

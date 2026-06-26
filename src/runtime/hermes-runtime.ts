@@ -62,6 +62,8 @@ export interface HermesProfileInfo {
   hasSoul: boolean;
   skillCount: number;
   gatewayRunning: boolean;
+  color?: string | null;
+  avatar?: string | null;
 }
 
 export interface HermesInstallStatus {
@@ -652,6 +654,29 @@ export async function setActiveHermesProfile(input: {
 }): Promise<HermesProfileInfo[]> {
   ensureTauriRuntime();
   return invoke<HermesProfileInfo[]>("set_active_hermes_profile", { input });
+}
+
+export async function setHermesProfileColor(input: {
+  name: string;
+  color: string | null;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("set_hermes_profile_color", { input });
+}
+
+export async function setHermesProfileAvatar(input: {
+  name: string;
+  avatar: string;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("set_hermes_profile_avatar", { input });
+}
+
+export async function removeHermesProfileAvatar(input: {
+  name: string;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("remove_hermes_profile_avatar", { input });
 }
 
 export async function inspectHermesInstall(): Promise<HermesInstallStatus> {
