@@ -65,6 +65,7 @@ import { ChatView } from "./ChatView";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
 import ProfileDetailModal from "./ProfileDetailModal";
+import UpdateDialog from "./UpdateDialog";
 import { SessionsView } from "./SessionsView";
 import { SidebarRecentSessions } from "./SidebarRecentSessions";
 import { WebPreviewPanel } from "./WebPreviewPanel";
@@ -160,6 +161,8 @@ import {
   searchHermesSkills,
   setActiveHermesProfile,
   setAutoUpgradeEnabled,
+  setAutoCheckEnabled,
+  setUpdateReleaseRepo,
   setHermesToolsetEnabled,
   resumeHermesCronJob,
   runOAuthProviderLogin,
@@ -832,6 +835,9 @@ export function App() {
   const [networkSettings, setNetworkSettings] = useState<NetworkSettings>(defaultNetworkSettings);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateOutput, setUpdateOutput] = useState("");
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [releaseRepoDraft, setReleaseRepoDraft] = useState("");
+  const startupUpdateCheckedRef = useRef(false);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
   const [mcpCatalog, setMcpCatalog] = useState<McpCatalogEntry[]>([]);
@@ -1599,6 +1605,7 @@ export function App() {
     try {
       const status = await getUpdateStatus();
       setUpdateStatus(status);
+      setReleaseRepoDraft(status.releaseRepo);
       return status;
     } catch (error) {
       setNotice(`读取更新状态失败：${runtimeErrorMessage(error)}`);
@@ -1608,14 +1615,18 @@ export function App() {
     }
   };
 
-  const checkUpdatesNow = async () => {
+  const checkUpdatesNow = async (openDialog = true) => {
     setUpdateBusy(true);
     try {
       const status = await checkForAppUpdates();
       setUpdateStatus(status);
+      setReleaseRepoDraft(status.releaseRepo);
       setNotice(status.message);
+      if (openDialog) setUpdateDialogOpen(true);
+      return status;
     } catch (error) {
       setNotice(`检查更新失败：${runtimeErrorMessage(error)}`);
+      return null;
     } finally {
       setUpdateBusy(false);
     }
@@ -1635,6 +1646,45 @@ export function App() {
     } finally {
       setUpdateBusy(false);
     }
+  };
+
+  const toggleAutoCheck = async (enabled: boolean) => {
+    if (!updateStatus) return;
+    setUpdateStatus({ ...updateStatus, autoCheck: enabled });
+    if (!isTauriRuntimeAvailable()) return;
+    setUpdateBusy(true);
+    try {
+      const status = await setAutoCheckEnabled(enabled);
+      setUpdateStatus(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(`保存启动检查偏好失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const saveReleaseRepo = async () => {
+    const repo = releaseRepoDraft.trim();
+    if (!repo || repo === updateStatus?.releaseRepo) return;
+    if (!isTauriRuntimeAvailable()) return;
+    setUpdateBusy(true);
+    try {
+      const status = await setUpdateReleaseRepo(repo);
+      setUpdateStatus(status);
+      setReleaseRepoDraft(status.releaseRepo);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(`保存 release 源失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const openReleaseLink = (url: string) => {
+    void openExternalUrl(url).catch((error) =>
+      setNotice(`打开下载页失败：${runtimeErrorMessage(error)}`),
+    );
   };
 
   const runHermesUpdateNow = async () => {
@@ -2346,7 +2396,14 @@ export function App() {
       setStateReady(true);
       void refreshAppSettings();
       void refreshNetworkSettings();
-      void refreshUpdateStatus();
+      void refreshUpdateStatus().then((status) => {
+        if (startupUpdateCheckedRef.current) return;
+        if (!status?.autoCheck) return;
+        startupUpdateCheckedRef.current = true;
+        void checkUpdatesNow(false).then((checked) => {
+          if (checked?.updateAvailable) setUpdateDialogOpen(true);
+        });
+      });
       void refreshRemoteConnection();
         void loadHermesTeamSessions()
           .then((items) => setSessions(normalizeLoadedSessions(items)))
@@ -7000,7 +7057,7 @@ export function App() {
                   <div className="settings-actions">
                     <button className="refresh-runtime" disabled={updateBusy} type="button" onClick={() => void checkUpdatesNow()}>
                       <RefreshCw size={14} />
-                      <span>{updateBusy ? "检查中..." : "检查版本"}</span>
+                      <span>{updateBusy ? "检查中..." : "检查桌面更新"}</span>
                     </button>
                     <button className="refresh-runtime" disabled={updateBusy} type="button" onClick={() => void runHermesUpdateNow()}>
                       <Upload size={14} />
@@ -7012,10 +7069,51 @@ export function App() {
                   <div className="update-panel">
                     <div className="settings-rows">
                       <StatusRow label="App Version" value={updateStatus.appVersion} ok />
+                      <StatusRow
+                        label="最新版本"
+                        value={updateStatus.latestVersion ?? (updateStatus.checked ? "未知" : "尚未检查")}
+                        ok={!updateStatus.updateAvailable && updateStatus.checkOk}
+                      />
                       <StatusRow label="Hermes CLI" value={updateStatus.hermesVersion ?? "未找到"} ok={Boolean(updateStatus.hermesVersion)} />
                       <StatusRow label="Last Check" value={formatTime(updateStatus.lastCheckedAt)} ok />
                       <StatusRow label="Update Log" value={updateStatus.logPath} ok />
                     </div>
+                    <label className="settings-field">
+                      <span>
+                        <strong>Release 源（GitHub owner/repo）</strong>
+                        <small>桌面更新检查的发布源；Hermes Team 暂无独立 release 仓库，默认对齐桌面基线发布流。</small>
+                      </span>
+                      <div className="settings-inline-input">
+                        <input
+                          value={releaseRepoDraft}
+                          type="text"
+                          spellCheck={false}
+                          placeholder="owner/repo"
+                          onChange={(event) => setReleaseRepoDraft(event.target.value)}
+                          onBlur={() => void saveReleaseRepo()}
+                        />
+                        <button
+                          className="refresh-runtime"
+                          disabled={updateBusy || !releaseRepoDraft.trim() || releaseRepoDraft.trim() === updateStatus.releaseRepo}
+                          type="button"
+                          onClick={() => void saveReleaseRepo()}
+                        >
+                          <Save size={14} />
+                          <span>保存</span>
+                        </button>
+                      </div>
+                    </label>
+                    <label className="settings-toggle-row">
+                      <span>
+                        <strong>启动时自动检查桌面更新</strong>
+                        <small>应用启动后查询 release 源；发现新版本时自动弹出更新窗口。</small>
+                      </span>
+                      <input
+                        checked={updateStatus.autoCheck}
+                        type="checkbox"
+                        onChange={(event) => void toggleAutoCheck(event.target.checked)}
+                      />
+                    </label>
                     <label className="settings-toggle-row">
                       <span>
                         <strong>Auto upgrade</strong>
@@ -7028,6 +7126,17 @@ export function App() {
                       />
                     </label>
                     <p className="empty-note">{updateStatus.message}</p>
+                    {updateStatus.checked && (
+                      <button
+                        className="refresh-runtime"
+                        type="button"
+                        disabled={updateBusy}
+                        onClick={() => setUpdateDialogOpen(true)}
+                      >
+                        <RefreshCw size={14} />
+                        <span>查看更新详情</span>
+                      </button>
+                    )}
                     {updateOutput && <pre className="update-output">{updateOutput}</pre>}
                   </div>
                 ) : (
@@ -7542,6 +7651,15 @@ export function App() {
           />
         );
       })()}
+      {updateDialogOpen && updateStatus && (
+        <UpdateDialog
+          status={updateStatus}
+          busy={updateBusy}
+          onClose={() => setUpdateDialogOpen(false)}
+          onRecheck={() => void checkUpdatesNow(true)}
+          onOpenRelease={openReleaseLink}
+        />
+      )}
     </main>
   );
 }

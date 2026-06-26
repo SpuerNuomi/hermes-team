@@ -528,6 +528,14 @@ struct AppSettings {
 #[serde(rename_all = "camelCase")]
 struct UpdatePreferences {
     auto_upgrade: bool,
+    /// GitHub `owner/repo` whose releases drive the desktop update check.
+    /// Hermes Team has no dedicated release repo yet, so this defaults to the
+    /// desktop baseline release feed and stays user-configurable.
+    #[serde(default = "default_release_repo")]
+    release_repo: String,
+    /// Whether to query the release feed automatically on startup.
+    #[serde(default)]
+    auto_check: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -540,6 +548,22 @@ struct UpdateStatus {
     update_available: Option<String>,
     message: String,
     log_path: String,
+    /// `owner/repo` used for the release query.
+    release_repo: String,
+    /// Whether startup auto-check is enabled.
+    auto_check: bool,
+    /// Whether a remote release query actually ran for this status.
+    checked: bool,
+    /// Whether that remote query succeeded.
+    check_ok: bool,
+    /// Latest release tag/version reported by the feed (normalized, no `v`).
+    latest_version: Option<String>,
+    release_name: Option<String>,
+    /// Markdown release notes body.
+    release_notes: Option<String>,
+    /// Web URL to the release page (download/go link).
+    release_url: Option<String>,
+    published_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2077,24 +2101,98 @@ async fn get_update_status() -> Result<UpdateStatus, String> {
 
 #[tauri::command]
 async fn set_auto_upgrade_enabled(enabled: bool) -> Result<UpdateStatus, String> {
-    write_update_preferences(&UpdatePreferences {
-        auto_upgrade: enabled,
-    })?;
+    let mut preferences = read_update_preferences()?;
+    preferences.auto_upgrade = enabled;
+    write_update_preferences(&preferences)?;
     append_update_log(&format!("auto_upgrade={enabled}"))?;
     build_update_status("更新偏好已保存。".to_string(), None)
 }
 
 #[tauri::command]
+async fn set_auto_check_enabled(enabled: bool) -> Result<UpdateStatus, String> {
+    let mut preferences = read_update_preferences()?;
+    preferences.auto_check = enabled;
+    write_update_preferences(&preferences)?;
+    append_update_log(&format!("auto_check={enabled}"))?;
+    build_update_status("启动检查偏好已保存。".to_string(), None)
+}
+
+#[tauri::command]
+async fn set_update_release_repo(repo: String) -> Result<UpdateStatus, String> {
+    let normalized = normalize_release_repo(&repo)?;
+    let mut preferences = read_update_preferences()?;
+    preferences.release_repo = normalized.clone();
+    write_update_preferences(&preferences)?;
+    append_update_log(&format!("release_repo={normalized}"))?;
+    build_update_status(format!("Release 源已设为 {normalized}。"), None)
+}
+
+#[tauri::command]
 async fn check_for_app_updates() -> Result<UpdateStatus, String> {
-    let status = build_update_status("已检查本地 Hermes 版本。".to_string(), None)?;
-    append_update_log(&format!(
-        "check app_version={} hermes_version={}",
-        status.app_version,
-        status
-            .hermes_version
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string())
-    ))?;
+    let mut status = build_update_status("正在检查更新…".to_string(), None)?;
+    let repo = match normalize_release_repo(&status.release_repo) {
+        Ok(repo) => repo,
+        Err(error) => {
+            status.checked = true;
+            status.check_ok = false;
+            status.message = format!("Release 源无效：{error}");
+            append_update_log(&format!("check failed: invalid repo {}", status.release_repo))?;
+            return Ok(status);
+        }
+    };
+
+    status.checked = true;
+    match fetch_latest_release(&repo) {
+        Ok(release) => {
+            if release.draft {
+                status.check_ok = true;
+                status.message = format!("{repo} 最新条目为草稿，暂无可用正式版本。");
+                append_update_log("check ok: latest release is draft")?;
+                return Ok(status);
+            }
+            let latest_raw = release.tag_name.trim().to_string();
+            let latest_norm = latest_raw.trim_start_matches(['v', 'V']).to_string();
+            status.check_ok = true;
+            status.latest_version = Some(latest_norm.clone());
+            status.release_name = release
+                .name
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty());
+            status.release_notes = release
+                .body
+                .map(|body| truncate(body.trim(), 20_000))
+                .filter(|body| !body.is_empty());
+            status.release_url = release
+                .html_url
+                .or_else(|| Some(format!("https://github.com/{repo}/releases/latest")));
+            status.published_at = release.published_at;
+
+            let newer = is_newer_version(&status.app_version, &latest_norm);
+            if newer {
+                status.update_available = Some(latest_norm.clone());
+                let channel = if release.prerelease { "预览版" } else { "新版本" };
+                status.message = format!(
+                    "发现{channel} {latest_norm}（当前 {}）。",
+                    status.app_version
+                );
+            } else {
+                status.update_available = None;
+                status.message = format!(
+                    "已是最新版本（当前 {}，最新 {latest_norm}）。",
+                    status.app_version
+                );
+            }
+            append_update_log(&format!(
+                "check ok: repo={repo} app={} latest={latest_norm} update_available={}",
+                status.app_version, newer
+            ))?;
+        }
+        Err(error) => {
+            status.check_ok = false;
+            status.message = format!("检查更新失败：{error}");
+            append_update_log(&format!("check failed: repo={repo} {error}"))?;
+        }
+    }
     Ok(status)
 }
 
@@ -7706,8 +7804,17 @@ fn write_app_settings(settings: &AppSettings) -> Result<(), String> {
     fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
 }
 
+fn default_release_repo() -> String {
+    // Desktop baseline release feed. See README references for the source repo.
+    "fathah/hermes-desktop".to_string()
+}
+
 fn default_update_preferences() -> UpdatePreferences {
-    UpdatePreferences { auto_upgrade: true }
+    UpdatePreferences {
+        auto_upgrade: true,
+        release_repo: default_release_repo(),
+        auto_check: false,
+    }
 }
 
 fn read_update_preferences() -> Result<UpdatePreferences, String> {
@@ -7749,7 +7856,116 @@ fn build_update_status(
         update_available,
         message,
         log_path: log_path.to_string_lossy().to_string(),
+        release_repo: preferences.release_repo,
+        auto_check: preferences.auto_check,
+        checked: false,
+        check_ok: false,
+        latest_version: None,
+        release_name: None,
+        release_notes: None,
+        release_url: None,
+        published_at: None,
     })
+}
+
+/// A single GitHub release, trimmed to the fields the updater needs.
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+}
+
+/// Validate and normalize an `owner/repo` slug. Rejects anything that is not a
+/// plain two-segment GitHub path so the value can be embedded safely in a URL.
+fn normalize_release_repo(input: &str) -> Result<String, String> {
+    let trimmed = input.trim().trim_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|part| part.is_empty()) {
+        return Err("release 源需为 owner/repo 形式，例如 fathah/hermes-desktop。".to_string());
+    }
+    let valid = |segment: &str| {
+        segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    if !parts.iter().all(|part| valid(part)) {
+        return Err("release 源包含非法字符。".to_string());
+    }
+    Ok(format!("{}/{}", parts[0], parts[1]))
+}
+
+/// Parse the numeric dotted prefix of a version string (ignoring a leading
+/// `v` and any pre-release/build suffix) into comparable components.
+fn parse_version_parts(value: &str) -> Vec<u64> {
+    let trimmed = value.trim().trim_start_matches(['v', 'V']);
+    let core = trimmed
+        .split(|c: char| c == '-' || c == '+' || c == ' ')
+        .next()
+        .unwrap_or("");
+    core.split('.')
+        .map(|segment| {
+            let digits: String = segment.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u64>().unwrap_or(0)
+        })
+        .collect()
+}
+
+/// Returns true when `latest` is strictly newer than `current`.
+fn is_newer_version(current: &str, latest: &str) -> bool {
+    let current_parts = parse_version_parts(current);
+    let latest_parts = parse_version_parts(latest);
+    let len = current_parts.len().max(latest_parts.len());
+    for index in 0..len {
+        let c = current_parts.get(index).copied().unwrap_or(0);
+        let l = latest_parts.get(index).copied().unwrap_or(0);
+        if l > c {
+            return true;
+        }
+        if l < c {
+            return false;
+        }
+    }
+    false
+}
+
+/// Query the latest non-draft release for `owner/repo` from the GitHub API.
+fn fetch_latest_release(repo: &str) -> Result<GithubRelease, String> {
+    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let response = ureq::get(&url)
+        .set("User-Agent", "hermes-team-desktop-updater")
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .timeout(Duration::from_secs(15))
+        .call();
+    match response {
+        Ok(resp) => resp
+            .into_json::<GithubRelease>()
+            .map_err(|error| format!("解析 release 响应失败：{error}")),
+        Err(ureq::Error::Status(404, _)) => {
+            Err(format!("{repo} 暂无已发布的正式版本（404）。"))
+        }
+        Err(ureq::Error::Status(403, _)) => {
+            Err("GitHub API 速率受限（403），请稍后再试。".to_string())
+        }
+        Err(ureq::Error::Status(code, _)) => {
+            Err(format!("GitHub API 返回状态 {code}。"))
+        }
+        Err(ureq::Error::Transport(transport)) => {
+            Err(format!("无法连接 GitHub（网络不可用？）：{transport}"))
+        }
+    }
 }
 
 fn append_update_log(message: &str) -> Result<(), String> {
@@ -12356,6 +12572,8 @@ pub fn run() {
             save_app_settings,
             get_update_status,
             set_auto_upgrade_enabled,
+            set_auto_check_enabled,
+            set_update_release_repo,
             check_for_app_updates,
             run_hermes_update,
             get_hermes_model_config,
