@@ -13,6 +13,7 @@ import {
   ExternalLink,
   History,
   LayoutGrid,
+  Users,
   MoreHorizontal,
   Pause,
   Pencil,
@@ -67,6 +68,7 @@ import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
 import { DiscoverView, type DiscoverKind } from "./DiscoverView";
 import { KanbanView } from "./KanbanView";
+import { MultiAgentView } from "./MultiAgentView";
 import { MessagingPlatformCard } from "./MessagingPlatformCard";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
@@ -241,7 +243,7 @@ import {
   type UpdateStatus,
 } from "../runtime/hermes-runtime";
 
-type ActiveView = "team" | "sessions" | "discover" | "kanban" | "settings";
+type ActiveView = "team" | "sessions" | "discover" | "kanban" | "multiagent" | "settings";
 type SettingsPanel = "overview" | "appearance" | "privacy" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
@@ -4876,6 +4878,16 @@ export function App() {
               <LayoutGrid size={18} />
               <span>{t("nav.kanban")}</span>
             </button>
+            <button
+              className={`workspace-item ${activeView === "multiagent" ? "active" : ""}`}
+              type="button"
+              onClick={() => setActiveView("multiagent")}
+              title={t("nav.multiAgent")}
+              aria-label={t("nav.multiAgent")}
+            >
+              <Users size={18} />
+              <span>{t("nav.multiAgent")}</span>
+            </button>
           </div>
 
           <div className="nav-group">
@@ -7618,6 +7630,8 @@ export function App() {
             t={t}
             onNotice={setNotice}
           />
+        ) : activeView === "multiagent" ? (
+          <MultiAgentView state={state} t={t} onCancelTask={(taskId) => void cancelTask(taskId)} />
         ) : activeView === "discover" ? (
           <DiscoverView
             installedSkills={skills}
