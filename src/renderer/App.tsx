@@ -65,6 +65,7 @@ import {
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
 import { DiscoverView, type DiscoverKind } from "./DiscoverView";
+import { MessagingPlatformCard } from "./MessagingPlatformCard";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
 import ProfileDetailModal from "./ProfileDetailModal";
@@ -915,6 +916,26 @@ export function App() {
   const [cronForm, setCronForm] = useState<CronJobForm>(emptyCronJobForm);
   const [messagingResponse, setMessagingResponse] = useState<MessagingPlatformsResponse | null>(null);
   const [messagingEnvDrafts, setMessagingEnvDrafts] = useState<MessagingEnvDrafts>({});
+  const [messagingSearch, setMessagingSearch] = useState("");
+  const [messagingFilter, setMessagingFilter] = useState<"all" | "enabled" | "configured" | "unconfigured">("all");
+  const [messagingExpanded, setMessagingExpanded] = useState<Record<string, boolean>>({});
+  const messagingPlatformsView = useMemo(() => {
+    const platforms = messagingResponse?.platforms ?? [];
+    const query = messagingSearch.trim().toLowerCase();
+    return platforms.filter((platform) => {
+      if (messagingFilter === "enabled" && !platform.enabled) return false;
+      if (messagingFilter === "configured" && !platform.configured) return false;
+      if (messagingFilter === "unconfigured" && platform.configured) return false;
+      if (!query) return true;
+      return (
+        platform.name.toLowerCase().includes(query) ||
+        platform.id.toLowerCase().includes(query) ||
+        platform.description.toLowerCase().includes(query)
+      );
+    });
+  }, [messagingResponse, messagingSearch, messagingFilter]);
+  const isMessagingCardOpen = (platform: MessagingPlatformInfo) =>
+    messagingExpanded[platform.id] ?? (platform.enabled || (!platform.configured && platform.envVars.some((field) => field.required)));
   const [providerDiscovery, setProviderDiscovery] = useState<ProviderDiscoveryResult | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
   const [auxiliaryBusyTask, setAuxiliaryBusyTask] = useState<string | null>(null);
@@ -6015,79 +6036,66 @@ export function App() {
                 </div>
 
                 {messagingResponse ? (
-                  <div className="messaging-platform-list">
-                    {messagingResponse.platforms.map((platform) => (
-                      <article className={`messaging-platform-card ${platform.enabled ? "enabled" : ""}`} key={platform.id}>
-                        <div className="messaging-platform-head">
-                          <div>
-                            <strong>{platform.name}</strong>
-                            <span>{platform.description}</span>
-                            <small>{platform.state ?? "unknown"} · {platform.configured ? "configured" : "not configured"} · {messagingResponse.source}</small>
-                          </div>
-                          <div className="model-card-actions">
-                            <button disabled={messagingBusy} type="button" onClick={() => void toggleMessagingPlatform(platform)}>
-                              <Power size={14} />
-                              <span>{platform.enabled ? t("settings.messaging.disable") : t("settings.messaging.enable")}</span>
-                            </button>
-                            <button disabled={messagingBusy} type="button" onClick={() => void runMessagingPlatformTest(platform)}>
-                              <Plug size={14} />
-                              <span>{t("settings.shared.test")}</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="messaging-env-grid">
-                          {platform.envVars.map((field) => (
-                            <label className={field.required ? "required" : ""} key={field.key}>
-                              <span>{field.prompt || field.key}</span>
-                              <input
-                                type={field.isPassword ? "password" : "text"}
-                                value={messagingEnvDrafts[platform.id]?.[field.key] ?? ""}
-                                onChange={(event) =>
-                                  setMessagingEnvDrafts((current) => ({
-                                    ...current,
-                                    [platform.id]: {
-                                      ...(current[platform.id] ?? {}),
-                                      [field.key]: event.target.value,
-                                    },
-                                  }))
-                                }
-                                placeholder={field.redactedValue ?? field.key}
-                              />
-                              <small>{field.key}{field.isSet ? ` · ${field.redactedValue}` : ""}</small>
-                              {field.isSet && (
-                                <button disabled={messagingBusy} type="button" onClick={() => void clearMessagingEnv(platform, field.key)}>
-                                  {t("settings.messaging.clear")}
-                                </button>
-                              )}
-                            </label>
-                          ))}
-                        </div>
-
-                        <div className="settings-actions messaging-actions">
-                          <button className="refresh-runtime" disabled={messagingBusy} type="button" onClick={() => void saveMessagingPlatformEnv(platform)}>
-                            <Save size={14} />
-                            <span>{t("settings.messaging.saveEnv")}</span>
+                  <>
+                    <div className="messaging-toolbar">
+                      <div className="messaging-search">
+                        <Search size={14} />
+                        <input
+                          type="text"
+                          value={messagingSearch}
+                          placeholder={t("settings.messaging.searchPlaceholder")}
+                          onChange={(event) => setMessagingSearch(event.target.value)}
+                        />
+                      </div>
+                      <div className="messaging-filter">
+                        {(["all", "enabled", "configured", "unconfigured"] as const).map((key) => (
+                          <button
+                            key={key}
+                            type="button"
+                            className={messagingFilter === key ? "is-active" : ""}
+                            onClick={() => setMessagingFilter(key)}
+                          >
+                            {t(`settings.messaging.filter.${key}`)}
                           </button>
-                        </div>
+                        ))}
+                      </div>
+                    </div>
 
-                        <div className="messaging-toolset-grid">
-                          {platform.toolsets.map((toolset) => (
-                            <button
-                              className={`${toolset.enabled ? "selected" : ""} ${toolset.risk === "high" ? "high-risk" : ""}`}
-                              disabled={messagingBusy}
-                              key={toolset.key}
-                              type="button"
-                              title={toolset.description}
-                              onClick={() => void toggleMessagingToolset(platform, toolset.key, !toolset.enabled)}
-                            >
-                              {toolset.label}
-                            </button>
-                          ))}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
+                    {messagingPlatformsView.length > 0 ? (
+                      <div className="messaging-platform-list">
+                        {messagingPlatformsView.map((platform) => (
+                          <MessagingPlatformCard
+                            key={platform.id}
+                            platform={platform}
+                            source={messagingResponse.source}
+                            busy={messagingBusy}
+                            open={isMessagingCardOpen(platform)}
+                            envDraft={messagingEnvDrafts[platform.id] ?? {}}
+                            t={t}
+                            onToggleOpen={() =>
+                              setMessagingExpanded((current) => ({
+                                ...current,
+                                [platform.id]: !isMessagingCardOpen(platform),
+                              }))
+                            }
+                            onToggleEnabled={() => void toggleMessagingPlatform(platform)}
+                            onTest={() => void runMessagingPlatformTest(platform)}
+                            onEnvChange={(key, value) =>
+                              setMessagingEnvDrafts((current) => ({
+                                ...current,
+                                [platform.id]: { ...(current[platform.id] ?? {}), [key]: value },
+                              }))
+                            }
+                            onClearEnv={(key) => void clearMessagingEnv(platform, key)}
+                            onSaveEnv={() => void saveMessagingPlatformEnv(platform)}
+                            onToggleToolset={(key, enabled) => void toggleMessagingToolset(platform, key, enabled)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="empty-note">{t("settings.messaging.noMatch")}</p>
+                    )}
+                  </>
                 ) : (
                   <p className="empty-note">{t("settings.messaging.empty")}</p>
                 )}

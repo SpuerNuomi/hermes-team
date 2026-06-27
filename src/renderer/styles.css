@@ -7055,65 +7055,324 @@ textarea:focus {
   gap: 12px;
 }
 
-.messaging-platform-card {
-  display: grid;
-  gap: 14px;
-  padding: 14px;
-  background: #161b22;
+/* Messaging redesign: toolbar (search + filter) */
+.messaging-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.messaging-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 220px;
+  min-width: 180px;
+  height: 34px;
+  padding: 0 10px;
+  background: #0d1117;
   border: 1px solid #2a313c;
   border-radius: 8px;
+  color: #9aa6b2;
 }
 
-.messaging-platform-card.enabled {
-  border-color: #2a4b3c;
-  background: #152a20;
+.messaging-search:focus-within {
+  border-color: #58a6ff;
 }
 
-.messaging-platform-head {
+.messaging-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: #e6edf3;
+  outline: none;
+  font-size: 13px;
+}
+
+.messaging-filter {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  background: #0d1117;
+  border: 1px solid #2a313c;
+  border-radius: 9px;
+}
+
+.messaging-filter button {
+  padding: 5px 11px;
+  color: #9aa6b2;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.messaging-filter button:hover {
+  color: #e6edf3;
+}
+
+.messaging-filter button.is-active {
+  color: #f5fbf8;
+  background: #21262d;
+}
+
+/* Messaging redesign: collapsible platform cards */
+.messaging-card {
+  overflow: hidden;
+  background: #161b22;
+  border: 1px solid #2a313c;
+  border-left: 3px solid #2a313c;
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.messaging-card.tone-running {
+  border-left-color: #3fb950;
+}
+.messaging-card.tone-waiting {
+  border-left-color: #d29922;
+}
+.messaging-card.tone-configured {
+  border-left-color: #58a6ff;
+}
+.messaging-card.tone-error {
+  border-left-color: #f85149;
+}
+.messaging-card.tone-disabled,
+.messaging-card.tone-unconfigured {
+  border-left-color: #484f58;
+}
+
+.messaging-card-head {
   display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: flex-start;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
 }
 
-.messaging-platform-head strong,
-.messaging-platform-head span,
-.messaging-platform-head small {
-  display: block;
+.messaging-card-head:hover {
+  background: rgba(255, 255, 255, 0.02);
 }
 
-.messaging-platform-head span,
-.messaging-platform-head small,
-.messaging-env-grid small {
+.messaging-card-chevron {
+  flex-shrink: 0;
+  color: #7d8590;
+  transition: transform 0.18s ease;
+}
+
+.messaging-card.is-open .messaging-card-chevron {
+  transform: rotate(180deg);
+}
+
+.messaging-card-title {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.messaging-card-title strong {
+  color: #e6edf3;
+  font-size: 14px;
+}
+
+.messaging-card-title span {
   color: #9aa6b2;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.messaging-env-grid {
+.messaging-card-head-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.messaging-card-summary {
+  color: #6e7681;
+  font-size: 11px;
+}
+
+.messaging-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.messaging-status-badge.tone-running {
+  color: #56d364;
+  background: rgba(63, 185, 80, 0.14);
+  border-color: rgba(63, 185, 80, 0.4);
+}
+.messaging-status-badge.tone-waiting {
+  color: #e3b341;
+  background: rgba(210, 153, 34, 0.14);
+  border-color: rgba(210, 153, 34, 0.4);
+}
+.messaging-status-badge.tone-configured {
+  color: #79c0ff;
+  background: rgba(88, 166, 255, 0.14);
+  border-color: rgba(88, 166, 255, 0.4);
+}
+.messaging-status-badge.tone-error {
+  color: #ff7b72;
+  background: rgba(248, 81, 73, 0.14);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+.messaging-status-badge.tone-disabled,
+.messaging-status-badge.tone-unconfigured {
+  color: #9aa6b2;
+  background: rgba(110, 118, 129, 0.14);
+  border-color: rgba(110, 118, 129, 0.4);
+}
+
+.messaging-card-body {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  padding: 4px 16px 16px;
+  border-top: 1px solid #21262d;
+}
+
+.messaging-alert,
+.messaging-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.messaging-alert {
+  color: #ff9d97;
+  background: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.messaging-hint {
+  color: #e3b341;
+  background: rgba(210, 153, 34, 0.1);
+  border: 1px solid rgba(210, 153, 34, 0.28);
+}
+
+.messaging-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.messaging-toggle,
+.messaging-test {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  color: #d7e0ea;
+  background: #0d1117;
+  border: 1px solid #2a313c;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.messaging-toggle:hover,
+.messaging-test:hover {
+  border-color: #58a6ff;
+}
+
+.messaging-toggle.is-on {
+  color: #f5fbf8;
+  background: #1f6feb;
+  border-color: #1f6feb;
+}
+
+.messaging-docs-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #79c0ff;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.messaging-docs-link:hover {
+  text-decoration: underline;
+}
+
+.messaging-source-tag {
+  margin-left: auto;
+  color: #6e7681;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.messaging-section {
+  display: grid;
   gap: 10px;
 }
 
-.messaging-env-grid label {
+.messaging-section-title {
+  margin: 0;
+  color: #7d8590;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.messaging-section-actions {
+  display: flex;
+}
+
+.messaging-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.messaging-field {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
-.messaging-env-grid label > span {
-  color: #9aa6b2;
+.messaging-field-label {
+  color: #c9d1d9;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
-.messaging-env-grid label.required > span::after {
-  content: " *";
+.messaging-field-required {
   color: #e3b341;
+  font-style: normal;
+  margin-left: 2px;
 }
 
-.messaging-env-grid input {
+.messaging-field input {
   min-width: 0;
   height: 34px;
   padding: 7px 9px;
@@ -7124,50 +7383,166 @@ textarea:focus {
   outline: none;
 }
 
-.messaging-env-grid input:focus {
-  border-color: #e6edf3;
-  box-shadow: 0 0 0 3px rgba(23, 32, 28, 0.1);
+.messaging-field input:focus {
+  border-color: #58a6ff;
 }
 
-.messaging-env-grid label > button {
+.messaging-field-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.messaging-field-meta small {
+  color: #6e7681;
+  font-size: 11px;
+}
+
+.messaging-field-meta code {
+  color: #9aa6b2;
+  font-size: 11px;
+}
+
+.messaging-field-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #79c0ff;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.messaging-field-link:hover {
+  text-decoration: underline;
+}
+
+.messaging-field-clear {
+  margin-left: auto;
+  padding: 2px 7px;
+  color: #d7e0ea;
+  background: #0d1117;
+  border: 1px solid #2a313c;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.messaging-field-desc {
+  margin: 0;
+  color: #6e7681;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.messaging-advanced {
+  display: grid;
+  gap: 10px;
+}
+
+.messaging-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   justify-self: start;
   padding: 4px 8px;
+  color: #9aa6b2;
+  background: transparent;
+  border: 1px dashed #2a313c;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.messaging-advanced-toggle:hover {
+  color: #e6edf3;
+  border-color: #58a6ff;
+}
+
+.messaging-advanced-toggle .rotated {
+  transform: rotate(180deg);
+}
+
+.messaging-toolset-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.messaging-toolset {
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+  text-align: left;
   color: #d7e0ea;
   background: #0d1117;
   border: 1px solid #2a313c;
   border-radius: 8px;
-  font-size: 12px;
+  cursor: pointer;
 }
 
-.messaging-actions {
-  margin-top: -4px;
+.messaging-toolset:hover {
+  border-color: #58a6ff;
 }
 
-.messaging-toolset-grid {
+.messaging-toolset.is-on {
+  background: rgba(31, 111, 235, 0.16);
+  border-color: #1f6feb;
+}
+
+.messaging-toolset.is-on.is-high-risk {
+  background: rgba(210, 153, 34, 0.16);
+  border-color: #d29922;
+}
+
+.messaging-toolset-head {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 6px;
 }
 
-.messaging-toolset-grid button {
-  min-height: 28px;
-  padding: 5px 8px;
-  color: #d7e0ea;
-  background: #0d1117;
-  border: 1px solid #2a313c;
+.messaging-toolset-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.messaging-toolset-risk {
+  padding: 1px 6px;
+  color: #e3b341;
+  background: rgba(210, 153, 34, 0.16);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.messaging-toolset-desc {
+  color: #7d8590;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.messaging-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  color: #f5fbf8;
+  background: #1f6feb;
+  border: 1px solid #1f6feb;
   border-radius: 8px;
   font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.messaging-toolset-grid button.selected {
-  color: #f5fbf8;
-  background: #1f7a4d;
-  border-color: #e6edf3;
+.messaging-save:hover {
+  background: #388bfd;
 }
 
-.messaging-toolset-grid button.high-risk.selected {
-  background: #d29922;
-  border-color: #d29922;
+.messaging-save:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .profile-manager {
