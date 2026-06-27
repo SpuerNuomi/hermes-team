@@ -7313,9 +7313,13 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 0;
   color: #79c0ff;
+  background: none;
+  border: none;
   font-size: 12px;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .messaging-docs-link:hover {
@@ -7408,9 +7412,13 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  padding: 0;
   color: #79c0ff;
+  background: none;
+  border: none;
   font-size: 11px;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .messaging-field-link:hover {

@@ -26,6 +26,7 @@ interface MessagingPlatformCardProps {
   onClearEnv: (key: string) => void;
   onSaveEnv: () => void;
   onToggleToolset: (key: string, enabled: boolean) => void;
+  onOpenDocs: (url: string) => void;
   t: (key: string, vars?: TranslationVars) => string;
 }
 
@@ -57,6 +58,7 @@ export function MessagingPlatformCard({
   onClearEnv,
   onSaveEnv,
   onToggleToolset,
+  onOpenDocs,
   t,
 }: MessagingPlatformCardProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -86,10 +88,10 @@ export function MessagingPlatformCard({
           {field.isSet ? ` · ${field.redactedValue ?? "••••"}` : ""}
         </small>
         {field.url && (
-          <a href={field.url} target="_blank" rel="noreferrer" className="messaging-field-link">
+          <button type="button" className="messaging-field-link" onClick={() => onOpenDocs(field.url ?? "")}>
             <ExternalLink size={11} />
             <span>{t("settings.messaging.docs")}</span>
-          </a>
+          </button>
         )}
         {field.isSet && (
           <button disabled={busy} type="button" className="messaging-field-clear" onClick={() => onClearEnv(field.key)}>
@@ -150,10 +152,10 @@ export function MessagingPlatformCard({
               <span>{t("settings.shared.test")}</span>
             </button>
             {platform.docsUrl && (
-              <a className="messaging-docs-link" href={platform.docsUrl} target="_blank" rel="noreferrer">
+              <button type="button" className="messaging-docs-link" onClick={() => onOpenDocs(platform.docsUrl)}>
                 <ExternalLink size={13} />
                 <span>{t("settings.messaging.docs")}</span>
-              </a>
+              </button>
             )}
             <span className="messaging-source-tag">{source}</span>
           </div>

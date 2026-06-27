@@ -6089,6 +6089,12 @@ export function App() {
                             onClearEnv={(key) => void clearMessagingEnv(platform, key)}
                             onSaveEnv={() => void saveMessagingPlatformEnv(platform)}
                             onToggleToolset={(key, enabled) => void toggleMessagingToolset(platform, key, enabled)}
+                            onOpenDocs={(url) => {
+                              if (!url) return;
+                              void openExternalUrl(url).catch((error) =>
+                                setNotice(t("app.notice.openExternalBrowserFailed", { error: runtimeErrorMessage(error) })),
+                              );
+                            }}
                           />
                         ))}
                       </div>
