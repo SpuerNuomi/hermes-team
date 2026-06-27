@@ -10106,3 +10106,224 @@ textarea:focus {
 .multiagent-abort:hover {
   background: rgba(248, 81, 73, 0.1);
 }
+
+/* ---------------------------------------------------------------------------
+   Office 3D view
+--------------------------------------------------------------------------- */
+.office-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.office-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  border-bottom: 1px solid #21262d;
+}
+
+.office-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #e6edf3;
+}
+
+.office-header-title h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.office-header-title p {
+  margin: 2px 0 0;
+  color: #9aa6b2;
+  font-size: 13px;
+}
+
+.office-legend {
+  display: flex;
+  gap: 14px;
+}
+
+.office-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #9aa6b2;
+  font-size: 12px;
+}
+
+.office-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.office-dot.busy { background: #3fb950; }
+.office-dot.active { background: #58a6ff; }
+.office-dot.idle { background: #484f58; }
+
+.office-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.office-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.office-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.office-canvas canvas:active {
+  cursor: grabbing;
+}
+
+.office-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  color: #6e7681;
+  font-size: 14px;
+}
+
+.office-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  background: rgba(13, 17, 23, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid #2a313c;
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.office-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.office-panel-id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.office-panel-id strong {
+  display: block;
+  color: #e6edf3;
+  font-size: 14px;
+}
+
+.office-dot-large {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.office-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.office-status-busy { color: #3fb950; }
+.office-status-active { color: #58a6ff; }
+.office-status-idle { color: #6e7681; }
+
+.office-panel-head button {
+  color: #9aa6b2;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.office-panel-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0;
+}
+
+.office-panel-meta dt {
+  color: #6e7681;
+  font-size: 11px;
+}
+
+.office-panel-meta dd {
+  margin: 1px 0 0;
+  color: #c9d1d9;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.office-panel-agents strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+  color: #9aa6b2;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.office-panel-agents ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.office-panel-agents li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #e6edf3;
+  font-size: 13px;
+}
+
+.office-panel-agents li em {
+  color: #6e7681;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.office-dot-small {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.office-panel-empty {
+  margin: 0;
+  color: #6e7681;
+  font-size: 12px;
+}

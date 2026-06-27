@@ -2,6 +2,7 @@ import {
   Activity,
   AlertTriangle,
   BrainCircuit,
+  Building2,
   CalendarClock,
   CheckCircle2,
   CircleDot,
@@ -69,6 +70,7 @@ import { ChatView } from "./ChatView";
 import { DiscoverView, type DiscoverKind } from "./DiscoverView";
 import { KanbanView } from "./KanbanView";
 import { MultiAgentView } from "./MultiAgentView";
+import { OfficeView } from "./OfficeView";
 import { MessagingPlatformCard } from "./MessagingPlatformCard";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
@@ -243,7 +245,7 @@ import {
   type UpdateStatus,
 } from "../runtime/hermes-runtime";
 
-type ActiveView = "team" | "sessions" | "discover" | "kanban" | "multiagent" | "settings";
+type ActiveView = "team" | "sessions" | "discover" | "kanban" | "multiagent" | "office" | "settings";
 type SettingsPanel = "overview" | "appearance" | "privacy" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
@@ -4888,6 +4890,16 @@ export function App() {
               <Users size={18} />
               <span>{t("nav.multiAgent")}</span>
             </button>
+            <button
+              className={`workspace-item ${activeView === "office" ? "active" : ""}`}
+              type="button"
+              onClick={() => setActiveView("office")}
+              title={t("nav.office")}
+              aria-label={t("nav.office")}
+            >
+              <Building2 size={18} />
+              <span>{t("nav.office")}</span>
+            </button>
           </div>
 
           <div className="nav-group">
@@ -7632,6 +7644,8 @@ export function App() {
           />
         ) : activeView === "multiagent" ? (
           <MultiAgentView state={state} t={t} onCancelTask={(taskId) => void cancelTask(taskId)} />
+        ) : activeView === "office" ? (
+          <OfficeView profiles={profiles} state={state} t={t} />
         ) : activeView === "discover" ? (
           <DiscoverView
             installedSkills={skills}
