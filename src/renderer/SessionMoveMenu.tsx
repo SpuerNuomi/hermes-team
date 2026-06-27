@@ -1,5 +1,6 @@
 import { Check, FolderInput, FolderMinus } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "../i18n";
 
 export interface SessionProject {
   path: string;
@@ -25,6 +26,7 @@ export function SessionMoveMenu({
   onMove: (folder: string | null) => void;
   onPickFolder: () => void;
 }) {
+  const t = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const normalizedCurrent = currentFolder?.trim() || null;
 
@@ -48,10 +50,10 @@ export function SessionMoveMenu({
 
   return (
     <div className="session-move-menu" role="menu" ref={ref}>
-      <p className="session-move-menu-label">移动到分组</p>
+      <p className="session-move-menu-label">{t("sessions.moveToGroup")}</p>
       <div className="session-move-menu-scroll">
         {projects.length === 0 ? (
-          <div className="session-move-menu-empty">还没有分组文件夹</div>
+          <div className="session-move-menu-empty">{t("sessions.noGroupFolders")}</div>
         ) : (
           projects.map((project) => {
             const active = project.path === normalizedCurrent;
@@ -82,7 +84,7 @@ export function SessionMoveMenu({
         onClick={onPickFolder}
       >
         <FolderInput size={14} />
-        <span>选择新文件夹…</span>
+        <span>{t("sessions.pickNewFolder")}</span>
       </button>
       {normalizedCurrent && (
         <button
@@ -92,7 +94,7 @@ export function SessionMoveMenu({
           onClick={() => onMove(null)}
         >
           <FolderMinus size={14} />
-          <span>移出分组</span>
+          <span>{t("sessions.removeFromGroup")}</span>
         </button>
       )}
     </div>

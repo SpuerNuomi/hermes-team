@@ -33,6 +33,7 @@ import {
 } from "react";
 import type { Message, MessageAttachment } from "../core/types";
 import type { ReasoningEffort } from "../core/reasoning";
+import { useTranslation } from "../i18n";
 import { filesFromClipboard } from "./attachmentProcessing";
 import { isImeComposing } from "./chatInput/keyboard";
 import { SLASH_COMMANDS, type SlashCommand } from "./chatInput/slashCommands";
@@ -66,24 +67,24 @@ interface PromptSnippet {
 
 const PROMPT_SNIPPETS_KEY = "hermes-team:prompt-snippets";
 
-const PRESET_SNIPPETS: Array<{ id: string; title: string; description: string; body: string }> = [
+const PRESET_SNIPPETS: Array<{ id: string; titleKey: string; descriptionKey: string; bodyKey: string }> = [
   {
     id: "preset-review",
-    title: "代码审查",
-    description: "审查当前更改是否存在回归、遗漏的边界情况和缺失的测试。",
-    body: "请审查当前更改，重点关注：潜在回归、遗漏的边界情况、以及缺失的测试覆盖。逐条列出问题与对应的修复建议。",
+    titleKey: "chatView.snippetReviewTitle",
+    descriptionKey: "chatView.snippetReviewDesc",
+    bodyKey: "chatView.snippetReviewBody",
   },
   {
     id: "preset-plan",
-    title: "实现计划",
-    description: "在动代码之前先勾勒方案，让 diff 保持聚焦。",
-    body: "在开始编码前，请先给出实现方案：涉及的文件、改动步骤、潜在风险点，以及验证方式。保持改动聚焦、可回滚。",
+    titleKey: "chatView.snippetPlanTitle",
+    descriptionKey: "chatView.snippetPlanDesc",
+    bodyKey: "chatView.snippetPlanBody",
   },
   {
     id: "preset-explain",
-    title: "解释这段",
-    description: "讲解所选代码的工作方式，并链接到关键文件。",
-    body: "请解释这段代码的工作方式：描述关键执行流程与数据流，并指出相关的关键文件、函数与依赖。",
+    titleKey: "chatView.snippetExplainTitle",
+    descriptionKey: "chatView.snippetExplainDesc",
+    bodyKey: "chatView.snippetExplainBody",
   },
 ];
 
@@ -106,15 +107,15 @@ type SlashMenuItem =
   | { kind: "command"; command: SlashCommand }
   | { kind: "skill"; skill: InstalledSkillInfo };
 
-const SLASH_CATEGORY_LABELS: Record<SlashCommand["category"], string> = {
-  chat: "会话控制",
-  agent: "Agent 指令",
-  tools: "工具",
-  info: "信息",
+const SLASH_CATEGORY_LABEL_KEYS: Record<SlashCommand["category"], string> = {
+  chat: "chatView.slashCategoryChat",
+  agent: "chatView.slashCategoryAgent",
+  tools: "chatView.slashCategoryTools",
+  info: "chatView.slashCategoryInfo",
 };
 
-function slashGroupLabel(item: SlashMenuItem): string {
-  return item.kind === "command" ? SLASH_CATEGORY_LABELS[item.command.category] : "Skills";
+function slashGroupLabel(item: SlashMenuItem, t: (key: string) => string): string {
+  return item.kind === "command" ? t(SLASH_CATEGORY_LABEL_KEYS[item.command.category]) : "Skills";
 }
 
 function gaugeTokens(n: number): string {
@@ -140,6 +141,7 @@ function ChatContextGauge({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
 }) {
+  const t = useTranslation();
   const pct = ctxWindow > 0 ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
   const size = 22;
   const stroke = 3;
@@ -152,16 +154,18 @@ function ChatContextGauge({
       ? Math.min(100, Math.round(((cacheReadTokens ?? 0) / used) * 100))
       : 0;
   const cacheTitle = hasCache
-    ? `\n缓存命中 ${cacheHitPct}% · 读 ${gaugeTokens(cacheReadTokens ?? 0)} / 写 ${gaugeTokens(
-        cacheWriteTokens ?? 0,
-      )}`
+    ? `\n${t("chatView.cacheHit", {
+        pct: cacheHitPct,
+        read: gaugeTokens(cacheReadTokens ?? 0),
+        write: gaugeTokens(cacheWriteTokens ?? 0),
+      })}`
     : "";
   return (
     <div
       className="chat-ctx-gauge"
-      title={`上下文占用 ${pct}% · ${gaugeTokens(used)}/${gaugeTokens(ctxWindow)} tokens${cacheTitle}`}
+      title={`${t("chatView.contextUsage", { pct, used: gaugeTokens(used), window: gaugeTokens(ctxWindow) })}${cacheTitle}`}
       role="img"
-      aria-label={`上下文占用 ${pct}%`}
+      aria-label={t("chatView.contextUsageShort", { pct })}
     >
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         <circle
@@ -306,6 +310,7 @@ export function ChatView({
   onBranchMessage: (messageId: string) => void;
   onAnswerClarify: (messageId: string, answer: string) => void;
 }) {
+  const t = useTranslation();
   const canSend = draft.trim().length > 0 || draftAttachments.length > 0;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashMenuRef = useRef<HTMLDivElement>(null);
@@ -721,7 +726,7 @@ export function ChatView({
         read?: () => Promise<ClipboardItem[]>;
       };
       if (!clipboard?.read) {
-        setAttachmentError("当前环境不支持读取剪贴板图片，可直接在输入框粘贴。");
+        setAttachmentError(t("chatView.clipboardUnsupported"));
         return;
       }
       const items = await clipboard.read();
@@ -734,12 +739,12 @@ export function ChatView({
         files.push(new File([blob], `clipboard-${Date.now()}.${ext}`, { type }));
       }
       if (files.length === 0) {
-        setAttachmentError("剪贴板里没有图片。");
+        setAttachmentError(t("chatView.clipboardNoImage"));
         return;
       }
       onAttachFiles(files);
     } catch {
-      setAttachmentError("读取剪贴板图片失败，可直接在输入框粘贴。");
+      setAttachmentError(t("chatView.clipboardReadFailed"));
     }
   }
 
@@ -851,20 +856,20 @@ export function ChatView({
               className="refresh-runtime"
               type="button"
               onClick={() => void handleCopyTranscript()}
-              title="复制整段对话"
+              title={t("chatView.copyTranscriptTitle")}
             >
               {transcriptCopied ? <Check size={14} /> : <ClipboardList size={14} />}
-              <span>{transcriptCopied ? "已复制" : "复制对话"}</span>
+              <span>{transcriptCopied ? t("messageRow.copied") : t("chatView.copyTranscript")}</span>
             </button>
           )}
           <button className="refresh-runtime" type="button" onClick={onNewChat}>
             <Plus size={14} />
-            <span>新建聊天</span>
+            <span>{t("nav.newChat")}</span>
           </button>
         </div>
       </header>
 
-      <div className={`message-list ${visibleMessages.length === 0 ? "message-list-empty" : ""}`} aria-label="消息流">
+      <div className={`message-list ${visibleMessages.length === 0 ? "message-list-empty" : ""}`} aria-label={t("chatView.messageStream")}>
         {visibleMessages.length === 0 ? (
           <section className="chat-empty-state">
             <strong>Hermes</strong>
@@ -929,8 +934,8 @@ export function ChatView({
             </div>
             <div className="slash-menu-list">
               {filteredSlashItems.map((item, index) => {
-                const group = slashGroupLabel(item);
-                const showGroup = index === 0 || slashGroupLabel(filteredSlashItems[index - 1]) !== group;
+                const group = slashGroupLabel(item, t);
+                const showGroup = index === 0 || slashGroupLabel(filteredSlashItems[index - 1], t) !== group;
                 const name = item.kind === "command" ? item.command.name : `/${item.skill.dirName}`;
                 const desc =
                   item.kind === "command"
@@ -961,16 +966,16 @@ export function ChatView({
           <div className="slash-menu at-menu" ref={atMenuRef}>
             <div className="slash-menu-header">
               <AtSign size={12} />
-              引用文件
+              {t("chatView.referenceFile")}
             </div>
             {!contextFolder ? (
               <div className="at-menu-empty">
-                先用 <Plus size={12} /> 绑定上下文文件夹后即可用 @ 引用文件。
+                {t("chatView.bindFolderHintPrefix")} <Plus size={12} /> {t("chatView.bindFolderHintSuffix")}
               </div>
             ) : atLoading && atFiles.length === 0 ? (
-              <div className="at-menu-empty">正在读取文件…</div>
+              <div className="at-menu-empty">{t("chatView.readingFiles")}</div>
             ) : filteredAtFiles.length === 0 ? (
-              <div className="at-menu-empty">没有匹配的文件。</div>
+              <div className="at-menu-empty">{t("chatView.noMatchingFiles")}</div>
             ) : (
               <div className="slash-menu-list">
                 {filteredAtFiles.map((file, index) => (
@@ -1013,17 +1018,17 @@ export function ChatView({
         )}
         {queuedMessages.length > 0 && (
           <div className="chat-queue-indicator">
-            <span>{queuedMessages.length} 条消息排队中</span>
+            <span>{t("chatView.queuedCount", { count: queuedMessages.length })}</span>
             <div className="chat-queue-list">
               {queuedMessages.map((item) => (
                 <button
                   key={item.id}
                   className="chat-queue-item"
                   type="button"
-                  title="点击移除队列消息"
+                  title={t("chatView.removeQueued")}
                   onClick={() => onRemoveQueuedMessage(item.id)}
                 >
-                  <span>{item.text.trim() || `${item.attachments.length} 个附件`}</span>
+                  <span>{item.text.trim() || t("chatView.attachmentCount", { count: item.attachments.length })}</span>
                   <X size={12} />
                 </button>
               ))}
@@ -1045,7 +1050,7 @@ export function ChatView({
           <textarea
             ref={inputRef}
             className="chat-input"
-            aria-label="发送消息"
+            aria-label={t("chatView.sendMessage")}
             placeholder="Message Hermes..."
             value={draft}
             onChange={handleInputChange}
@@ -1064,8 +1069,8 @@ export function ChatView({
               <button
                 className={`chat-attach-btn composer-add-btn ${addMenuOpen ? "open" : ""}`}
                 disabled={isLoading}
-                title="附加"
-                aria-label="附加"
+                title={t("chatView.attach")}
+                aria-label={t("chatView.attach")}
                 aria-haspopup="menu"
                 aria-expanded={addMenuOpen}
                 type="button"
@@ -1078,7 +1083,7 @@ export function ChatView({
               </button>
               {addMenuOpen && (
                 <div className="composer-add-menu" role="menu">
-                  <div className="composer-add-menu-label">附加</div>
+                  <div className="composer-add-menu-label">{t("chatView.attach")}</div>
                   <button
                     className="composer-add-menu-item"
                     type="button"
@@ -1089,7 +1094,7 @@ export function ChatView({
                     }}
                   >
                     <Paperclip size={15} />
-                    <span>文件…</span>
+                    <span>{t("chatView.file")}</span>
                   </button>
                   <button
                     className="composer-add-menu-item"
@@ -1101,7 +1106,7 @@ export function ChatView({
                     }}
                   >
                     <ImageIcon size={15} />
-                    <span>图片…</span>
+                    <span>{t("chatView.image")}</span>
                   </button>
                   <button
                     className="composer-add-menu-item"
@@ -1113,7 +1118,7 @@ export function ChatView({
                     }}
                   >
                     <ClipboardPaste size={15} />
-                    <span>粘贴图片</span>
+                    <span>{t("chatView.pasteImage")}</span>
                   </button>
                   <button
                     className="composer-add-menu-item"
@@ -1125,7 +1130,7 @@ export function ChatView({
                     }}
                   >
                     <Link size={15} />
-                    <span>网址 /browse…</span>
+                    <span>{t("chatView.urlBrowse")}</span>
                   </button>
                   <button
                     className="composer-add-menu-item"
@@ -1138,7 +1143,7 @@ export function ChatView({
                     }}
                   >
                     <MessageSquarePlus size={15} />
-                    <span>提示词片段…</span>
+                    <span>{t("chatView.promptSnippets")}</span>
                   </button>
                   <div className="composer-add-menu-sep" />
                   <button
@@ -1151,7 +1156,7 @@ export function ChatView({
                     }}
                   >
                     <FolderOpen size={15} />
-                    <span>{contextFolder ? "更换上下文文件夹…" : "上下文文件夹…"}</span>
+                    <span>{contextFolder ? t("chatView.changeContextFolder") : t("chatView.contextFolder")}</span>
                   </button>
                   {contextFolder && (
                     <>
@@ -1165,7 +1170,7 @@ export function ChatView({
                         }}
                       >
                         <FolderTree size={15} />
-                        <span>{worktreeVisible ? "隐藏目录树" : "显示目录树"}</span>
+                        <span>{worktreeVisible ? t("chatView.hideTree") : t("chatView.showTree")}</span>
                       </button>
                       <div className="composer-add-menu-sep" />
                       <button
@@ -1178,7 +1183,7 @@ export function ChatView({
                         }}
                       >
                         <X size={15} />
-                        <span>清除上下文文件夹</span>
+                        <span>{t("chatView.clearContextFolder")}</span>
                       </button>
                     </>
                   )}
@@ -1193,14 +1198,14 @@ export function ChatView({
                 aria-pressed={voice.recording}
                 title={
                   voice.transcribing
-                    ? "正在转写…"
+                    ? t("chatView.transcribing")
                     : voice.recording
-                      ? "停止录音"
+                      ? t("chatView.stopRecording")
                       : voice.error
-                        ? `语音输入（上次：${voice.error}）`
-                        : "语音输入"
+                        ? t("chatView.voiceInputError", { error: voice.error })
+                        : t("chatView.voiceInput")
                 }
-                aria-label={voice.recording ? "停止录音" : "语音输入"}
+                aria-label={voice.recording ? t("chatView.stopRecording") : t("chatView.voiceInput")}
                 onClick={() => {
                   if (!voice.recording && !voice.transcribing) {
                     voiceBaseRef.current = draft;
@@ -1248,8 +1253,8 @@ export function ChatView({
             <button
               className="chat-quickask-btn"
               disabled={isLoading || !canSend}
-              title="旁路提问，不写入上下文 (⌘/Ctrl + ↵)"
-              aria-label="旁路提问"
+              title={t("chatView.quickAskTitle")}
+              aria-label={t("chatView.quickAsk")}
               type="button"
               onClick={() => {
                 if (draft.trim()) {
@@ -1263,8 +1268,8 @@ export function ChatView({
             <button
               className={`chat-send-btn ${isLoading ? "chat-stop-btn" : ""}`}
               disabled={!isLoading && !canSend}
-              title={isLoading ? "Stop" : "Send"}
-              aria-label={isLoading ? "Stop" : "Send"}
+              title={isLoading ? t("chatView.stop") : t("chatView.send")}
+              aria-label={isLoading ? t("chatView.stop") : t("chatView.send")}
               type="button"
               onClick={isLoading ? onStop : sendCurrentDraft}
             >
@@ -1287,13 +1292,13 @@ export function ChatView({
           <div className="snippet-modal" ref={snippetMenuRef} role="dialog" aria-modal="true">
             <div className="snippet-modal-head">
               <div>
-                <h2>提示词片段</h2>
-                <p>选择一个起始提示词放入输入框。</p>
+                <h2>{t("chatView.promptSnippetsTitle")}</h2>
+                <p>{t("chatView.promptSnippetsSubtitle")}</p>
               </div>
               <button
                 type="button"
                 className="snippet-modal-close"
-                aria-label="关闭"
+                aria-label={t("common.close")}
                 onClick={() => {
                   setSnippetMenuOpen(false);
                   setSnippetForm(null);
@@ -1306,7 +1311,7 @@ export function ChatView({
               <div className="snippet-form">
                 <input
                   className="snippet-form-title"
-                  placeholder="片段名称"
+                  placeholder={t("chatView.snippetNamePlaceholder")}
                   value={snippetForm.title}
                   autoFocus
                   onChange={(event) =>
@@ -1315,7 +1320,7 @@ export function ChatView({
                 />
                 <textarea
                   className="snippet-form-body"
-                  placeholder="片段内容（可用当前输入预填）"
+                  placeholder={t("chatView.snippetBodyPlaceholder")}
                   rows={5}
                   value={snippetForm.body}
                   onChange={(event) =>
@@ -1324,7 +1329,7 @@ export function ChatView({
                 />
                 <div className="snippet-form-actions">
                   <button type="button" className="snippet-form-cancel" onClick={() => setSnippetForm(null)}>
-                    取消
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="button"
@@ -1332,7 +1337,7 @@ export function ChatView({
                     disabled={!snippetForm.title.trim() || !snippetForm.body.trim()}
                     onClick={saveSnippet}
                   >
-                    保存
+                    {t("common.save")}
                   </button>
                 </div>
               </div>
@@ -1343,16 +1348,16 @@ export function ChatView({
                     className="snippet-card"
                     key={preset.id}
                     type="button"
-                    onClick={() => insertSnippet({ id: preset.id, title: preset.title, body: preset.body })}
+                    onClick={() => insertSnippet({ id: preset.id, title: t(preset.titleKey), body: t(preset.bodyKey) })}
                   >
                     <MessageSquarePlus size={18} />
                     <span className="snippet-card-text">
-                      <span className="snippet-card-title">{preset.title}</span>
-                      <span className="snippet-card-desc">{preset.description}</span>
+                      <span className="snippet-card-title">{t(preset.titleKey)}</span>
+                      <span className="snippet-card-desc">{t(preset.descriptionKey)}</span>
                     </span>
                   </button>
                 ))}
-                {snippets.length > 0 && <div className="snippet-modal-divider">我的片段</div>}
+                {snippets.length > 0 && <div className="snippet-modal-divider">{t("chatView.mySnippets")}</div>}
                 {snippets.map((snippet) => (
                   <div className="snippet-card-row" key={snippet.id}>
                     <button className="snippet-card" type="button" onClick={() => insertSnippet(snippet)}>
@@ -1365,8 +1370,8 @@ export function ChatView({
                     <button
                       className="snippet-delete"
                       type="button"
-                      title="删除片段"
-                      aria-label="删除片段"
+                      title={t("chatView.deleteSnippet")}
+                      aria-label={t("chatView.deleteSnippet")}
                       onClick={() => deleteSnippet(snippet.id)}
                     >
                       <X size={14} />
@@ -1379,7 +1384,7 @@ export function ChatView({
                   onClick={() => setSnippetForm({ title: "", body: draft.trim() })}
                 >
                   <Plus size={16} />
-                  新建片段{draft.trim() ? "（用当前输入）" : ""}
+                  {t("chatView.newSnippet")}{draft.trim() ? t("chatView.newSnippetWithInput") : ""}
                 </button>
               </div>
             )}

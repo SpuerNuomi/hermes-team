@@ -1,5 +1,6 @@
 import { Copy, ExternalLink, FileCode, Paperclip, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "../i18n";
 import { openFileInEditor, readFile, readImageFile } from "../runtime/hermes-runtime";
 
 const VIEWABLE_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"]);
@@ -69,6 +70,7 @@ export const FileViewer = memo(function FileViewer({
   onClose: () => void;
   onAttach: (path: string) => void;
 }) {
+  const t = useTranslation();
   const [content, setContent] = useState<string | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -137,7 +139,7 @@ export const FileViewer = memo(function FileViewer({
     setOpenError("");
     try {
       const opened = await openFileInEditor(filePath);
-      if (!opened) setOpenError("Open failed.");
+      if (!opened) setOpenError(t("fileViewer.openFailed"));
     } catch (err) {
       setOpenError(err instanceof Error ? err.message : String(err));
     }
@@ -151,24 +153,24 @@ export const FileViewer = memo(function FileViewer({
             <FileCode size={16} />
             <strong title={filePath}>{name}</strong>
             <span title={filePath}>
-              {imageUrl ? "Image" : content != null && content.length > 0 ? formatTextSize(content) : filePath}
-              {truncated ? " (truncated)" : ""}
+              {imageUrl ? t("fileViewer.image") : content != null && content.length > 0 ? formatTextSize(content) : filePath}
+              {truncated ? ` ${t("fileViewer.truncatedTag")}` : ""}
             </span>
           </div>
           <div className="file-viewer-actions">
-            <button type="button" title="Attach to message" onClick={() => onAttach(filePath)}>
+            <button type="button" title={t("fileViewer.attachTitle")} onClick={() => onAttach(filePath)}>
               <Paperclip size={14} />
-              <span>Attach</span>
+              <span>{t("fileViewer.attach")}</span>
             </button>
-            <button type="button" title="Copy content or path" onClick={copyContent}>
+            <button type="button" title={t("fileViewer.copyTitle")} onClick={copyContent}>
               <Copy size={14} />
-              <span>{copied ? "Copied" : "Copy"}</span>
+              <span>{copied ? t("fileViewer.copied") : t("fileViewer.copy")}</span>
             </button>
-            <button type="button" title="Open" onClick={() => void openExternally()}>
+            <button type="button" title={t("fileViewer.open")} onClick={() => void openExternally()}>
               <ExternalLink size={14} />
-              <span>Open</span>
+              <span>{t("fileViewer.open")}</span>
             </button>
-            <button type="button" title="Close" aria-label="Close" onClick={onClose}>
+            <button type="button" title={t("common.close")} aria-label={t("common.close")} onClick={onClose}>
               <X size={15} />
             </button>
           </div>
@@ -176,7 +178,7 @@ export const FileViewer = memo(function FileViewer({
         {openError && <div className="file-viewer-inline-error">{openError}</div>}
         <div className="file-viewer-content">
           {loading ? (
-            <div className="file-viewer-state">Loading file...</div>
+            <div className="file-viewer-state">{t("fileViewer.loading")}</div>
           ) : error ? (
             <div className="file-viewer-state file-viewer-error">{error}</div>
           ) : imageUrl ? (
@@ -185,12 +187,12 @@ export const FileViewer = memo(function FileViewer({
             </div>
           ) : isBinary ? (
             <div className="file-viewer-state">
-              <strong>Binary file</strong>
-              <span>Preview is not available. Use Open or Attach.</span>
+              <strong>{t("fileViewer.binary")}</strong>
+              <span>{t("fileViewer.binaryHint")}</span>
             </div>
           ) : (
             <>
-              {truncated && <div className="file-viewer-truncated">Showing the first 100 KB.</div>}
+              {truncated && <div className="file-viewer-truncated">{t("fileViewer.truncatedNote")}</div>}
               <pre className="file-viewer-code">
                 <code>{content}</code>
               </pre>

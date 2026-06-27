@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import ProfileAvatar from "./ProfileAvatar";
+import { useTranslation } from "../i18n";
 import { PROFILE_COLORS, defaultColorForName } from "./profileColors";
 import { fileToAvatarDataUrl } from "./profileImage";
 import {
@@ -47,12 +48,12 @@ function errorMessage(error: unknown): string {
 
 const SECTIONS: ReadonlyArray<{
   id: ProfileSection;
-  label: string;
+  labelKey: string;
   Icon: LucideIcon;
 }> = [
-  { id: "profile", label: "概览与外观", Icon: User },
-  { id: "persona", label: "Persona", Icon: Sparkles },
-  { id: "advanced", label: "高级", Icon: Settings },
+  { id: "profile", labelKey: "profileDetail.sectionProfile", Icon: User },
+  { id: "persona", labelKey: "profileDetail.sectionPersona", Icon: Sparkles },
+  { id: "advanced", labelKey: "profileDetail.sectionAdvanced", Icon: Settings },
 ];
 
 function providerLabel(provider: string): string {
@@ -76,6 +77,7 @@ export default function ProfileDetailModal({
   onActivate,
   onDeleted,
 }: ProfileDetailModalProps) {
+  const t = useTranslation();
   const [section, setSection] = useState<ProfileSection>("profile");
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
@@ -116,11 +118,11 @@ export default function ProfileDetailModal({
       setPersonaPath(result.path);
       setPersonaLoaded(true);
     } catch (loadError) {
-      setError(`读取 Persona 失败：${errorMessage(loadError)}`);
+      setError(t("profileDetail.readPersonaFailed", { error: errorMessage(loadError) }));
     } finally {
       setPersonaLoading(false);
     }
-  }, [name]);
+  }, [name, t]);
 
   useEffect(() => {
     setPersonaLoaded(false);
@@ -144,7 +146,7 @@ export default function ProfileDetailModal({
       const next = await setHermesProfileColor({ name, color });
       onProfilesChanged(next);
     } catch (colorError) {
-      setError(`设置强调色失败：${errorMessage(colorError)}`);
+      setError(t("profileDetail.setColorFailed", { error: errorMessage(colorError) }));
     } finally {
       setWorking(false);
     }
@@ -157,11 +159,11 @@ export default function ProfileDetailModal({
     setWorking(true);
     setError("");
     try {
-      const dataUrl = await fileToAvatarDataUrl(file);
+      const dataUrl = await fileToAvatarDataUrl(file, t);
       const next = await setHermesProfileAvatar({ name, avatar: dataUrl });
       onProfilesChanged(next);
     } catch (avatarError) {
-      setError(`上传头像失败：${errorMessage(avatarError)}`);
+      setError(t("profileDetail.uploadAvatarFailed", { error: errorMessage(avatarError) }));
     } finally {
       setWorking(false);
     }
@@ -175,7 +177,7 @@ export default function ProfileDetailModal({
       const next = await removeHermesProfileAvatar({ name });
       onProfilesChanged(next);
     } catch (removeError) {
-      setError(`移除头像失败：${errorMessage(removeError)}`);
+      setError(t("profileDetail.removeAvatarFailed", { error: errorMessage(removeError) }));
     } finally {
       setWorking(false);
     }
@@ -191,7 +193,7 @@ export default function ProfileDetailModal({
       setPersonaPath(result.path);
       onRefresh();
     } catch (saveError) {
-      setError(`保存 Persona 失败：${errorMessage(saveError)}`);
+      setError(t("profileDetail.savePersonaFailed", { error: errorMessage(saveError) }));
     } finally {
       setPersonaSaving(false);
     }
@@ -237,7 +239,7 @@ export default function ProfileDetailModal({
               <span>{profile.home}</span>
             </div>
           </div>
-          <button type="button" className="profile-detail-close" onClick={onClose} aria-label="关闭">
+          <button type="button" className="profile-detail-close" onClick={onClose} aria-label={t("common.close")}>
             <X size={18} />
           </button>
         </header>
@@ -252,12 +254,12 @@ export default function ProfileDetailModal({
                 onClick={() => setSection(item.id)}
               >
                 <item.Icon size={16} />
-                <span>{item.label}</span>
+                <span>{t(item.labelKey)}</span>
               </button>
             ))}
             <span className="profile-detail-nav-note">
               <Wallet size={14} />
-              <span>钱包暂不支持</span>
+              <span>{t("profileDetail.walletUnsupported")}</span>
             </span>
           </nav>
 
@@ -281,22 +283,22 @@ export default function ProfileDetailModal({
                         disabled={busyAll}
                         onClick={() => fileInputRef.current?.click()}
                       >
-                        上传头像
+                        {t("profileDetail.uploadAvatar")}
                       </button>
                       {profile.avatar && (
                         <button type="button" disabled={busyAll} onClick={() => void handleRemoveAvatar()}>
-                          移除头像
+                          {t("profileDetail.removeAvatar")}
                         </button>
                       )}
                       {!profile.active && (
                         <button type="button" disabled={busyAll} onClick={() => onActivate(name)}>
                           <Plug2 size={14} />
-                          <span>激活</span>
+                          <span>{t("profileDetail.activate")}</span>
                         </button>
                       )}
                       <button type="button" disabled={busyAll} onClick={() => onActivate(name, true)}>
                         <MessageSquareText size={14} />
-                        <span>聊天</span>
+                        <span>{t("profileDetail.chat")}</span>
                       </button>
                     </div>
                   </div>
@@ -312,7 +314,7 @@ export default function ProfileDetailModal({
                 </div>
 
                 <div className="profile-detail-section">
-                  <span className="profile-detail-label">强调色</span>
+                  <span className="profile-detail-label">{t("profileDetail.accentColor")}</span>
                   <div className="profile-detail-swatches">
                     {PROFILE_COLORS.map((color) => (
                       <button
@@ -344,7 +346,7 @@ export default function ProfileDetailModal({
                   </div>
                   <div className="profile-detail-image-actions">
                     <button type="button" disabled={personaLoading} onClick={() => void loadPersona()}>
-                      重新加载
+                      {t("profileDetail.reload")}
                     </button>
                     <button
                       type="button"
@@ -352,7 +354,7 @@ export default function ProfileDetailModal({
                       disabled={personaSaving || personaLoading || !personaDirty}
                       onClick={() => void handleSavePersona()}
                     >
-                      {personaSaving ? "保存中..." : personaDirty ? "保存" : "已保存"}
+                      {personaSaving ? t("profileDetail.saving") : personaDirty ? t("common.save") : t("common.saved")}
                     </button>
                   </div>
                 </div>
@@ -363,8 +365,8 @@ export default function ProfileDetailModal({
                   disabled={personaLoading}
                   placeholder={
                     personaLoading
-                      ? "正在读取 SOUL.md ..."
-                      : "为该 profile 定义 persona / SOUL（系统人格）。保存后写入 profile 的 SOUL.md。"
+                      ? t("profileDetail.personaLoading")
+                      : t("profileDetail.personaPlaceholder")
                   }
                   onChange={(event) => setPersonaDraft(event.target.value)}
                 />
@@ -375,16 +377,16 @@ export default function ProfileDetailModal({
             {section === "advanced" && (
               <div className="profile-detail-pane">
                 {profile.isDefault ? (
-                  <p className="profile-detail-danger-info">default profile 不能删除。</p>
+                  <p className="profile-detail-danger-info">{t("profileDetail.cannotDeleteDefault")}</p>
                 ) : (
                   <div className="profile-detail-danger">
-                    <span className="profile-detail-label danger">危险操作</span>
+                    <span className="profile-detail-label danger">{t("profileDetail.dangerZone")}</span>
                     <p className="profile-detail-danger-info">
-                      删除该 profile 会调用 Hermes CLI 永久删除对应 profile 目录与配置，无法撤销。
+                      {t("profileDetail.deleteWarning")}
                     </p>
                     {confirmDelete ? (
                       <div className="profile-detail-danger-confirm">
-                        <span>确认删除 profile「{name}」？</span>
+                        <span>{t("profileDetail.confirmDeleteQuestion", { name })}</span>
                         <div className="profile-detail-image-actions">
                           <button
                             type="button"
@@ -393,10 +395,10 @@ export default function ProfileDetailModal({
                             onClick={() => onDeleted(name)}
                           >
                             <Trash2 size={14} />
-                            <span>确认删除</span>
+                            <span>{t("profileDetail.confirmDelete")}</span>
                           </button>
                           <button type="button" disabled={busyAll} onClick={() => setConfirmDelete(false)}>
-                            取消
+                            {t("common.cancel")}
                           </button>
                         </div>
                       </div>
@@ -408,7 +410,7 @@ export default function ProfileDetailModal({
                         onClick={() => setConfirmDelete(true)}
                       >
                         <Trash2 size={14} />
-                        <span>删除 Profile</span>
+                        <span>{t("profileDetail.deleteProfile")}</span>
                       </button>
                     )}
                   </div>
@@ -421,7 +423,7 @@ export default function ProfileDetailModal({
 
         <footer className="profile-detail-footer">
           <button type="button" className="primary" onClick={onClose}>
-            完成
+            {t("profileDetail.done")}
           </button>
         </footer>
 

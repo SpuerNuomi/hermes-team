@@ -9,6 +9,9 @@ import {
 import type { ClipboardEvent as ReactClipboardEvent } from "react";
 import type { MessageAttachment } from "../core/types";
 import { stageAttachmentFile } from "../runtime/hermes-runtime";
+import type { TranslationVars } from "../i18n/types";
+
+type TranslateFn = (key: string, vars?: TranslationVars) => string;
 
 export interface AttachmentProcessResult {
   attachments: MessageAttachment[];
@@ -172,7 +175,9 @@ export async function processDroppedOrPastedFiles(params: {
   files: File[] | FileList;
   existingCount: number;
   sessionId: string;
+  t: TranslateFn;
 }): Promise<AttachmentProcessResult> {
+  const { t } = params;
   const files = Array.from(params.files);
   const attachments: MessageAttachment[] = [];
   const errors: string[] = [];
@@ -183,13 +188,13 @@ export async function processDroppedOrPastedFiles(params: {
     const name = file.name || "attachment";
     const mime = file.type || "";
     if (index >= remaining) {
-      errors.push(`${name}: 超过每条消息 ${MAX_ATTACHMENTS_PER_MESSAGE} 个附件的限制。`);
+      errors.push(t("attachments.overLimit", { name, max: MAX_ATTACHMENTS_PER_MESSAGE }));
       continue;
     }
 
     if (isImageMime(mime)) {
       if (file.size > MAX_IMAGE_BYTES) {
-        errors.push(`${name}: 图片超过 ${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(0)} MB。`);
+        errors.push(t("attachments.imageTooLarge", { name, mb: (MAX_IMAGE_BYTES / 1024 / 1024).toFixed(0) }));
         continue;
       }
       try {
@@ -209,16 +214,16 @@ export async function processDroppedOrPastedFiles(params: {
         const detail = error instanceof Error ? error.message : String(error);
         const message =
           detail === "image-uncompressible"
-            ? `图片无法压缩到 ${(MAX_IMAGE_TARGET_BYTES / 1024 / 1024).toFixed(0)} MB 以内。`
-            : `图片读取或压缩失败：${detail}`;
-        errors.push(`${name}: ${message}`);
+            ? t("attachments.imageUncompressible", { mb: (MAX_IMAGE_TARGET_BYTES / 1024 / 1024).toFixed(0) })
+            : t("attachments.imageReadFailed", { detail });
+        errors.push(t("attachments.itemError", { name, message }));
       }
       continue;
     }
 
     if (isTextLikeFile(mime, name)) {
       if (file.size > MAX_TEXT_BYTES) {
-        errors.push(`${name}: 文本文件超过 ${(MAX_TEXT_BYTES / 1024).toFixed(0)} KB。`);
+        errors.push(t("attachments.textTooLarge", { name, kb: (MAX_TEXT_BYTES / 1024).toFixed(0) }));
         continue;
       }
       try {
@@ -232,7 +237,12 @@ export async function processDroppedOrPastedFiles(params: {
           createdAt: Date.now(),
         });
       } catch (error) {
-        errors.push(`${name}: 文本读取失败：${error instanceof Error ? error.message : String(error)}`);
+        errors.push(
+          t("attachments.textReadFailed", {
+            name,
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        );
       }
       continue;
     }
@@ -253,7 +263,12 @@ export async function processDroppedOrPastedFiles(params: {
         createdAt: Date.now(),
       });
     } catch (error) {
-      errors.push(`${name}: 暂存失败：${error instanceof Error ? error.message : String(error)}`);
+      errors.push(
+        t("attachments.stageFailed", {
+          name,
+          detail: error instanceof Error ? error.message : String(error),
+        }),
+      );
     }
   }
 

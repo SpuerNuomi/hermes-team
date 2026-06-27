@@ -7,6 +7,7 @@ import {
   X,
 } from "lucide-react";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { useTranslation } from "../i18n";
 import type { UpdateStatus } from "../runtime/hermes-runtime";
 
 interface UpdateDialogProps {
@@ -34,11 +35,11 @@ function formatPublished(value?: string | null): string | null {
 
 const TONE_META: Record<
   DialogTone,
-  { title: string; Icon: typeof Rocket; accent: string }
+  { titleKey: string; Icon: typeof Rocket; accent: string }
 > = {
-  available: { title: "发现新版本", Icon: Rocket, accent: "update-dialog-accent-available" },
-  current: { title: "已是最新版本", Icon: CheckCircle2, accent: "update-dialog-accent-current" },
-  failed: { title: "检查更新失败", Icon: AlertTriangle, accent: "update-dialog-accent-failed" },
+  available: { titleKey: "updateDialog.foundNewVersion", Icon: Rocket, accent: "update-dialog-accent-available" },
+  current: { titleKey: "updateDialog.upToDate", Icon: CheckCircle2, accent: "update-dialog-accent-current" },
+  failed: { titleKey: "updateDialog.checkFailed", Icon: AlertTriangle, accent: "update-dialog-accent-failed" },
 };
 
 export function UpdateDialog({
@@ -48,6 +49,7 @@ export function UpdateDialog({
   onRecheck,
   onOpenRelease,
 }: UpdateDialogProps) {
+  const t = useTranslation();
   const tone = resolveTone(status);
   const meta = TONE_META[tone];
   const published = formatPublished(status.publishedAt);
@@ -61,18 +63,18 @@ export function UpdateDialog({
         className="update-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="桌面更新"
+        aria-label={t("updateDialog.ariaLabel")}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className={`update-dialog-header ${meta.accent}`}>
           <div className="update-dialog-header-main">
             <meta.Icon size={22} />
             <div>
-              <strong>{meta.title}</strong>
+              <strong>{t(meta.titleKey)}</strong>
               <span>{status.releaseRepo}</span>
             </div>
           </div>
-          <button type="button" className="update-dialog-close" onClick={onClose} aria-label="关闭">
+          <button type="button" className="update-dialog-close" onClick={onClose} aria-label={t("common.close")}>
             <X size={18} />
           </button>
         </header>
@@ -80,11 +82,11 @@ export function UpdateDialog({
         <div className="update-dialog-body">
           <div className="update-dialog-versions">
             <div className="update-dialog-version">
-              <span className="update-dialog-version-label">当前版本</span>
+              <span className="update-dialog-version-label">{t("updateDialog.currentVersion")}</span>
               <strong>{status.appVersion}</strong>
             </div>
             <div className="update-dialog-version">
-              <span className="update-dialog-version-label">最新版本</span>
+              <span className="update-dialog-version-label">{t("updateDialog.latestVersion")}</span>
               <strong>{headingVersion ?? "—"}</strong>
             </div>
           </div>
@@ -93,7 +95,7 @@ export function UpdateDialog({
             <p className="update-dialog-release-name">{status.releaseName}</p>
           )}
           {published && tone !== "failed" && (
-            <p className="update-dialog-meta">发布时间：{published}</p>
+            <p className="update-dialog-meta">{t("updateDialog.publishedAt", { time: published })}</p>
           )}
 
           <p className={`update-dialog-message ${tone === "failed" ? "is-error" : ""}`}>
@@ -102,7 +104,7 @@ export function UpdateDialog({
 
           {tone === "available" && status.releaseNotes && (
             <div className="update-dialog-notes">
-              <span className="update-dialog-notes-label">更新说明</span>
+              <span className="update-dialog-notes-label">{t("updateDialog.releaseNotes")}</span>
               <div className="update-dialog-notes-body">
                 <AgentMarkdown>{status.releaseNotes}</AgentMarkdown>
               </div>
@@ -111,7 +113,7 @@ export function UpdateDialog({
 
           {tone === "failed" && (
             <p className="update-dialog-meta">
-              网络不可用时可稍后重试，或在“更新检查”面板调整 release 源。
+              {t("updateDialog.failedHint")}
             </p>
           )}
         </div>
@@ -124,11 +126,11 @@ export function UpdateDialog({
             onClick={onRecheck}
           >
             <RefreshCw size={14} />
-            <span>{busy ? "检查中…" : "重新检查"}</span>
+            <span>{busy ? t("updateDialog.checking") : t("updateDialog.recheck")}</span>
           </button>
           <div className="update-dialog-footer-right">
             <button type="button" className="update-dialog-secondary" onClick={onClose}>
-              <span>{tone === "available" ? "稍后" : "关闭"}</span>
+              <span>{tone === "available" ? t("updateDialog.later") : t("common.close")}</span>
             </button>
             {tone === "available" && releaseUrl && (
               <button
@@ -137,7 +139,7 @@ export function UpdateDialog({
                 onClick={() => onOpenRelease(releaseUrl)}
               >
                 <Download size={14} />
-                <span>前往下载</span>
+                <span>{t("updateDialog.goDownload")}</span>
               </button>
             )}
           </div>

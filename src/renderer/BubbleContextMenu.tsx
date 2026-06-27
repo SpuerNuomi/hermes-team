@@ -12,32 +12,35 @@ export interface BubbleMenuAction {
 
 /**
  * Assemble the standard chat-bubble right-click actions. `onCopyTranscript` is
- * optional — the "复制整段对话" entry is only added when a handler is provided.
+ * optional — the "copy transcript" entry is only added when a handler is
+ * provided. `t` is the translator passed from the calling component.
  */
 export function buildBubbleActions(opts: {
   hasContent: boolean;
+  t: (key: string) => string;
   onCopy: () => void;
   onSelectText: () => void;
   onCopySelection: () => void;
   onCopyTranscript?: () => void;
 }): BubbleMenuAction[] {
+  const { t } = opts;
   const actions: BubbleMenuAction[] = [
     {
       key: "copy",
-      label: "复制本条",
+      label: t("bubble.copyOne"),
       icon: <Copy size={14} />,
       disabled: !opts.hasContent,
       onSelect: opts.onCopy,
     },
     {
       key: "select",
-      label: "选择本条文本",
+      label: t("bubble.selectText"),
       icon: <TextCursorInput size={14} />,
       onSelect: opts.onSelectText,
     },
     {
       key: "copy-selection",
-      label: "复制所选",
+      label: t("bubble.copySelection"),
       icon: <ClipboardCopy size={14} />,
       onSelect: opts.onCopySelection,
     },
@@ -45,7 +48,7 @@ export function buildBubbleActions(opts: {
   if (opts.onCopyTranscript) {
     actions.push({
       key: "copy-transcript",
-      label: "复制整段对话",
+      label: t("bubble.copyTranscript"),
       icon: <MessagesSquare size={14} />,
       onSelect: opts.onCopyTranscript,
     });

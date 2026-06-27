@@ -1,6 +1,7 @@
 import { HelpCircle } from "lucide-react";
 import { memo, useRef, useState } from "react";
 import type { Message } from "../core/types";
+import { useTranslation } from "../i18n";
 
 /**
  * Inline card for an agent `clarify` tool call. Renders the question with
@@ -20,6 +21,7 @@ export const ClarifyCard = memo(function ClarifyCard({
   formatTime: (timestamp: number) => string;
   onAnswer: (answer: string) => void;
 }) {
+  const t = useTranslation();
   const [text, setText] = useState("");
   const [submitted, setSubmitted] = useState(false);
   // Synchronous guard: `submitted` state lags within the same tick, so a fast
@@ -43,7 +45,7 @@ export const ClarifyCard = memo(function ClarifyCard({
       </div>
       <div className="message-body">
         <div className="message-meta">
-          <span>需要你确认</span>
+          <span>{t("clarify.title")}</span>
           <time>{formatTime(message.createdAt)}</time>
         </div>
         <div className="chat-clarify">
@@ -56,7 +58,7 @@ export const ClarifyCard = memo(function ClarifyCard({
             <div className="chat-clarify-answer">
               {message.clarifyAnswer && message.clarifyAnswer.trim()
                 ? message.clarifyAnswer
-                : "已让 Hermes 自行决定"}
+                : t("clarify.letHermesDecided")}
             </div>
           ) : (
             <>
@@ -80,7 +82,7 @@ export const ClarifyCard = memo(function ClarifyCard({
                   className="chat-clarify-textarea"
                   rows={2}
                   value={text}
-                  placeholder={choices.length > 0 ? "或输入你的回答..." : "输入你的回答..."}
+                  placeholder={choices.length > 0 ? t("clarify.placeholderOr") : t("clarify.placeholder")}
                   disabled={submitted}
                   onChange={(event) => setText(event.target.value)}
                   onKeyDown={(event) => {
@@ -97,7 +99,7 @@ export const ClarifyCard = memo(function ClarifyCard({
                     disabled={submitted}
                     onClick={() => submit("")}
                   >
-                    让 Hermes 决定
+                    {t("clarify.letHermesDecide")}
                   </button>
                   <button
                     type="button"
@@ -105,7 +107,7 @@ export const ClarifyCard = memo(function ClarifyCard({
                     disabled={submitted || !text.trim()}
                     onClick={() => submit(text)}
                   >
-                    发送
+                    {t("clarify.send")}
                   </button>
                 </div>
               </div>

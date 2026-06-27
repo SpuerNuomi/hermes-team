@@ -1,5 +1,6 @@
 import { FolderOpen, MoreHorizontal, Pin } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useTranslation } from "../i18n";
 import type { HermesTeamSessionSummary } from "../runtime/hermes-runtime";
 import type { SessionProject } from "./SessionMoveMenu";
 import { SidebarSessionMenu, type SidebarMenuTarget } from "./SidebarSessionMenu";
@@ -25,6 +26,7 @@ export function SidebarRecentSessions({
   onMoveToFolder: (sessionId: string, folder: string | null) => void;
   onPickFolder: (sessionId: string) => void;
 }) {
+  const t = useTranslation();
   const [menuTarget, setMenuTarget] = useState<SidebarMenuTarget | null>(null);
 
   const pinnedSessions = sessions.filter((session) => session.pinned);
@@ -93,8 +95,8 @@ export function SidebarRecentSessions({
       <button
         type="button"
         className="recent-session-options"
-        aria-label="会话操作"
-        title="会话操作"
+        aria-label={t("sessions.sessionActions")}
+        title={t("sessions.sessionActions")}
         onClick={(event) => {
           event.stopPropagation();
           const rect = event.currentTarget.getBoundingClientRect();
@@ -109,21 +111,21 @@ export function SidebarRecentSessions({
   return (
     <section className="sidebar-panel sidebar-recent">
       <div className="sidebar-section-head">
-        <p className="panel-label">最近会话</p>
+        <p className="panel-label">{t("sessions.recentSessions")}</p>
         <button type="button" onClick={onShowAll}>
-          全部
+          {t("sessions.all")}
         </button>
       </div>
       <div className="sidebar-recent-list">
         {pinnedSessions.length === 0 && recentSessions.length === 0 ? (
-          <p className="empty-note">还没有历史聊天。</p>
+          <p className="empty-note">{t("sessions.noHistory")}</p>
         ) : (
           <>
             {pinnedSessions.length > 0 && (
               <div className="recent-project-group">
                 <div className="recent-chat-head recent-pinned-head">
                   <Pin size={12} />
-                  <span>置顶</span>
+                  <span>{t("sessions.pinned")}</span>
                 </div>
                 {pinnedSessions.map(renderSession)}
               </div>

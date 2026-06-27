@@ -1,4 +1,5 @@
 import type { SessionModelOverride } from "../../core/types";
+import type { TranslationVars } from "../../i18n/types";
 import {
   getHermesModelConfig,
   inspectHermesInstall,
@@ -7,6 +8,8 @@ import {
   readHermesMemoryDetails,
   readHermesPersona,
 } from "../../runtime/hermes-runtime";
+
+type TranslateFn = (key: string, vars?: TranslationVars) => string;
 
 /**
  * Slash commands answered entirely on the desktop side, without dispatching a
@@ -47,27 +50,37 @@ export interface LocalCommandContext {
   sessionModelOverride?: SessionModelOverride | null;
   /** Fallback known commands for `/help` (kept in sync with the slash menu). */
   commands: Array<{ name: string; description: string; category: string }>;
+  /** Translator for localized command output. */
+  t: TranslateFn;
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  chat: "对话",
-  agent: "Agent",
-  tools: "工具",
-  info: "信息",
-};
+function categoryLabel(category: string, t: TranslateFn): string {
+  switch (category) {
+    case "chat":
+      return t("localCommands.categoryChat");
+    case "agent":
+      return t("localCommands.categoryAgent");
+    case "tools":
+      return t("localCommands.categoryTools");
+    case "info":
+      return t("localCommands.categoryInfo");
+    default:
+      return category;
+  }
+}
 
-function renderHelp(commands: LocalCommandContext["commands"]): string {
+function renderHelp(commands: LocalCommandContext["commands"], t: TranslateFn): string {
   const grouped = new Map<string, LocalCommandContext["commands"]>();
   for (const command of commands) {
     const list = grouped.get(command.category) ?? [];
     list.push(command);
     grouped.set(command.category, list);
   }
-  let md = "**可用命令**\n";
+  let md = `**${t("localCommands.availableCommands")}**\n`;
   for (const category of ["chat", "agent", "tools", "info"]) {
     const list = grouped.get(category);
     if (!list || list.length === 0) continue;
-    md += `\n**${CATEGORY_LABELS[category] ?? category}**\n`;
+    md += `\n**${categoryLabel(category, t)}**\n`;
     for (const command of list) {
       md += `\`${command.name}\` — ${command.description}\n`;
     }
@@ -76,6 +89,7 @@ function renderHelp(commands: LocalCommandContext["commands"]): string {
 }
 
 async function renderModel(
+  t: TranslateFn,
   profile?: string,
   sessionOverride?: SessionModelOverride | null,
 ): Promise<string> {
@@ -84,84 +98,94 @@ async function renderModel(
   // config.yaml default at runtime, so surface it as the "current" model and
   // keep the global default visible as the fallback.
   const effective = sessionOverride ?? config;
+  const notSet = t("localCommands.notSet");
   const lines = [
-    `**当前模型：** \`${effective.model || "未设置"}\``,
-    `**Provider：** ${effective.provider || "auto"}`,
+    `**${t("localCommands.currentModel")}** \`${effective.model || notSet}\``,
+    `**${t("localCommands.provider")}** ${effective.provider || "auto"}`,
   ];
-  if (effective.baseUrl) lines.push(`**Base URL：** ${effective.baseUrl}`);
+  if (effective.baseUrl) lines.push(`**${t("localCommands.baseUrl")}** ${effective.baseUrl}`);
   if (effective.contextLength) {
-    lines.push(`**上下文窗口：** ${effective.contextLength.toLocaleString()} tokens`);
+    lines.push(`**${t("localCommands.contextWindow")}** ${effective.contextLength.toLocaleString()} tokens`);
   }
   if (sessionOverride?.model) {
-    lines.push("", "_仅当前会话覆盖；其他会话不受影响。_");
+    lines.push("", `_${t("localCommands.sessionOverrideNote")}_`);
     lines.push(
-      `**全局默认：** \`${config.model || "未设置"}\`（${config.provider || "auto"}）`,
+      `**${t("localCommands.globalDefault")}** \`${config.model || notSet}\`（${config.provider || "auto"}）`,
     );
   }
   return lines.join("\n");
 }
 
-async function renderMemory(profile?: string): Promise<string> {
+async function renderMemory(t: TranslateFn, profile?: string): Promise<string> {
   const details = await readHermesMemoryDetails(profile ? { profile } : {});
-  const lines: string[] = ["**Agent Memory**\n"];
+  const lines: string[] = [`**${t("localCommands.agentMemory")}**\n`];
   const content = details.memory.content.trim();
-  lines.push(content || "_暂无记忆条目。_");
+  lines.push(content || `_${t("localCommands.noMemoryEntries")}_`);
   lines.push(
-    `\n**统计：** ${details.stats.totalSessions} 个会话，${details.stats.totalMessages} 条消息` +
-      ` · MEMORY.md ${details.memory.charCount}/${details.memory.charLimit} 字符`,
+    `\n**${t("localCommands.memoryStats", {
+      sessions: details.stats.totalSessions,
+      messages: details.stats.totalMessages,
+      chars: details.memory.charCount,
+      limit: details.memory.charLimit,
+    })}**`,
   );
   return lines.join("\n");
 }
 
-async function renderPersona(profile?: string): Promise<string> {
+async function renderPersona(t: TranslateFn, profile?: string): Promise<string> {
   const persona = await readHermesPersona(profile ? { profile } : {});
   const content = persona.content.trim();
-  return content ? `**当前 Persona (SOUL.md)**\n\n${content}` : "_尚未配置 Persona。_";
+  return content
+    ? `**${t("localCommands.currentPersona")}**\n\n${content}`
+    : `_${t("localCommands.noPersona")}_`;
 }
 
-async function renderTools(profile?: string): Promise<string> {
+async function renderTools(t: TranslateFn, profile?: string): Promise<string> {
   const toolsets = await listHermesToolsets(profile ? { profile } : {});
-  if (!toolsets.length) return "未找到任何工具集。";
+  if (!toolsets.length) return t("localCommands.noToolsets");
+  const enabled = t("localCommands.toolsetEnabled");
+  const disabled = t("localCommands.toolsetDisabled");
   const rows = toolsets
     .map(
       (toolset) =>
-        `- **${toolset.label}** — ${toolset.description} ${toolset.enabled ? "*(已启用)*" : "*(已禁用)*"}`,
+        `- **${toolset.label}** — ${toolset.description} ${toolset.enabled ? `*(${enabled})*` : `*(${disabled})*`}`,
     )
     .join("\n");
-  return `**可用工具集**\n\n${rows}`;
+  return `**${t("localCommands.availableToolsets")}**\n\n${rows}`;
 }
 
-async function renderSkills(profile?: string): Promise<string> {
+async function renderSkills(t: TranslateFn, profile?: string): Promise<string> {
   const skills = await listHermesSkills(profile ? { profile } : {});
-  if (!skills.length) return "尚未安装任何技能。";
+  if (!skills.length) return t("localCommands.noSkills");
+  const noDesc = t("localCommands.noSkillDesc");
   const rows = skills
     .map(
       (skill) =>
-        `- **${skill.name}** (${skill.category}) — ${skill.description || "无描述"}`,
+        `- **${skill.name}** (${skill.category}) — ${skill.description || noDesc}`,
     )
     .join("\n");
-  return `**已安装技能**\n\n${rows}`;
+  return `**${t("localCommands.installedSkills")}**\n\n${rows}`;
 }
 
-async function renderVersion(): Promise<string> {
+async function renderVersion(t: TranslateFn): Promise<string> {
   const status = await inspectHermesInstall();
-  const lines = [`**Hermes Agent：** ${status.version || "未知"}`];
-  if (status.command) lines.push(`**CLI：** \`${status.command}\``);
-  if (status.hermesHome) lines.push(`**Hermes Home：** ${status.hermesHome}`);
-  if (status.activeProfile) lines.push(`**活动 Profile：** ${status.activeProfile}`);
+  const lines = [`**${t("localCommands.hermesAgent")}** ${status.version || t("localCommands.unknown")}`];
+  if (status.command) lines.push(`**${t("localCommands.cli")}** \`${status.command}\``);
+  if (status.hermesHome) lines.push(`**${t("localCommands.hermesHome")}** ${status.hermesHome}`);
+  if (status.activeProfile) lines.push(`**${t("localCommands.activeProfile")}** ${status.activeProfile}`);
   return lines.join("\n");
 }
 
-function renderUsage(tokenUsage: LocalCommandContext["tokenUsage"]): string {
+function renderUsage(tokenUsage: LocalCommandContext["tokenUsage"], t: TranslateFn): string {
   if (!tokenUsage || (tokenUsage.promptTokens === 0 && tokenUsage.totalTokens === 0)) {
-    return "本次会话暂无用量数据，发送一条消息后再试。";
+    return t("localCommands.noUsage");
   }
   const completion = Math.max(tokenUsage.totalTokens - tokenUsage.promptTokens, 0);
   return [
-    "**Token 用量**\n",
-    `- **Prompt：** ${tokenUsage.promptTokens.toLocaleString()} tokens`,
-    `- **Completion：** ${completion.toLocaleString()} tokens`,
-    `- **合计：** ${tokenUsage.totalTokens.toLocaleString()} tokens`,
+    `**${t("localCommands.tokenUsage")}**\n`,
+    `- **${t("localCommands.prompt")}** ${tokenUsage.promptTokens.toLocaleString()} tokens`,
+    `- **${t("localCommands.completion")}** ${completion.toLocaleString()} tokens`,
+    `- **${t("localCommands.total")}** ${tokenUsage.totalTokens.toLocaleString()} tokens`,
   ].join("\n");
 }
 
@@ -174,23 +198,24 @@ export async function runLocalReplyCommand(
   ctx: LocalCommandContext,
 ): Promise<string | null> {
   const command = slashCommandName(text);
+  const { t } = ctx;
   switch (command) {
     case "/help":
-      return renderHelp(ctx.commands);
+      return renderHelp(ctx.commands, t);
     case "/model":
-      return renderModel(ctx.profile, ctx.sessionModelOverride);
+      return renderModel(t, ctx.profile, ctx.sessionModelOverride);
     case "/memory":
-      return renderMemory(ctx.profile);
+      return renderMemory(t, ctx.profile);
     case "/persona":
-      return renderPersona(ctx.profile);
+      return renderPersona(t, ctx.profile);
     case "/tools":
-      return renderTools(ctx.profile);
+      return renderTools(t, ctx.profile);
     case "/skills":
-      return renderSkills(ctx.profile);
+      return renderSkills(t, ctx.profile);
     case "/version":
-      return renderVersion();
+      return renderVersion(t);
     case "/usage":
-      return renderUsage(ctx.tokenUsage);
+      return renderUsage(ctx.tokenUsage, t);
     default:
       return null;
   }
