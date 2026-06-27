@@ -653,6 +653,41 @@ button {
   letter-spacing: 0.08em;
 }
 
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 4px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.nav-group-toggle:hover {
+  color: var(--text);
+}
+
+.nav-group-toggle > span {
+  flex: 1;
+  text-align: left;
+}
+
+.nav-group-chevron {
+  transition: transform 0.16s ease;
+  transform: rotate(-90deg);
+}
+
+.nav-group-chevron.open {
+  transform: rotate(0deg);
+}
+
 .workspace-item,
 .mode-toggle button,
 .send-button {

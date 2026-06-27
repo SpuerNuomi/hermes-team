@@ -5,9 +5,11 @@ import {
   Building2,
   CalendarClock,
   CheckCircle2,
+  ChevronDown,
   CircleDot,
   Clock,
   Compass,
+  FlaskConical,
   GitBranch,
   FolderPlus,
   FileCode2,
@@ -832,6 +834,7 @@ export function App() {
   const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
   const [worktreeVisible, setWorktreeVisible] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [labsExpanded, setLabsExpanded] = useState(false);
   const [webPreviewUrl, setWebPreviewUrl] = useState<string | null>(null);
   const [notice, setNotice] = useState(() => t("app.notice.ready"));
   const [sessions, setSessions] = useState<HermesTeamSessionSummary[]>([]);
@@ -4870,37 +4873,68 @@ export function App() {
               <CalendarClock size={18} />
               <span>{t("nav.schedules")}</span>
             </button>
-            <button
-              className={`workspace-item ${activeView === "kanban" ? "active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("kanban")}
-              title={t("nav.kanban")}
-              aria-label={t("nav.kanban")}
-            >
-              <LayoutGrid size={18} />
-              <span>{t("nav.kanban")}</span>
-            </button>
-            <button
-              className={`workspace-item ${activeView === "multiagent" ? "active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("multiagent")}
-              title={t("nav.multiAgent")}
-              aria-label={t("nav.multiAgent")}
-            >
-              <Users size={18} />
-              <span>{t("nav.multiAgent")}</span>
-            </button>
-            <button
-              className={`workspace-item ${activeView === "office" ? "active" : ""}`}
-              type="button"
-              onClick={() => setActiveView("office")}
-              title={t("nav.office")}
-              aria-label={t("nav.office")}
-            >
-              <Building2 size={18} />
-              <span>{t("nav.office")}</span>
-            </button>
           </div>
+
+          {(() => {
+            const labsViewActive =
+              activeView === "kanban" ||
+              activeView === "multiagent" ||
+              activeView === "office";
+            const showLabsItems = labsExpanded || labsViewActive || sidebarCollapsed;
+            return (
+              <div className="nav-group nav-group-labs">
+                {!sidebarCollapsed && (
+                  <button
+                    type="button"
+                    className="nav-group-toggle"
+                    onClick={() => setLabsExpanded((v) => !v)}
+                    aria-expanded={showLabsItems}
+                  >
+                    <FlaskConical size={13} />
+                    <span>{t("nav.groupLabs")}</span>
+                    <ChevronDown
+                      size={14}
+                      className={`nav-group-chevron ${showLabsItems ? "open" : ""}`}
+                    />
+                  </button>
+                )}
+                {showLabsItems && (
+                  <>
+                    <button
+                      className={`workspace-item ${activeView === "kanban" ? "active" : ""}`}
+                      type="button"
+                      onClick={() => setActiveView("kanban")}
+                      title={t("nav.kanban")}
+                      aria-label={t("nav.kanban")}
+                    >
+                      <LayoutGrid size={18} />
+                      <span>{t("nav.kanban")}</span>
+                    </button>
+                    <button
+                      className={`workspace-item ${activeView === "multiagent" ? "active" : ""}`}
+                      type="button"
+                      onClick={() => setActiveView("multiagent")}
+                      title={t("nav.multiAgent")}
+                      aria-label={t("nav.multiAgent")}
+                    >
+                      <Users size={18} />
+                      <span>{t("nav.multiAgent")}</span>
+                    </button>
+                    <button
+                      className={`workspace-item ${activeView === "office" ? "active" : ""}`}
+                      type="button"
+                      onClick={() => setActiveView("office")}
+                      title={t("nav.office")}
+                      aria-label={t("nav.office")}
+                    >
+                      <Building2 size={18} />
+                      <span>{t("nav.office")}</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="nav-group">
             <p className="nav-group-label">{t("nav.groupSystem")}</p>

@@ -30,6 +30,7 @@ const zh = {
     multiAgent: "多 Agent",
     office: "办公室",
     groupAutomation: "自动化",
+    groupLabs: "实验功能",
     schedules: "定时任务",
     groupSystem: "系统",
     settings: "设置",

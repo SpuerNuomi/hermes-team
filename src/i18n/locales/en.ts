@@ -29,6 +29,7 @@ const en = {
     multiAgent: "Multi-agent",
     office: "Office",
     groupAutomation: "Automation",
+    groupLabs: "Labs",
     schedules: "Schedules",
     groupSystem: "System",
     settings: "Settings",
