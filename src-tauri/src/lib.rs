@@ -1765,6 +1765,445 @@ async fn install_hermes_mcp_catalog_entry(
     }
 }
 
+/// One catalog entry from the community registry (agents / workflows).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryItem {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    name: String,
+    description: String,
+    author: Option<String>,
+    tags: Vec<String>,
+    version: Option<String>,
+    license: Option<String>,
+    path: Option<String>,
+    entry: Option<String>,
+    homepage: Option<String>,
+}
+
+/// Normalised community registry catalog. Network/parse failures resolve to an
+/// empty catalog with `error` set, so the Discover screen can degrade
+/// gracefully instead of throwing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryCatalogResult {
+    agents: Vec<RegistryItem>,
+    workflows: Vec<RegistryItem>,
+    skills: Vec<RegistryItem>,
+    mcps: Vec<RegistryItem>,
+    source: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryDetailInput {
+    kind: String,
+    path: Option<String>,
+    entry: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallRegistryAgentInput {
+    id: String,
+    path: Option<String>,
+    entry: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallRegistryWorkflowInput {
+    profile: Option<String>,
+    id: String,
+    path: String,
+}
+
+/// The community marketplace catalog is served from a public GitHub repo
+/// (`index.json` lists every entry with a `type` and a repo `path`). The repo
+/// and branch are overridable via `HERMES_TEAM_REGISTRY_REPO` /
+/// `HERMES_TEAM_REGISTRY_BRANCH` so a self-hosted/mirror source can be used.
+fn registry_repo() -> String {
+    std::env::var("HERMES_TEAM_REGISTRY_REPO")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "fathah/hermes-registry".to_string())
+}
+
+fn registry_branch() -> String {
+    std::env::var("HERMES_TEAM_REGISTRY_BRANCH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "main".to_string())
+}
+
+fn registry_raw_base() -> String {
+    format!(
+        "https://raw.githubusercontent.com/{}/refs/heads/{}",
+        registry_repo(),
+        registry_branch()
+    )
+}
+
+fn registry_repo_base() -> String {
+    format!(
+        "https://github.com/{}/tree/{}",
+        registry_repo(),
+        registry_branch()
+    )
+}
+
+/// Reject anything that could escape the entry folder when joined onto a local
+/// destination or appended to the raw base URL.
+fn is_safe_registry_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && !path.contains('\\')
+        && path
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+}
+
+fn registry_get_text(url: &str) -> Result<String, String> {
+    match ureq::get(url)
+        .set("User-Agent", "hermes-team-desktop")
+        .set("Accept", "*/*")
+        .timeout(Duration::from_secs(30))
+        .call()
+    {
+        Ok(resp) => resp
+            .into_string()
+            .map_err(|error| format!("读取注册表响应失败：{error}")),
+        Err(ureq::Error::Status(code, _)) => Err(format!("注册表返回状态 {code}。")),
+        Err(ureq::Error::Transport(transport)) => {
+            Err(format!("无法连接注册表（网络不可用？）：{transport}"))
+        }
+    }
+}
+
+fn parse_registry_entry(entry: &serde_json::Value, repo_base: &str) -> RegistryItem {
+    let get_str = |key: &str| {
+        entry
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+    };
+    let id = get_str("id").unwrap_or_default();
+    let kind = get_str("type").unwrap_or_default();
+    let name = get_str("name")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| id.clone());
+    let author = match entry.get("author") {
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(serde_json::Value::Object(object)) => object
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        _ => None,
+    };
+    let tags = entry
+        .get("tags")
+        .and_then(|value| value.as_array())
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(|tag| tag.as_str().map(|value| value.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let path = get_str("path").filter(|value| !value.is_empty());
+    let homepage = path.as_ref().map(|value| format!("{repo_base}/{value}"));
+    RegistryItem {
+        id,
+        kind,
+        name,
+        description: get_str("description").unwrap_or_default(),
+        author,
+        tags,
+        version: get_str("version"),
+        license: get_str("license"),
+        path,
+        entry: get_str("entry"),
+        homepage,
+    }
+}
+
+/// Fetch and normalise the community catalog (agents + workflows + skills +
+/// mcps). The Discover screen consumes agents/workflows from here; skills/mcps
+/// continue to use the existing CLI-backed flows.
+#[tauri::command]
+async fn fetch_hermes_registry() -> Result<RegistryCatalogResult, String> {
+    let source = registry_repo();
+    let mut result = RegistryCatalogResult {
+        agents: Vec::new(),
+        workflows: Vec::new(),
+        skills: Vec::new(),
+        mcps: Vec::new(),
+        source: source.clone(),
+        error: None,
+    };
+    let index_url = format!("{}/index.json", registry_raw_base());
+    let body = match registry_get_text(&index_url) {
+        Ok(body) => body,
+        Err(error) => {
+            result.error = Some(error);
+            return Ok(result);
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(error) => {
+            result.error = Some(format!("解析注册表索引失败：{error}"));
+            return Ok(result);
+        }
+    };
+    let repo_base = registry_repo_base();
+    if let Some(entries) = value.get("entries").and_then(|value| value.as_array()) {
+        for entry in entries {
+            let item = parse_registry_entry(entry, &repo_base);
+            if item.id.is_empty() {
+                continue;
+            }
+            match item.kind.as_str() {
+                "agent" => result.agents.push(item),
+                "workflow" => result.workflows.push(item),
+                "skill" => result.skills.push(item),
+                "mcp" => result.mcps.push(item),
+                _ => {}
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Fetch the human-readable doc for a registry item's detail modal. Agents
+/// resolve to their `AGENT.md` persona; workflows resolve to their
+/// `workflow.json` definition (returned fenced for Markdown rendering).
+#[tauri::command]
+async fn fetch_hermes_registry_detail(input: RegistryDetailInput) -> Result<String, String> {
+    let path = input.path.unwrap_or_default();
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("该条目没有可用的注册表路径。".to_string());
+    }
+    if !is_safe_registry_path(path) {
+        return Err("非法的注册表路径。".to_string());
+    }
+    let entry = input
+        .entry
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    let candidates: Vec<String> = match input.kind.as_str() {
+        "agents" => vec![
+            entry.unwrap_or_else(|| "AGENT.md".to_string()),
+            "AGENT.md".to_string(),
+            "README.md".to_string(),
+        ],
+        "workflows" => vec![
+            entry.unwrap_or_else(|| "workflow.json".to_string()),
+            "workflow.json".to_string(),
+            "README.md".to_string(),
+        ],
+        _ => vec![entry.unwrap_or_else(|| "README.md".to_string())],
+    };
+    let base = registry_raw_base();
+    let mut seen = HashSet::new();
+    for file in candidates {
+        if !seen.insert(file.clone()) {
+            continue;
+        }
+        if !is_safe_registry_path(&file) {
+            continue;
+        }
+        let url = format!("{base}/{path}/{file}");
+        if let Ok(text) = registry_get_text(&url) {
+            if !text.trim().is_empty() {
+                if file.ends_with(".json") {
+                    return Ok(format!("```json\n{}\n```", text.trim()));
+                }
+                return Ok(text);
+            }
+        }
+    }
+    Err("未找到该条目的文档。".to_string())
+}
+
+/// Install a registry agent as a switchable Hermes profile: clone the base
+/// config into `<id>` and write the agent's `AGENT.md` as that profile's
+/// `SOUL.md`, so switching to the profile activates the published persona.
+#[tauri::command]
+async fn install_hermes_registry_agent(
+    input: InstallRegistryAgentInput,
+) -> Result<Vec<HermesProfileInfo>, String> {
+    let name = input.id.trim().to_ascii_lowercase();
+    if name == "default" {
+        return Err("不能使用 default 作为智能体 Profile 名称。".to_string());
+    }
+    if !is_valid_profile_name(&name) {
+        return Err("智能体 ID 不是合法的 Profile 名称。".to_string());
+    }
+    let home = profile_home(Some(&name))?;
+    if !home.exists() {
+        run_hermes_cli(
+            &[
+                "profile".to_string(),
+                "create".to_string(),
+                name.clone(),
+                "--clone".to_string(),
+            ],
+            Duration::from_secs(30),
+        )?;
+    }
+    if let Some(path) = input
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !is_safe_registry_path(path) {
+            return Err("非法的注册表路径。".to_string());
+        }
+        let entry = input
+            .entry
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("AGENT.md");
+        if !is_safe_registry_path(entry) {
+            return Err("非法的注册表入口文件。".to_string());
+        }
+        let url = format!("{}/{path}/{entry}", registry_raw_base());
+        let markdown = registry_get_text(&url)?;
+        if markdown.trim().is_empty() {
+            return Err("智能体 AGENT.md 内容为空。".to_string());
+        }
+        let soul = profile_home(Some(&name))?.join("SOUL.md");
+        fs::write(&soul, ensure_trailing_newline(&markdown))
+            .map_err(|error| format!("写入 {} 失败：{error}", soul.to_string_lossy()))?;
+    }
+    list_hermes_profiles().await
+}
+
+/// List every file path under a registry folder via the recursive git tree API.
+fn list_registry_folder_files(folder: &str) -> Result<Vec<String>, String> {
+    let url = format!(
+        "https://api.github.com/repos/{}/git/trees/{}?recursive=1",
+        registry_repo(),
+        registry_branch()
+    );
+    let value = match ureq::get(&url)
+        .set("User-Agent", "hermes-team-desktop")
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .timeout(Duration::from_secs(30))
+        .call()
+    {
+        Ok(resp) => resp
+            .into_json::<serde_json::Value>()
+            .map_err(|error| format!("解析注册表文件树失败：{error}"))?,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("GitHub API 返回状态 {code}。")),
+        Err(ureq::Error::Transport(transport)) => {
+            return Err(format!("无法连接 GitHub：{transport}"))
+        }
+    };
+    let prefix = format!("{folder}/");
+    let mut files = Vec::new();
+    if let Some(tree) = value.get("tree").and_then(|value| value.as_array()) {
+        for blob in tree {
+            if blob.get("type").and_then(|value| value.as_str()) != Some("blob") {
+                continue;
+            }
+            if let Some(path) = blob.get("path").and_then(|value| value.as_str()) {
+                if path.starts_with(&prefix) {
+                    files.push(path.to_string());
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn list_installed_workflows(profile: Option<&str>) -> Result<Vec<String>, String> {
+    let dir = profile_home(profile)?.join("workflows");
+    let mut ids = Vec::new();
+    if !dir.exists() {
+        return Ok(ids);
+    }
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("读取 {} 失败：{error}", dir.to_string_lossy()))?
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.path().is_dir() {
+            ids.push(name);
+        } else {
+            let stem = name
+                .rsplit_once('.')
+                .map(|(stem, _)| stem.to_string())
+                .unwrap_or(name);
+            ids.push(stem);
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+#[tauri::command]
+async fn list_hermes_installed_workflows(profile: Option<String>) -> Result<Vec<String>, String> {
+    let profile = normalize_profile(profile.as_deref());
+    list_installed_workflows(profile.as_deref())
+}
+
+/// Install a registry workflow by downloading its definition folder into
+/// `<profile>/workflows/<id>/`. Hermes core has no workflow runner yet, so this
+/// imports/stores the real definition for inspection and future execution.
+#[tauri::command]
+async fn install_hermes_registry_workflow(
+    input: InstallRegistryWorkflowInput,
+) -> Result<Vec<String>, String> {
+    let profile = normalize_profile(input.profile.as_deref());
+    let id = input.id.trim();
+    if !is_valid_skill_segment(id) {
+        return Err(format!("无效工作流 ID：{id}"));
+    }
+    let path = input.path.trim();
+    if !is_safe_registry_path(path) {
+        return Err("非法的注册表路径。".to_string());
+    }
+    let files = list_registry_folder_files(path)?;
+    if files.is_empty() {
+        return Err("注册表中未找到该工作流的文件。".to_string());
+    }
+    let dest = profile_home(profile.as_deref())?.join("workflows").join(id);
+    fs::create_dir_all(&dest)
+        .map_err(|error| format!("创建工作流目录失败：{error}"))?;
+    let base = registry_raw_base();
+    for file in &files {
+        let rel = &file[path.len() + 1..];
+        if rel.is_empty() || rel.contains("..") {
+            continue;
+        }
+        let url = format!("{base}/{file}");
+        let body = registry_get_text(&url)?;
+        let target = dest.join(rel);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建目录失败：{error}"))?;
+        }
+        fs::write(&target, body)
+            .map_err(|error| format!("写入 {} 失败：{error}", target.to_string_lossy()))?;
+    }
+    list_installed_workflows(profile.as_deref())
+}
+
 #[tauri::command]
 async fn list_hermes_skills(profile: Option<String>) -> Result<Vec<InstalledSkillInfo>, String> {
     let profile = normalize_profile(profile.as_deref());
@@ -12829,6 +13268,11 @@ pub fn run() {
             test_hermes_mcp_server,
             list_hermes_mcp_catalog,
             install_hermes_mcp_catalog_entry,
+            fetch_hermes_registry,
+            fetch_hermes_registry_detail,
+            install_hermes_registry_agent,
+            install_hermes_registry_workflow,
+            list_hermes_installed_workflows,
             list_hermes_skills,
             list_hermes_bundled_skills,
             read_hermes_skill_content,

@@ -219,6 +219,29 @@ export interface McpCatalogResult {
   error?: string | null;
 }
 
+export interface RegistryItem {
+  id: string;
+  type: "agent" | "workflow" | "skill" | "mcp" | string;
+  name: string;
+  description: string;
+  author?: string | null;
+  tags: string[];
+  version?: string | null;
+  license?: string | null;
+  path?: string | null;
+  entry?: string | null;
+  homepage?: string | null;
+}
+
+export interface RegistryCatalogResult {
+  agents: RegistryItem[];
+  workflows: RegistryItem[];
+  skills: RegistryItem[];
+  mcps: RegistryItem[];
+  source: string;
+  error?: string | null;
+}
+
 export interface SaveMcpServerInput {
   profile?: string;
   name: string;
@@ -882,6 +905,47 @@ export async function installHermesMcpCatalogEntry(input: {
 }): Promise<McpOperationResult> {
   ensureTauriRuntime();
   return invoke<McpOperationResult>("install_hermes_mcp_catalog_entry", { input });
+}
+
+export async function fetchHermesRegistry(): Promise<RegistryCatalogResult> {
+  ensureTauriRuntime();
+  return invoke<RegistryCatalogResult>("fetch_hermes_registry");
+}
+
+export async function fetchHermesRegistryDetail(input: {
+  kind: string;
+  path?: string;
+  entry?: string;
+}): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("fetch_hermes_registry_detail", { input });
+}
+
+export async function installHermesRegistryAgent(input: {
+  id: string;
+  path?: string;
+  entry?: string;
+}): Promise<HermesProfileInfo[]> {
+  ensureTauriRuntime();
+  return invoke<HermesProfileInfo[]>("install_hermes_registry_agent", { input });
+}
+
+export async function installHermesRegistryWorkflow(input: {
+  profile?: string;
+  id: string;
+  path: string;
+}): Promise<string[]> {
+  ensureTauriRuntime();
+  return invoke<string[]>("install_hermes_registry_workflow", { input });
+}
+
+export async function listHermesInstalledWorkflows(params: {
+  profile?: string;
+} = {}): Promise<string[]> {
+  ensureTauriRuntime();
+  return invoke<string[]>("list_hermes_installed_workflows", {
+    profile: params.profile,
+  });
 }
 
 export async function listHermesSkills(params: {

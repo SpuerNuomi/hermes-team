@@ -63,7 +63,7 @@ const zh = {
   discover: {
     panelLabel: "Discover",
     title: "应用市场",
-    subtitle: "统一浏览并安装 Skills 与 MCP servers，复用真实 Hermes 安装流程。",
+    subtitle: "统一浏览并安装 Skills、MCP servers、智能体与工作流，复用真实 Hermes 安装流程。",
     refresh: "刷新",
     tabsLabel: "资源分类",
     tabs: {
@@ -81,17 +81,8 @@ const zh = {
     emptyTitle: "暂无可用条目",
     emptyText: "未找到匹配的{{kind}}。",
     close: "关闭",
-    comingSoon: "即将支持",
-    placeholder: {
-      agents: {
-        title: "智能体注册表",
-        text: "本项目暂无智能体注册表后端。智能体可在「设置 · Profiles」中创建与管理；统一安装入口待后端支持后接通。",
-      },
-      workflows: {
-        title: "工作流注册表",
-        text: "本项目暂无工作流注册表后端，无法在此安装工作流。待后端支持后将接通。",
-      },
-    },
+    registryError: "注册表拉取失败：{{error}}",
+    workflowNote: "安装工作流会将其定义导入当前 Profile。Hermes 核心暂未内置工作流运行器，导入的定义会被保存以供查看与后续使用。",
   },
   chat: {
     newChatTitle: "新建聊天",

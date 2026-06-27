@@ -62,7 +62,7 @@ const en = {
   discover: {
     panelLabel: "Discover",
     title: "Marketplace",
-    subtitle: "Browse and install Skills and MCP servers from one place, using the real Hermes install flow.",
+    subtitle: "Browse and install Skills, MCP servers, Agents, and Workflows from one place, using the real Hermes install flow.",
     refresh: "Refresh",
     tabsLabel: "Resource categories",
     tabs: {
@@ -80,17 +80,8 @@ const en = {
     emptyTitle: "Nothing available",
     emptyText: "No matching {{kind}} found.",
     close: "Close",
-    comingSoon: "Coming soon",
-    placeholder: {
-      agents: {
-        title: "Agent registry",
-        text: "This project has no agent registry backend yet. Agents can be created and managed under Settings · Profiles; a unified install entry will be wired once a backend exists.",
-      },
-      workflows: {
-        title: "Workflow registry",
-        text: "This project has no workflow registry backend yet, so workflows cannot be installed here. It will be wired once a backend exists.",
-      },
-    },
+    registryError: "Registry fetch failed: {{error}}",
+    workflowNote: "Installing a workflow imports its definition into the active profile. Hermes core has no workflow runner yet, so the definition is stored for inspection and future use.",
   },
   chat: {
     newChatTitle: "New chat",

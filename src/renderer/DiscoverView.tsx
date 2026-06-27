@@ -18,12 +18,14 @@ import type {
   BundledSkillInfo,
   InstalledSkillInfo,
   McpCatalogEntry,
+  RegistryItem,
 } from "../runtime/hermes-runtime";
 
 // Unified Discover / marketplace entry. It is a thin presentation layer over the
-// project's existing real backends: bundled-skill install (`hermes skills install`)
-// and MCP catalog install (`hermes mcp install`). Agents/Workflows are surfaced as
-// honest placeholders because this project has no registry backend for them yet.
+// project's real backends: bundled-skill install (`hermes skills install`), MCP
+// catalog install (`hermes mcp install`), and the community registry (GitHub
+// `index.json`) for agents (installed as profiles + SOUL.md) and workflows
+// (definition folders imported into the active profile).
 
 export type DiscoverKind = "skills" | "mcps" | "agents" | "workflows";
 
@@ -34,9 +36,10 @@ interface DiscoverItem {
   source: string;
   tags: string[];
   installed: boolean;
-  // Whether install is actionable. Installed entries and unsupported kinds are not.
+  // Whether install is actionable. Installed entries are not.
   installable: boolean;
   detailPath?: string;
+  registry?: RegistryItem;
 }
 
 export interface DiscoverViewProps {
@@ -46,20 +49,30 @@ export interface DiscoverViewProps {
   mcpServerNames: string[];
   mcpCatalogError?: string;
   mcpCatalogDiagnostics?: string[];
+  registryAgents: RegistryItem[];
+  registryWorkflows: RegistryItem[];
+  registryError?: string;
+  registryLoading?: boolean;
+  installedProfileNames: string[];
+  installedWorkflowIds: string[];
+  registryBusyId: string | null;
   skillBusy: boolean;
   mcpCatalogBusyName: string | null;
   busy?: boolean;
   onRefresh: () => void;
   onInstallBundledSkill: (skill: BundledSkillInfo) => void;
   onInstallMcpEntry: (entry: McpCatalogEntry) => void;
+  onInstallAgent: (item: RegistryItem) => void;
+  onInstallWorkflow: (item: RegistryItem) => void;
   onReadSkillContent: (path: string) => Promise<string>;
+  onFetchRegistryDetail: (kind: DiscoverKind, item: RegistryItem) => Promise<string>;
 }
 
-const KINDS: { key: DiscoverKind; icon: LucideIcon; supported: boolean }[] = [
-  { key: "skills", icon: WandSparkles, supported: true },
-  { key: "mcps", icon: Plug, supported: true },
-  { key: "agents", icon: Bot, supported: false },
-  { key: "workflows", icon: Workflow, supported: false },
+const KINDS: { key: DiscoverKind; icon: LucideIcon }[] = [
+  { key: "skills", icon: WandSparkles },
+  { key: "mcps", icon: Plug },
+  { key: "agents", icon: Bot },
+  { key: "workflows", icon: Workflow },
 ];
 
 export function DiscoverView({
@@ -69,13 +82,23 @@ export function DiscoverView({
   mcpServerNames,
   mcpCatalogError,
   mcpCatalogDiagnostics,
+  registryAgents,
+  registryWorkflows,
+  registryError,
+  registryLoading,
+  installedProfileNames,
+  installedWorkflowIds,
+  registryBusyId,
   skillBusy,
   mcpCatalogBusyName,
   busy,
   onRefresh,
   onInstallBundledSkill,
   onInstallMcpEntry,
+  onInstallAgent,
+  onInstallWorkflow,
   onReadSkillContent,
+  onFetchRegistryDetail,
 }: DiscoverViewProps) {
   const { t } = useI18n();
   const [tab, setTab] = useState<DiscoverKind>("skills");
@@ -136,17 +159,59 @@ export function DiscoverView({
     });
   }, [mcpCatalog, mcpServerNames]);
 
+  const agentItems = useMemo<DiscoverItem[]>(() => {
+    const profileSet = new Set(installedProfileNames.map((name) => name.toLowerCase()));
+    return registryAgents.map((entry) => {
+      const installed = profileSet.has(entry.id.toLowerCase());
+      return {
+        id: `agent:${entry.id}`,
+        name: entry.name,
+        description: entry.description,
+        source: entry.author || "Hermes Registry",
+        tags: entry.tags ?? [],
+        installed,
+        installable: !installed,
+        registry: entry,
+      };
+    });
+  }, [registryAgents, installedProfileNames]);
+
+  const workflowItems = useMemo<DiscoverItem[]>(() => {
+    const workflowSet = new Set(installedWorkflowIds.map((id) => id.toLowerCase()));
+    return registryWorkflows.map((entry) => {
+      const installed = workflowSet.has(entry.id.toLowerCase());
+      return {
+        id: `workflow:${entry.id}`,
+        name: entry.name,
+        description: entry.description,
+        source: entry.author || "Hermes Registry",
+        tags: entry.tags ?? [],
+        installed,
+        installable: !installed,
+        registry: entry,
+      };
+    });
+  }, [registryWorkflows, installedWorkflowIds]);
+
   const counts = useMemo(
     () => ({
       skills: skillItems.length,
       mcps: mcpItems.length,
-      agents: 0,
-      workflows: 0,
+      agents: agentItems.length,
+      workflows: workflowItems.length,
     }),
-    [skillItems, mcpItems],
+    [skillItems, mcpItems, agentItems, workflowItems],
   );
 
-  const activeList = tab === "skills" ? skillItems : tab === "mcps" ? mcpItems : [];
+  const activeList =
+    tab === "skills"
+      ? skillItems
+      : tab === "mcps"
+        ? mcpItems
+        : tab === "agents"
+          ? agentItems
+          : workflowItems;
+  const isRegistryTab = tab === "agents" || tab === "workflows";
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -171,10 +236,15 @@ export function DiscoverView({
   const openDetail = async (item: DiscoverItem) => {
     setDetail(item);
     setDetailContent("");
-    if (!item.detailPath) return;
+    const fetcher = item.detailPath
+      ? () => onReadSkillContent(item.detailPath as string)
+      : item.registry && isRegistryTab
+        ? () => onFetchRegistryDetail(tab, item.registry as RegistryItem)
+        : null;
+    if (!fetcher) return;
     setDetailLoading(true);
     try {
-      setDetailContent(await onReadSkillContent(item.detailPath));
+      setDetailContent(await fetcher());
     } catch {
       setDetailContent("");
     } finally {
@@ -193,15 +263,22 @@ export function DiscoverView({
     if (tab === "mcps") {
       const target = mcpCatalog.find((entry) => `mcp:${entry.name}` === item.id);
       if (target) onInstallMcpEntry(target);
+      return;
+    }
+    if (item.registry) {
+      if (tab === "agents") onInstallAgent(item.registry);
+      else if (tab === "workflows") onInstallWorkflow(item.registry);
     }
   };
 
-  const isBusy = (item: DiscoverItem) =>
-    tab === "skills" ? skillBusy : mcpCatalogBusyName === item.name;
+  const isBusy = (item: DiscoverItem) => {
+    if (tab === "skills") return skillBusy;
+    if (tab === "mcps") return mcpCatalogBusyName === item.name;
+    return registryBusyId === item.id;
+  };
 
   const activeKind = KINDS.find((kind) => kind.key === tab) ?? KINDS[0];
   const ActiveIcon = activeKind.icon;
-  const supported = activeKind.supported;
 
   return (
     <>
@@ -236,25 +313,23 @@ export function DiscoverView({
           ))}
         </nav>
 
-        {supported && (
-          <div className="discover-toolbar">
-            <div className="session-search">
-              <Search size={14} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={t("discover.searchPlaceholder", {
-                  kind: t(`discover.tabs.${tab}`),
-                })}
-              />
-              {query && (
-                <button type="button" onClick={() => setQuery("")} aria-label={t("discover.clear")}>
-                  <X size={13} />
-                </button>
-              )}
-            </div>
+        <div className="discover-toolbar">
+          <div className="session-search">
+            <Search size={14} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("discover.searchPlaceholder", {
+                kind: t(`discover.tabs.${tab}`),
+              })}
+            />
+            {query && (
+              <button type="button" onClick={() => setQuery("")} aria-label={t("discover.clear")}>
+                <X size={13} />
+              </button>
+            )}
           </div>
-        )}
+        </div>
 
         {tab === "mcps" && mcpCatalogError && (
           <p className="warning-text">{t("discover.catalogError", { error: mcpCatalogError })}</p>
@@ -266,14 +341,14 @@ export function DiscoverView({
             </p>
           ))}
 
-        {!supported ? (
-          <div className="discover-placeholder">
-            <ActiveIcon size={28} />
-            <strong>{t(`discover.placeholder.${tab}.title`)}</strong>
-            <p>{t(`discover.placeholder.${tab}.text`)}</p>
-            <span className="discover-soon-pill">{t("discover.comingSoon")}</span>
-          </div>
-        ) : filtered.length > 0 ? (
+        {isRegistryTab && registryError && (
+          <p className="warning-text">{t("discover.registryError", { error: registryError })}</p>
+        )}
+        {tab === "workflows" && workflowItems.length > 0 && (
+          <p className="empty-note">{t("discover.workflowNote")}</p>
+        )}
+
+        {filtered.length > 0 ? (
           <div className="discover-grid">
             {filtered.map((item) => (
               <article
@@ -329,6 +404,11 @@ export function DiscoverView({
                 </div>
               </article>
             ))}
+          </div>
+        ) : isRegistryTab && registryLoading ? (
+          <div className="discover-placeholder">
+            <ActiveIcon size={28} />
+            <p className="empty-note">{t("common.loading")}</p>
           </div>
         ) : (
           <div className="discover-placeholder">

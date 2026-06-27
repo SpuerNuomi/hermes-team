@@ -64,7 +64,7 @@ import {
 } from "./chatInput/localCommands";
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
-import { DiscoverView } from "./DiscoverView";
+import { DiscoverView, type DiscoverKind } from "./DiscoverView";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
 import ProfileDetailModal from "./ProfileDetailModal";
@@ -109,6 +109,11 @@ import {
   inspectHermesInstall,
   installHermesSkill,
   installHermesMcpCatalogEntry,
+  fetchHermesRegistry,
+  fetchHermesRegistryDetail,
+  installHermesRegistryAgent,
+  installHermesRegistryWorkflow,
+  listHermesInstalledWorkflows,
   isTauriRuntimeAvailable,
   listAuxiliaryModelConfigs,
   listCredentialPool,
@@ -208,6 +213,7 @@ import {
   type HermesStateSearchResult,
   type InstalledSkillInfo,
   type McpCatalogEntry,
+  type RegistryItem,
   type McpOperationResult,
   type McpServerInfo,
   type MemoryContent,
@@ -856,6 +862,13 @@ export function App() {
   const [mcpTestResult, setMcpTestResult] = useState<{ name: string; result: McpOperationResult } | null>(null);
   const [skills, setSkills] = useState<InstalledSkillInfo[]>([]);
   const [bundledSkills, setBundledSkills] = useState<BundledSkillInfo[]>([]);
+  const [registryAgents, setRegistryAgents] = useState<RegistryItem[]>([]);
+  const [registryWorkflows, setRegistryWorkflows] = useState<RegistryItem[]>([]);
+  const [registryError, setRegistryError] = useState("");
+  const [registryLoading, setRegistryLoading] = useState(false);
+  const [registryLoaded, setRegistryLoaded] = useState(false);
+  const [installedWorkflowIds, setInstalledWorkflowIds] = useState<string[]>([]);
+  const [registryBusyId, setRegistryBusyId] = useState<string | null>(null);
   const [memorySummary, setMemorySummary] = useState<MemorySummary | null>(null);
   const [memoryDetails, setMemoryDetails] = useState<MemoryDetails | null>(null);
   const [memoryContent, setMemoryContent] = useState<MemoryContent | null>(null);
@@ -3634,6 +3647,79 @@ export function App() {
     }
   };
 
+  const activeProfileName = () =>
+    installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
+
+  const refreshRegistry = async (announce = false) => {
+    const targetProfile = activeProfileName();
+    setRegistryLoading(true);
+    try {
+      const [catalog, workflows] = await Promise.all([
+        fetchHermesRegistry(),
+        listHermesInstalledWorkflows({ profile: targetProfile }),
+      ]);
+      setRegistryAgents(catalog.agents);
+      setRegistryWorkflows(catalog.workflows);
+      setRegistryError(catalog.error ?? "");
+      setInstalledWorkflowIds(workflows);
+      setRegistryLoaded(true);
+      if (announce) {
+        setNotice(catalog.error ? `注册表刷新失败：${catalog.error}` : "应用市场注册表已刷新。");
+      }
+    } catch (error) {
+      setRegistryError(runtimeErrorMessage(error));
+      if (announce) setNotice(`刷新注册表失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setRegistryLoading(false);
+    }
+  };
+
+  const installRegistryAgent = async (item: RegistryItem) => {
+    setRegistryBusyId(`agent:${item.id}`);
+    try {
+      const next = await installHermesRegistryAgent({
+        id: item.id,
+        path: item.path ?? undefined,
+        entry: item.entry ?? undefined,
+      });
+      setProfiles(next);
+      setNotice(`智能体已安装为 Profile「${item.id}」，可在「设置 · Profiles」中切换使用。`);
+    } catch (error) {
+      setNotice(`安装智能体失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setRegistryBusyId(null);
+    }
+  };
+
+  const installRegistryWorkflow = async (item: RegistryItem) => {
+    const targetProfile = activeProfileName();
+    if (!item.path) {
+      setNotice("该工作流缺少注册表路径，无法导入。");
+      return;
+    }
+    setRegistryBusyId(`workflow:${item.id}`);
+    try {
+      const installed = await installHermesRegistryWorkflow({
+        profile: targetProfile,
+        id: item.id,
+        path: item.path,
+      });
+      setInstalledWorkflowIds(installed);
+      setNotice(`工作流定义已导入到当前 Profile：${item.name}`);
+    } catch (error) {
+      setNotice(`导入工作流失败：${runtimeErrorMessage(error)}`);
+    } finally {
+      setRegistryBusyId(null);
+    }
+  };
+
+  const fetchRegistryDetail = async (kind: DiscoverKind, item: RegistryItem) =>
+    fetchHermesRegistryDetail({
+      kind,
+      path: item.path ?? undefined,
+      entry: item.entry ?? undefined,
+    });
+
   const saveMemoryDraft = async (kind: "memory" | "user") => {
     const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
     setCapabilityBusy(true);
@@ -4555,6 +4641,14 @@ export function App() {
     }, 15000);
     return () => window.clearInterval(interval);
   }, [activeView, activeSettingsPanel, cronRunsJob]);
+
+  // Lazily fetch the community registry the first time the Discover screen is
+  // opened, so the agents/workflows catalog populates without a manual refresh.
+  useEffect(() => {
+    if (activeView !== "discover" || registryLoaded || registryLoading) return;
+    if (!isTauriRuntimeAvailable()) return;
+    void refreshRegistry();
+  }, [activeView, registryLoaded, registryLoading]);
 
   // Close the per-card overflow menu on any outside click.
   useEffect(() => {
@@ -7459,13 +7553,26 @@ export function App() {
             mcpServerNames={mcpServers.map((server) => server.name)}
             mcpCatalogError={mcpCatalogError}
             mcpCatalogDiagnostics={mcpCatalogDiagnostics}
+            registryAgents={registryAgents}
+            registryWorkflows={registryWorkflows}
+            registryError={registryError}
+            registryLoading={registryLoading}
+            installedProfileNames={profiles.map((profile) => profile.name)}
+            installedWorkflowIds={installedWorkflowIds}
+            registryBusyId={registryBusyId}
             skillBusy={skillBusy}
             mcpCatalogBusyName={mcpCatalogBusyName}
-            busy={capabilityBusy}
-            onRefresh={() => void refreshHermesCapabilities()}
+            busy={capabilityBusy || registryLoading}
+            onRefresh={() => {
+              void refreshHermesCapabilities();
+              void refreshRegistry(true);
+            }}
             onInstallBundledSkill={(skill) => void installBundledSkill(skill)}
             onInstallMcpEntry={(entry) => void installMcpCatalogEntry(entry)}
+            onInstallAgent={(item) => void installRegistryAgent(item)}
+            onInstallWorkflow={(item) => void installRegistryWorkflow(item)}
             onReadSkillContent={(path) => readHermesSkillContent(path)}
+            onFetchRegistryDetail={(kind, item) => fetchRegistryDetail(kind, item)}
           />
         ) : activeView === "sessions" ? (
           <SessionsView
