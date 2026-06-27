@@ -53,7 +53,7 @@ import {
 import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
-import { useI18n, type Language } from "../i18n";
+import { useI18n, useTranslation, type Language } from "../i18n";
 import type { Message, MessageAttachment, SessionModelOverride, WorkspaceMode } from "../core/types";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
 import { buildLabel } from "./buildInfo";
@@ -342,10 +342,10 @@ const defaultNetworkSettings: NetworkSettings = {
   remoteChatTransport: "auto",
   sshChatTransport: "auto",
 };
-const chatTransportOptions: Array<{ id: "auto" | "dashboard" | "legacy"; label: string; detail: string }> = [
-  { id: "auto", label: "Auto", detail: "优先 Dashboard，失败后回退 /v1/runs SSE" },
-  { id: "dashboard", label: "Dashboard", detail: "只使用 Hermes dashboard WebSocket transport" },
-  { id: "legacy", label: "Legacy", detail: "只使用 /v1/runs SSE 传输" },
+const chatTransportOptions: Array<{ id: "auto" | "dashboard" | "legacy"; label: string; detailKey: string }> = [
+  { id: "auto", label: "Auto", detailKey: "app.transport.auto" },
+  { id: "dashboard", label: "Dashboard", detailKey: "app.transport.dashboard" },
+  { id: "legacy", label: "Legacy", detailKey: "app.transport.legacy" },
 ];
 
 const emptyModelForm: ModelForm = {
@@ -455,8 +455,10 @@ function formatDateTime(timestamp: number): string {
   }).format(timestamp);
 }
 
-function formatCronDate(value?: string | null): string {
-  if (!value) return "未排定";
+type TranslateFn = (key: string, vars?: Record<string, string | number>) => string;
+
+function formatCronDate(value: string | null | undefined, t: TranslateFn): string {
+  if (!value) return t("cron.unscheduled");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
@@ -467,21 +469,21 @@ function formatCronDate(value?: string | null): string {
   }).format(date);
 }
 
-function formatCronRelative(value?: string | null): string | null {
+function formatCronRelative(value: string | null | undefined, t: TranslateFn): string | null {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   const diff = date.getTime() - Date.now();
   const past = diff < 0;
-  const suffix = past ? "前" : "后";
+  const suffix = past ? t("cron.ago") : t("cron.later");
   const minutes = Math.round(Math.abs(diff) / 60000);
-  if (minutes < 1) return past ? "刚刚" : "即将";
-  if (minutes < 60) return `${minutes} 分钟${suffix}`;
+  if (minutes < 1) return past ? t("cron.justNow") : t("cron.soon");
+  if (minutes < 60) return t("cron.minutesRel", { count: minutes, suffix });
   const hours = Math.floor(minutes / 60);
   const remMinutes = minutes % 60;
   if (hours < 24) return `${hours}h${remMinutes ? ` ${remMinutes}m` : ""}${suffix}`;
   const days = Math.floor(hours / 24);
-  return `${days} 天${suffix}`;
+  return t("cron.daysRel", { count: days, suffix });
 }
 
 const CRON_STATE_META: Record<string, { label: string; cls: string }> = {
@@ -494,22 +496,22 @@ function cronStateMeta(state: string): { label: string; cls: string } {
   return CRON_STATE_META[state] ?? { label: state || "Unknown", cls: "schedule-state-paused" };
 }
 
-const CRON_FREQ_OPTIONS: { id: CronFrequency; label: string }[] = [
-  { id: "minutes", label: "分钟" },
-  { id: "hourly", label: "小时" },
-  { id: "daily", label: "每天" },
-  { id: "weekly", label: "每周" },
-  { id: "custom", label: "自定义 Cron" },
+const CRON_FREQ_OPTIONS: { id: CronFrequency; labelKey: string }[] = [
+  { id: "minutes", labelKey: "cron.freq.minutes" },
+  { id: "hourly", labelKey: "cron.freq.hourly" },
+  { id: "daily", labelKey: "cron.freq.daily" },
+  { id: "weekly", labelKey: "cron.freq.weekly" },
+  { id: "custom", labelKey: "cron.freq.custom" },
 ];
 
-const CRON_WEEKDAYS: { value: number; short: string; long: string }[] = [
-  { value: 1, short: "一", long: "周一" },
-  { value: 2, short: "二", long: "周二" },
-  { value: 3, short: "三", long: "周三" },
-  { value: 4, short: "四", long: "周四" },
-  { value: 5, short: "五", long: "周五" },
-  { value: 6, short: "六", long: "周六" },
-  { value: 0, short: "日", long: "周日" },
+const CRON_WEEKDAYS: { value: number }[] = [
+  { value: 1 },
+  { value: 2 },
+  { value: 3 },
+  { value: 4 },
+  { value: 5 },
+  { value: 6 },
+  { value: 0 },
 ];
 
 function pad2(value: number): string {
@@ -558,9 +560,9 @@ function parseCronField(field: string, min: number, max: number): Set<number> | 
   return result.size ? result : null;
 }
 
-function validateCronExpression(expr: string): string | null {
+function validateCronExpression(expr: string, t: TranslateFn): string | null {
   const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return "Cron 需为 5 段（分 时 日 月 周）";
+  if (fields.length !== 5) return t("cron.err5");
   const specs: [number, number][] = [
     [0, 59],
     [0, 23],
@@ -570,7 +572,7 @@ function validateCronExpression(expr: string): string | null {
   ];
   for (let i = 0; i < 5; i += 1) {
     if (!parseCronField(fields[i], specs[i][0], specs[i][1])) {
-      return `第 ${i + 1} 段无效：${fields[i]}`;
+      return t("cron.errField", { index: i + 1, field: fields[i] });
     }
   }
   return null;
@@ -609,34 +611,34 @@ function nextCronRun(expr: string, from: Date = new Date()): Date | null {
   return null;
 }
 
-function serializeCronSchedule(form: CronJobForm): { value: string; error: string | null } {
+function serializeCronSchedule(form: CronJobForm, t: TranslateFn): { value: string; error: string | null } {
   switch (form.freq) {
     case "minutes": {
       const n = form.minuteInterval;
       if (!Number.isInteger(n) || n < 1 || n > 59) {
-        return { value: "", error: "分钟间隔需在 1–59 之间" };
+        return { value: "", error: t("cron.errMinInterval") };
       }
       return { value: `*/${n} * * * *`, error: null };
     }
     case "hourly": {
       const m = form.minute;
       if (!Number.isInteger(m) || m < 0 || m > 59) {
-        return { value: "", error: "分钟需在 0–59 之间" };
+        return { value: "", error: t("cron.errMinute") };
       }
       return { value: `${m} * * * *`, error: null };
     }
     case "daily": {
       if (form.hour < 0 || form.hour > 23 || form.minute < 0 || form.minute > 59) {
-        return { value: "", error: "时间无效" };
+        return { value: "", error: t("cron.errTime") };
       }
       return { value: `${form.minute} ${form.hour} * * *`, error: null };
     }
     case "weekly": {
       if (!form.weekdays.length) {
-        return { value: "", error: "请至少选择一天" };
+        return { value: "", error: t("cron.errPickDay") };
       }
       if (form.hour < 0 || form.hour > 23 || form.minute < 0 || form.minute > 59) {
-        return { value: "", error: "时间无效" };
+        return { value: "", error: t("cron.errTime") };
       }
       const days = [...form.weekdays].sort((a, b) => a - b).join(",");
       return { value: `${form.minute} ${form.hour} * * ${days}`, error: null };
@@ -644,30 +646,33 @@ function serializeCronSchedule(form: CronJobForm): { value: string; error: strin
     case "custom":
     default: {
       const expr = form.customCron.trim();
-      if (!expr) return { value: "", error: "请输入 Cron 表达式" };
-      const error = validateCronExpression(expr);
+      if (!expr) return { value: "", error: t("cron.errExpr") };
+      const error = validateCronExpression(expr, t);
       return { value: error ? "" : expr, error };
     }
   }
 }
 
-function describeCronSchedule(form: CronJobForm): string {
+function describeCronSchedule(form: CronJobForm, t: TranslateFn): string {
   switch (form.freq) {
     case "minutes":
-      return `每 ${form.minuteInterval} 分钟`;
+      return t("cron.descMinutes", { n: form.minuteInterval });
     case "hourly":
-      return `每小时第 ${form.minute} 分钟`;
+      return t("cron.descHourly", { m: form.minute });
     case "daily":
-      return `每天 ${pad2(form.hour)}:${pad2(form.minute)}`;
+      return t("cron.descDaily", { time: `${pad2(form.hour)}:${pad2(form.minute)}` });
     case "weekly": {
-      const names = CRON_WEEKDAYS.filter((day) => form.weekdays.includes(day.value)).map(
-        (day) => day.long,
+      const names = CRON_WEEKDAYS.filter((day) => form.weekdays.includes(day.value)).map((day) =>
+        t(`cron.weekdayLong.${day.value}`),
       );
-      return `${names.join("、")} ${pad2(form.hour)}:${pad2(form.minute)}`;
+      return t("cron.descWeekly", {
+        days: names.join(t("cron.weekdaySeparator")),
+        time: `${pad2(form.hour)}:${pad2(form.minute)}`,
+      });
     }
     case "custom":
     default:
-      return "自定义 Cron 表达式";
+      return t("cron.descCustom");
   }
 }
 
@@ -711,8 +716,8 @@ function cronFormFromJob(job: CronJobInfo): CronJobForm {
   };
 }
 
-function formatCronRunTime(value?: string | null): string {
-  if (!value) return "未知时间";
+function formatCronRunTime(value: string | null | undefined, t: TranslateFn): string {
+  if (!value) return t("cron.unknownTime");
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
@@ -821,7 +826,7 @@ export function App() {
   const [worktreeVisible, setWorktreeVisible] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [webPreviewUrl, setWebPreviewUrl] = useState<string | null>(null);
-  const [notice, setNotice] = useState("Hermes Chat 已就绪。");
+  const [notice, setNotice] = useState(() => t("app.notice.ready"));
   const [sessions, setSessions] = useState<HermesTeamSessionSummary[]>([]);
   const [desktopSessions, setDesktopSessions] = useState<HermesStateSessionSummary[]>([]);
   const [desktopSessionsBusy, setDesktopSessionsBusy] = useState(false);
@@ -837,7 +842,7 @@ export function App() {
   const [runtimeStatus, setRuntimeStatus] = useState<{
     state: "checking" | "ready" | "unavailable";
     message: string;
-  }>({ state: "checking", message: "正在探测 Hermes Gateway..." });
+  }>({ state: "checking", message: t("app.notice.probingGateway") });
   const [remoteConfig, setRemoteConfig] = useState<RemoteConnectionConfig>(defaultRemoteConnectionConfig);
   const [remoteStatus, setRemoteStatus] = useState<RemoteConnectionStatus | null>(null);
   const [profiles, setProfiles] = useState<HermesProfileInfo[]>([]);
@@ -932,7 +937,7 @@ export function App() {
   const [cronRunsError, setCronRunsError] = useState<string | null>(null);
   const [cronExpandedRun, setCronExpandedRun] = useState<string | null>(null);
   const cronNameInputRef = useRef<HTMLInputElement>(null);
-  const cronSchedulePreview = useMemo(() => serializeCronSchedule(cronForm), [cronForm]);
+  const cronSchedulePreview = useMemo(() => serializeCronSchedule(cronForm, t), [cronForm, t]);
   const cronNextRun = useMemo(
     () => (cronSchedulePreview.value ? nextCronRun(cronSchedulePreview.value) : null),
     [cronSchedulePreview.value],
@@ -1041,7 +1046,7 @@ export function App() {
     ].slice(0, 20));
   }
 
-  function ensureTaskAnswerMessage(current: OrchestrationState, taskId: string, content = "正在生成...") {
+  function ensureTaskAnswerMessage(current: OrchestrationState, taskId: string, content = t("app.generating")) {
     const task = current.tasks.find((item) => item.id === taskId);
     if (!task || task.status === "cancelled") return current;
     const agent = current.agents.find((item) => item.id === task.agentId);
@@ -1053,7 +1058,7 @@ export function App() {
       authorKind: "agent" as const,
       authorId: agent?.id,
       authorName: agent?.name ?? "Hermes",
-      content: existing?.content && existing.content !== "正在生成..." ? existing.content : content,
+      content: existing?.content && existing.content !== t("app.generating") ? existing.content : content,
       createdAt: existing?.createdAt ?? Date.now(),
       replyToMessageId: task.triggerMessageId,
     };
@@ -1134,7 +1139,7 @@ export function App() {
       addRuntimeEvent({
         taskId: event.taskId,
         label: "stream",
-        detail: "Hermes Gateway 已进入流式输出。",
+        detail: t("app.stream.started"),
         level: "info",
       });
       return;
@@ -1158,7 +1163,7 @@ export function App() {
       return;
     }
     if (event.kind === "error") {
-      const message = event.message || "Hermes 流式输出失败。";
+      const message = event.message || t("app.stream.failed");
       addRuntimeEvent({
         taskId: event.taskId,
         label: "stream error",
@@ -1191,7 +1196,7 @@ export function App() {
         if (
           !isThinkingProgress &&
           streamExisting &&
-          streamExisting.content !== "正在生成..." &&
+          streamExisting.content !== t("app.generating") &&
           isDuplicateProcessSnapshot(nextContent, streamExisting.content)
         ) {
           return {
@@ -1216,7 +1221,7 @@ export function App() {
           authorKind: "agent" as const,
           authorId: agent?.id,
           authorName: agent?.name ?? "Hermes",
-          content: "正在生成...",
+          content: t("app.generating"),
           createdAt: Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
@@ -1262,7 +1267,7 @@ export function App() {
           authorKind: "agent" as const,
           authorId: agent?.id,
           authorName: agent?.name ?? "Hermes",
-          content: "正在生成...",
+          content: t("app.generating"),
           createdAt: Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
@@ -1310,7 +1315,7 @@ export function App() {
           authorKind: "agent" as const,
           authorId: agent?.id,
           authorName: agent?.name ?? "Hermes",
-          content: "正在生成...",
+          content: t("app.generating"),
           createdAt: Date.now(),
           replyToMessageId: task.triggerMessageId,
         };
@@ -1338,8 +1343,8 @@ export function App() {
         workspaceId: task.workspaceId,
         authorKind: "agent" as const,
         authorId: agent?.id,
-        authorName: agent?.name ?? "未知 Agent",
-        content: nextContent || "正在生成...",
+        authorName: agent?.name ?? t("app.unknownAgent"),
+        content: nextContent || t("app.generating"),
         createdAt: existing?.createdAt ?? Date.now(),
         replyToMessageId: task.triggerMessageId,
       };
@@ -1372,7 +1377,7 @@ export function App() {
       addRuntimeEvent({
         taskId: event.taskId,
         label: "stream done",
-        detail: "Hermes token 流式输出已完成。",
+        detail: t("app.stream.completed"),
         level: "ok",
       });
     }
@@ -1396,7 +1401,7 @@ export function App() {
       if (
         !isThinkingProgress &&
         streamExisting &&
-        streamExisting.content !== "正在生成..." &&
+        streamExisting.content !== t("app.generating") &&
         isDuplicateProcessSnapshot(nextContent, streamExisting.content)
       ) {
         return {
@@ -1421,7 +1426,7 @@ export function App() {
         authorKind: "agent",
         authorId: agent?.id,
         authorName: agent?.name ?? "Hermes",
-        content: "正在生成...",
+        content: t("app.generating"),
         createdAt: Date.now(),
         replyToMessageId: task.triggerMessageId,
       };
@@ -1455,7 +1460,7 @@ export function App() {
         authorKind: "agent",
         authorId: agent?.id,
         authorName: agent?.name ?? "Hermes",
-        content: "正在生成...",
+        content: t("app.generating"),
         createdAt: Date.now(),
         replyToMessageId: task.triggerMessageId,
       };
@@ -1491,7 +1496,7 @@ export function App() {
         authorKind: "agent",
         authorId: agent?.id,
         authorName: agent?.name ?? "Hermes",
-        content: "正在生成...",
+        content: t("app.generating"),
         createdAt: Date.now(),
         replyToMessageId: task.triggerMessageId,
       };
@@ -1510,7 +1515,7 @@ export function App() {
       authorKind: "agent",
       authorId: agent?.id,
       authorName: agent?.name ?? "Hermes",
-      content: nextContent || "正在生成...",
+      content: nextContent || t("app.generating"),
       createdAt: existing?.createdAt ?? Date.now(),
       replyToMessageId: task.triggerMessageId,
     };
@@ -1587,7 +1592,7 @@ export function App() {
       setNetworkSettings(settings);
       return settings;
     } catch (error) {
-      setNotice(`读取网络设置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.networkReadFailed", { error: runtimeErrorMessage(error) }));
       return null;
     } finally {
       setNetworkBusy(false);
@@ -1613,9 +1618,9 @@ export function App() {
         remoteChatTransport: saved.remoteChatTransport,
         sshChatTransport: saved.sshChatTransport,
       }));
-      setNotice("网络设置已保存。");
+      setNotice(t("app.notice.networkSaved"));
     } catch (error) {
-      setNotice(`保存网络设置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.networkSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setNetworkBusy(false);
     }
@@ -1633,7 +1638,7 @@ export function App() {
       setReleaseRepoDraft(status.releaseRepo);
       return status;
     } catch (error) {
-      setNotice(`读取更新状态失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.updateStatusReadFailed", { error: runtimeErrorMessage(error) }));
       return null;
     } finally {
       setUpdateBusy(false);
@@ -1650,7 +1655,7 @@ export function App() {
       if (openDialog) setUpdateDialogOpen(true);
       return status;
     } catch (error) {
-      setNotice(`检查更新失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.checkUpdateFailed", { error: runtimeErrorMessage(error) }));
       return null;
     } finally {
       setUpdateBusy(false);
@@ -1667,7 +1672,7 @@ export function App() {
       setUpdateStatus(status);
       setNotice(status.message);
     } catch (error) {
-      setNotice(`保存更新偏好失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.updatePrefSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setUpdateBusy(false);
     }
@@ -1683,7 +1688,7 @@ export function App() {
       setUpdateStatus(status);
       setNotice(status.message);
     } catch (error) {
-      setNotice(`保存启动检查偏好失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.startupCheckPrefSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setUpdateBusy(false);
     }
@@ -1700,7 +1705,7 @@ export function App() {
       setReleaseRepoDraft(status.releaseRepo);
       setNotice(status.message);
     } catch (error) {
-      setNotice(`保存 release 源失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.releaseRepoSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setUpdateBusy(false);
     }
@@ -1708,7 +1713,7 @@ export function App() {
 
   const openReleaseLink = (url: string) => {
     void openExternalUrl(url).catch((error) =>
-      setNotice(`打开下载页失败：${runtimeErrorMessage(error)}`),
+      setNotice(t("app.notice.openDownloadFailed", { error: runtimeErrorMessage(error) })),
     );
   };
 
@@ -1722,7 +1727,7 @@ export function App() {
       await refreshInstallStatus();
       await refreshUpdateStatus();
     } catch (error) {
-      setNotice(`运行 hermes update 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.hermesUpdateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setUpdateBusy(false);
     }
@@ -1744,7 +1749,7 @@ export function App() {
       return report;
     } catch (error) {
       setConfigHealth(null);
-      setNotice(`配置健康检查失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.configHealthFailed", { error: runtimeErrorMessage(error) }));
       return null;
     } finally {
       setConfigHealthBusy(false);
@@ -1753,7 +1758,7 @@ export function App() {
 
   const runDoctorDiagnostics = async (profileName?: string) => {
     if (!isTauriRuntimeAvailable()) {
-      setNotice("当前非 Tauri 运行环境，无法运行诊断。");
+      setNotice(t("app.notice.notTauriDiagnose"));
       return null;
     }
     const targetProfile = currentProfileName(profileName);
@@ -1764,7 +1769,7 @@ export function App() {
       setNotice(report.summary);
       return report;
     } catch (error) {
-      setNotice(`运行诊断失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.diagnoseFailed", { error: runtimeErrorMessage(error) }));
       return null;
     } finally {
       setDoctorBusy(false);
@@ -1785,7 +1790,7 @@ export function App() {
       return status;
     } catch (error) {
       setInstallStatus(null);
-      setNotice(`Hermes 安装检测失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.installCheckFailed", { error: runtimeErrorMessage(error) }));
       return null;
     } finally {
       setInstallBusy(false);
@@ -1887,7 +1892,7 @@ export function App() {
       setProviderRegistry(nextProviderRegistry);
       setCredentialPool(nextCredentialPool);
     } catch (error) {
-      setNotice(`读取 Hermes 能力失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.capabilitiesReadFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -1907,7 +1912,7 @@ export function App() {
       setCronJobs(jobs);
     } catch (error) {
       // Auto-refresh polling stays quiet so it never spams the notice bar.
-      if (!silent) setNotice(`读取 Schedules 失败：${runtimeErrorMessage(error)}`);
+      if (!silent) setNotice(t("app.notice.schedulesReadFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       if (!silent) setCronBusy(false);
     }
@@ -1967,20 +1972,20 @@ export function App() {
   };
 
   const submitCronForm = async () => {
-    const { value: schedule, error: scheduleError } = serializeCronSchedule(cronForm);
+    const { value: schedule, error: scheduleError } = serializeCronSchedule(cronForm, t);
     const prompt = cronForm.prompt.trim();
     const script = cronForm.script.trim();
     const noAgent = cronForm.noAgent;
     if (scheduleError || !schedule) {
-      setNotice(`Schedule 无效：${scheduleError ?? "请检查调度设置"}`);
+      setNotice(t("app.notice.scheduleInvalid", { error: scheduleError ?? t("app.notice.checkScheduleSettings") }));
       return;
     }
     if (noAgent && !script) {
-      setNotice("脚本型任务（no-agent）需要指定脚本文件。");
+      setNotice(t("app.notice.scriptTaskNeedsScript"));
       return;
     }
     if (!noAgent && !prompt) {
-      setNotice("Prompt 不能为空。");
+      setNotice(t("app.notice.promptEmpty"));
       return;
     }
     const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
@@ -1990,7 +1995,7 @@ export function App() {
     if (repeatRaw) {
       const parsed = Number(repeatRaw);
       if (!Number.isInteger(parsed) || parsed < 1) {
-        setNotice("重复次数需为正整数，或留空表示一直运行。");
+        setNotice(t("app.notice.repeatInvalid"));
         return;
       }
       repeat = parsed;
@@ -2028,7 +2033,7 @@ export function App() {
             script: script || undefined,
             noAgent: noAgent || undefined,
           });
-      handleCronActionResult(result, editing ? "Schedule 已更新。" : "Schedule 已创建。");
+      handleCronActionResult(result, editing ? t("app.notice.scheduleUpdated") : t("app.notice.scheduleCreated"));
       if (result.success) {
         setCronEditId(null);
         setCronForm(emptyCronJobForm);
@@ -2036,7 +2041,7 @@ export function App() {
         await refreshCronJobs(targetProfile);
       }
     } catch (error) {
-      setNotice(`${editing ? "更新" : "创建"} Schedule 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.scheduleOpFailed", { action: editing ? t("common.update") : t("common.create"), error: runtimeErrorMessage(error) }));
     } finally {
       setCronBusy(false);
     }
@@ -2047,7 +2052,7 @@ export function App() {
     operation: "pause" | "resume" | "remove" | "trigger",
   ) => {
     const targetProfile = installStatus?.activeProfile ?? profiles.find((profile) => profile.active)?.name ?? "default";
-    const confirmed = operation === "remove" ? window.confirm(`删除 Schedule「${job.name}」？`) : true;
+    const confirmed = operation === "remove" ? window.confirm(t("app.notice.confirmDeleteSchedule", { name: job.name })) : true;
     if (!confirmed) return;
     setCronBusy(true);
     setCronOperatingId(job.id);
@@ -2063,16 +2068,16 @@ export function App() {
               : await removeHermesCronJob(input);
       const successMessage =
         operation === "pause"
-          ? "Schedule 已暂停。"
+          ? t("app.notice.schedulePaused")
           : operation === "resume"
-            ? "Schedule 已恢复。"
+            ? t("app.notice.scheduleResumed")
             : operation === "trigger"
-              ? "Schedule 已触发。"
-              : "Schedule 已删除。";
+              ? t("app.notice.scheduleTriggered")
+              : t("app.notice.scheduleRemoved");
       handleCronActionResult(result, successMessage);
       if (result.success) await refreshCronJobs(targetProfile);
     } catch (error) {
-      setNotice(`Schedule 操作失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.scheduleActionFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCronBusy(false);
       setCronOperatingId(null);
@@ -2080,7 +2085,7 @@ export function App() {
   };
 
   const handleCronActionResult = (result: CronJobActionResult, successMessage: string) => {
-    setNotice(result.success ? successMessage : `Schedule 操作失败：${result.error ?? "未知错误"}`);
+    setNotice(result.success ? successMessage : t("app.notice.scheduleActionFailedInline", { error: result.error ?? t("common.unknownError") }));
   };
 
   const refreshMessagingPlatforms = async (profileName?: string) => {
@@ -2102,7 +2107,7 @@ export function App() {
         return next;
       });
     } catch (error) {
-      setNotice(`读取 Messaging Platforms 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.messagingPlatformsReadFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setMessagingBusy(false);
     }
@@ -2116,10 +2121,10 @@ export function App() {
         .filter(([, value]) => value.length > 0),
     );
     if (Object.keys(env).length === 0) {
-      setNotice("没有新的 Messaging env 值需要保存。");
+      setNotice(t("app.notice.noNewMessagingEnv"));
       return;
     }
-    await applyMessagingPlatformUpdate(platform.id, { env }, `${platform.name} 配置已保存。`, () => {
+    await applyMessagingPlatformUpdate(platform.id, { env }, t("app.notice.messagingConfigSaved", { name: platform.name }), () => {
       setMessagingEnvDrafts((current) => ({ ...current, [platform.id]: {} }));
     });
   };
@@ -2128,7 +2133,7 @@ export function App() {
     await applyMessagingPlatformUpdate(
       platform.id,
       { clearEnv: [key] },
-      `${platform.name} 的 ${key} 已清空。`,
+      t("app.notice.messagingEnvCleared", { name: platform.name, key }),
     );
   };
 
@@ -2136,7 +2141,9 @@ export function App() {
     await applyMessagingPlatformUpdate(
       platform.id,
       { enabled: !platform.enabled },
-      `${platform.name} 已${platform.enabled ? "禁用" : "启用"}。`,
+      platform.enabled
+        ? t("app.notice.messagingDisabled", { name: platform.name })
+        : t("app.notice.messagingEnabled", { name: platform.name }),
     );
   };
 
@@ -2144,7 +2151,7 @@ export function App() {
     await applyMessagingPlatformUpdate(
       platform.id,
       { toolsets: { [toolsetKey]: enabled } },
-      `${platform.name} toolset 已更新。`,
+      t("app.notice.messagingToolsetUpdated", { name: platform.name }),
     );
   };
 
@@ -2166,7 +2173,7 @@ export function App() {
       afterSuccess?.();
       setNotice(successMessage);
     } catch (error) {
-      setNotice(`更新 Messaging Platform 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.messagingPlatformUpdateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setMessagingBusy(false);
     }
@@ -2179,7 +2186,7 @@ export function App() {
       const result = await testMessagingPlatform({ profile: targetProfile, platform: platform.id });
       setNotice(result.message);
     } catch (error) {
-      setNotice(`测试 ${platform.name} 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.messagingTestFailed", { name: platform.name, error: runtimeErrorMessage(error) }));
     } finally {
       setMessagingBusy(false);
     }
@@ -2204,7 +2211,7 @@ export function App() {
         setLogContent(null);
       }
     } catch (error) {
-      setNotice(`读取 Hermes 日志失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.hermesLogsReadFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setLogBusy(false);
     }
@@ -2220,7 +2227,7 @@ export function App() {
     try {
       setLogContent(await readHermesLog(path));
     } catch (error) {
-      setNotice(`读取日志失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.logReadFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setLogBusy(false);
     }
@@ -2228,18 +2235,18 @@ export function App() {
 
   const exportHermesBundle = async (kind: "backup" | "debug") => {
     if (!isTauriRuntimeAvailable()) {
-      setNotice("当前非 Tauri 运行环境，不能导出文件。");
+      setNotice(t("app.notice.noTauriForExport"));
       return;
     }
     setBundleBusy(true);
-    setNotice(`正在生成 Hermes ${kind === "backup" ? "备份" : "诊断"} 文件...`);
+    setNotice(t("app.notice.generatingFile", { type: kind === "backup" ? t("app.notice.backup") : t("app.notice.diagnosis") }));
     try {
       const nextPath =
         kind === "backup" ? await createHermesBackupFile() : await createHermesDebugDump();
       setLastBundlePath(nextPath);
-      setNotice(`已生成文件：${nextPath}`);
+      setNotice(t("app.notice.fileGenerated", { path: nextPath }));
     } catch (error) {
-      setNotice(`生成 ${kind === "backup" ? "备份" : "诊断"} 文件失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.fileGenFailed", { type: kind === "backup" ? t("app.notice.backup") : t("app.notice.diagnosis"), error: runtimeErrorMessage(error) }));
     } finally {
       setBundleBusy(false);
     }
@@ -2247,24 +2254,22 @@ export function App() {
 
   const restoreHermesBackup = async () => {
     if (!isTauriRuntimeAvailable()) {
-      setNotice("当前非 Tauri 运行环境，不能恢复 Hermes 备份。");
+      setNotice(t("app.notice.noTauriForRestore"));
       return;
     }
     const path = restoreBackupPath.trim();
     const hasUploadedContent = restoreBackupContent.trim().length > 0;
     if (!path && !hasUploadedContent) {
-      setNotice("请输入要恢复的 Hermes 备份文件路径。");
+      setNotice(t("app.notice.inputBackupPath"));
       return;
     }
-    const confirmed = window.confirm(
-      "恢复将覆盖当前 Hermes 配置与会话状态（可通过导出先备份）。确认继续？",
-    );
+    const confirmed = window.confirm(t("app.notice.confirmRestore"));
     if (!confirmed) {
-      setNotice("已取消恢复操作。");
+      setNotice(t("app.notice.restoreCancelled"));
       return;
     }
     setRestoreBusy(true);
-    setNotice("正在恢复 Hermes 备份...");
+    setNotice(t("app.notice.restoringBackup"));
     try {
       const payload: RestoreHermesBackupInput = {
         overwrite: true,
@@ -2276,7 +2281,11 @@ export function App() {
       }
       const result: HermesRestoreResult = await restoreHermesBackupFile(payload);
       setNotice(
-        `已恢复 Hermes 备份（${result.targetPath}）：恢复 ${result.restored} 项，跳过 ${result.skipped} 项。`,
+        t("app.notice.backupRestored", {
+          path: result.targetPath,
+          restored: result.restored,
+          skipped: result.skipped,
+        }),
       );
       if (result.warnings.length > 0) {
         setNotice((previous) =>
@@ -2293,7 +2302,7 @@ export function App() {
       void refreshConfigHealth();
       void refreshHermesLogs();
     } catch (error) {
-      setNotice(`恢复 Hermes 备份失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.restoreBackupFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setRestoreBusy(false);
     }
@@ -2305,9 +2314,9 @@ export function App() {
 
   const canRestoreBackup = restoreBackupContent.trim().length > 0 || restoreBackupPath.trim().length > 0;
   const restoreSourceHint = restoreBackupContent.trim().length > 0
-    ? "本地上传内容（文本内存）"
+    ? t("app.notice.restoreSourceUpload")
     : restoreBackupPath.trim()
-      ? `文件路径：${restoreBackupPath.trim()}`
+      ? t("app.notice.restoreSourcePath", { path: restoreBackupPath.trim() })
       : "";
 
   const onRestoreBackupFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -2320,10 +2329,10 @@ export function App() {
       .then((content) => {
         setRestoreBackupPath(file.name);
         setRestoreBackupContent(content);
-        setNotice(`已选择备份文件：${file.name}`);
+        setNotice(t("app.notice.backupFileSelected", { name: file.name }));
       })
       .catch((error) => {
-        setNotice(`读取备份文件失败：${runtimeErrorMessage(error)}`);
+        setNotice(t("app.notice.backupFileReadFailed", { error: runtimeErrorMessage(error) }));
       })
       .finally(() => {
         event.target.value = "";
@@ -2341,7 +2350,7 @@ export function App() {
       });
       return Promise.resolve();
     }
-    setRuntimeStatus({ state: "checking", message: "正在探测 Hermes Gateway..." });
+    setRuntimeStatus({ state: "checking", message: t("app.notice.probingGateway") });
     return getRemoteConnectionConfig()
       .then(async (connection) => {
         setRemoteConfig(connection);
@@ -2365,13 +2374,13 @@ export function App() {
           if (!autoStart) throw error;
           setRuntimeStatus({
             state: "checking",
-            message: `${profileName} · Gateway 未运行，正在自动启动...`,
+            message: t("app.notice.gatewayAutoStart", { profile: profileName }),
           });
           const started = await ensureHermesGateway({ profile: profileName });
           if (!started.ok) {
             throw new Error(
               started.logPath
-                ? `${started.message} 日志：${started.logPath}`
+                ? t("app.notice.withLog", { message: started.message, logPath: started.logPath })
                 : started.message,
             );
           }
@@ -2406,7 +2415,7 @@ export function App() {
         state: "unavailable",
         message: TAURI_UNAVAILABLE_MESSAGE,
       });
-      setNotice("当前是浏览器预览，只能查看界面；真实 Agent 需要 Tauri 桌面运行。");
+      setNotice(t("app.notice.browserPreview"));
       return () => {
         cancelled = true;
       };
@@ -2416,11 +2425,11 @@ export function App() {
         if (!cancelled && saved) {
           setState(normalizeLoadedState(saved));
           setModeState(saved.workspace.mode);
-          setNotice("已恢复上次聊天状态。");
+          setNotice(t("app.notice.restoredLastChat"));
         }
       })
       .catch(() => {
-        setNotice("Hermes Chat 已就绪。");
+        setNotice(t("app.notice.ready"));
       })
       .finally(() => {
       if (cancelled) return;
@@ -2490,7 +2499,7 @@ export function App() {
     if (hasActiveSessionTasks(state)) {
       setActiveView("team");
       setActiveInspectorPanel("dispatch");
-      setNotice("当前会话仍有运行中的 Agent，请先等待完成或终止任务后再新建会话。");
+      setNotice(t("app.notice.activeTasksNewSession"));
       return;
     }
 
@@ -2498,7 +2507,7 @@ export function App() {
       setActiveView("team");
       setDraft("");
       setDraftAttachments([]);
-      setNotice("当前已经是空白新会话。");
+      setNotice(t("app.notice.alreadyBlankSession"));
       return;
     }
 
@@ -2517,7 +2526,7 @@ export function App() {
       setTokenUsage(null);
       setSessionStartedAt(Date.now());
       setActiveView("team");
-      setNotice("已打开新会话。发送第一条消息后会进入 Session 历史。");
+      setNotice(t("app.notice.openedNewSession"));
 
     if (!isTauriRuntimeAvailable()) {
       return;
@@ -2539,7 +2548,7 @@ export function App() {
 
   const restoreSession = async (session: HermesTeamSessionSummary) => {
     if (!session.state || !session.state.workspace) {
-      setNotice("该会话缺少可恢复的状态。");
+      setNotice(t("app.notice.sessionNoState"));
       return;
     }
 
@@ -2555,7 +2564,7 @@ export function App() {
     setDraftAttachments([]);
       setRuntimeEvents([]);
       setActiveView("team");
-      setNotice(`已恢复会话：${session.title}`);
+      setNotice(t("app.notice.sessionRestored", { title: session.title }));
   };
 
   const refreshLocalSessions = async () => {
@@ -2563,9 +2572,9 @@ export function App() {
     try {
       const items = await loadHermesTeamSessions();
       setSessions(normalizeLoadedSessions(items));
-      setNotice("本地会话列表已刷新。");
+      setNotice(t("app.notice.localSessionsRefreshed"));
     } catch (error) {
-      setNotice(`刷新本地会话失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.localSessionsRefreshFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2577,7 +2586,7 @@ export function App() {
       const items = await listHermesStateSessions({ profile: targetProfile });
       setDesktopSessions(items);
     } catch (error) {
-      setNotice(`读取本地 state.db 历史失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.stateDbReadFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setDesktopSessionsBusy(false);
     }
@@ -2595,7 +2604,7 @@ export function App() {
 
   const importDesktopSession = async (session: HermesStateSessionSummary) => {
     if (hasActiveSessionTasks(state)) {
-      setNotice("当前会话仍有运行中的 Agent，请先停止任务后再导入历史会话。");
+      setNotice(t("app.notice.activeTasksImport"));
       return;
     }
     setDesktopSessionsBusy(true);
@@ -2604,7 +2613,7 @@ export function App() {
         profile: session.profile,
         sessionId: session.id,
       });
-      const imported = buildStateFromHermesStateSession(session, rows, mode);
+      const imported = buildStateFromHermesStateSession(session, rows, mode, t);
       const previousWorkspaceId = state.workspace.id;
       parallelTrackerRef.current.clear(previousWorkspaceId);
       serialTrackerRef.current.clear(previousWorkspaceId);
@@ -2615,7 +2624,7 @@ export function App() {
       setDraftAttachments([]);
       setRuntimeEvents([]);
       setActiveView("team");
-      setNotice(`已导入本地历史会话：${session.title}`);
+      setNotice(t("app.notice.sessionImported", { title: session.title }));
       if (isTauriRuntimeAvailable()) {
         void saveHermesTeamState(imported).catch(() => undefined);
         void saveHermesTeamSession(buildSessionSummary(imported))
@@ -2623,7 +2632,7 @@ export function App() {
           .catch(() => undefined);
       }
     } catch (error) {
-      setNotice(`导入本地历史会话失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sessionImportFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setDesktopSessionsBusy(false);
     }
@@ -2632,7 +2641,7 @@ export function App() {
   const renameSession = async (sessionId: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) {
-      setNotice("Session 标题不能为空。");
+      setNotice(t("app.notice.sessionTitleEmpty"));
       return;
     }
     const previous = sessionsRef.current;
@@ -2644,16 +2653,16 @@ export function App() {
     try {
       const next = await updateHermesTeamSessionTitle(sessionId, trimmed);
       setSessions(normalizeLoadedSessions(next));
-      setNotice("Session 标题已更新。");
+      setNotice(t("app.notice.sessionTitleUpdated"));
     } catch (error) {
       setSessions(previous);
-      setNotice(`重命名 Session 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sessionRenameFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
   const deleteSession = async (sessionId: string) => {
     if (sessionId === state.workspace.id && hasActiveSessionTasks(state)) {
-      setNotice("当前会话仍有运行中的 Agent，请先等待完成或终止任务后再删除。");
+      setNotice(t("app.notice.activeTasksDelete"));
       return;
     }
     const previous = sessionsRef.current;
@@ -2674,10 +2683,10 @@ export function App() {
         setActiveView("team");
         void saveHermesTeamState(nextState).catch(() => undefined);
       }
-      setNotice("Session 已删除。");
+      setNotice(t("app.notice.sessionDeleted"));
     } catch (error) {
       setSessions(previous);
-      setNotice(`删除 Session 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sessionDeleteFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2685,7 +2694,7 @@ export function App() {
     const ids = Array.from(new Set(sessionIds.map((id) => id.trim()).filter(Boolean)));
     if (ids.length === 0) return;
     if (ids.includes(state.workspace.id) && hasActiveSessionTasks(state)) {
-      setNotice("当前会话仍有运行中的 Agent，请先等待完成或终止任务后再删除。");
+      setNotice(t("app.notice.activeTasksDelete"));
       return;
     }
     const previous = sessionsRef.current;
@@ -2707,10 +2716,10 @@ export function App() {
         setActiveView("team");
         void saveHermesTeamState(nextState).catch(() => undefined);
       }
-      setNotice(`已删除 ${ids.length} 个会话。`);
+      setNotice(t("app.notice.sessionsBulkDeleted", { count: ids.length }));
     } catch (error) {
       setSessions(previous);
-      setNotice(`批量删除会话失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sessionsBulkDeleteFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2727,10 +2736,10 @@ export function App() {
     try {
       const next = await setHermesTeamSessionPinned(sessionId, nextPinned);
       setSessions(normalizeLoadedSessions(next));
-      setNotice(nextPinned ? "已置顶会话。" : "已取消置顶。");
+      setNotice(nextPinned ? t("app.notice.sessionPinned") : t("app.notice.sessionUnpinned"));
     } catch (error) {
       setSessions(previous);
-      setNotice(`更新置顶状态失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.pinUpdateFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2749,10 +2758,14 @@ export function App() {
     try {
       const next = await setHermesTeamSessionFolder(sessionId, normalized);
       setSessions(normalizeLoadedSessions(next));
-      setNotice(normalized ? `已移动会话到：${basename(normalized)}` : "已移出分组。");
+      setNotice(
+        normalized
+          ? t("app.notice.sessionMovedTo", { folder: basename(normalized) })
+          : t("app.notice.sessionMovedOut"),
+      );
     } catch (error) {
       setSessions(previous);
-      setNotice(`移动会话失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sessionMoveFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2762,7 +2775,7 @@ export function App() {
       if (!selected) return;
       await moveSessionToFolder(sessionId, selected.path);
     } catch (error) {
-      setNotice(`选择文件夹失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.pickFolderFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2794,14 +2807,14 @@ export function App() {
       const next = await listHermesProfiles();
       setProfiles(next);
     } catch (error) {
-      setNotice(`刷新 Profiles 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.profilesRefreshFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
   const createProfileFromForm = async () => {
     const name = profileForm.name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
     if (!name) {
-      setNotice("Profile 名称不能为空。");
+      setNotice(t("app.notice.profileNameEmpty"));
       return;
     }
     setProfileBusy(true);
@@ -2812,9 +2825,9 @@ export function App() {
       });
       setProfiles(next);
       setProfileForm(emptyProfileForm);
-      setNotice(`Profile 已创建：${name}`);
+      setNotice(t("app.notice.profileCreated", { name }));
     } catch (error) {
-      setNotice(`创建 Profile 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.profileCreateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setProfileBusy(false);
     }
@@ -2835,12 +2848,12 @@ export function App() {
       await refreshMessagingPlatforms(profileName);
       await refreshCronJobs(profileName);
       await refreshCronScripts(profileName);
-      setNotice(`已切换到 Profile：${profileName}`);
+      setNotice(t("app.notice.profileSwitched", { profile: profileName }));
       if (openChat) {
         setActiveView("team");
       }
     } catch (error) {
-      setNotice(`切换 Profile 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.profileSwitchFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setProfileBusy(false);
     }
@@ -2848,11 +2861,11 @@ export function App() {
 
   const deleteProfileByName = async (profile: HermesProfileInfo, skipConfirm = false) => {
     if (profile.isDefault) {
-      setNotice("default profile 不能删除。");
+      setNotice(t("app.notice.cannotDeleteDefault"));
       return;
     }
     if (!skipConfirm) {
-      const confirmed = window.confirm(`删除 Profile「${profile.name}」？该操作会调用 Hermes CLI 删除对应 profile。`);
+      const confirmed = window.confirm(t("app.notice.confirmDeleteProfile", { name: profile.name }));
       if (!confirmed) return;
     }
     setProfileBusy(true);
@@ -2863,9 +2876,9 @@ export function App() {
         if (chatAgent) updateAgentProfile(chatAgent.id, "default");
         await activateProfile("default");
       }
-      setNotice(`Profile 已删除：${profile.name}`);
+      setNotice(t("app.notice.profileDeleted", { name: profile.name }));
     } catch (error) {
-      setNotice(`删除 Profile 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.profileDeleteFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setProfileBusy(false);
     }
@@ -2881,7 +2894,7 @@ export function App() {
       setRemoteConfig(config);
       setRemoteStatus(status);
     } catch (error) {
-      setNotice(`读取远程连接配置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.remoteConfigReadFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -2898,10 +2911,10 @@ export function App() {
       }));
       const status = await getRemoteConnectionStatus().catch(() => null);
       setRemoteStatus(status);
-      setNotice("远程连接配置已保存。");
+      setNotice(t("app.notice.remoteConfigSaved"));
       await refreshRuntime({ autoStart: saved.mode === "local" });
     } catch (error) {
-      setNotice(`保存远程连接配置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.remoteConfigSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setRemoteBusy(false);
     }
@@ -2914,7 +2927,7 @@ export function App() {
       setRemoteStatus(status);
       setNotice(status.message);
     } catch (error) {
-      setNotice(`远程连接测试失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.remoteTestFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setRemoteBusy(false);
     }
@@ -2932,7 +2945,7 @@ export function App() {
       });
       setNotice(status.message);
     } catch (error) {
-      setNotice(`SSH 隧道启动失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sshStartFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setRemoteBusy(false);
     }
@@ -2945,7 +2958,7 @@ export function App() {
       setRemoteStatus(status);
       setNotice(status.message);
     } catch (error) {
-      setNotice(`停止 SSH 隧道失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.sshStopFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setRemoteBusy(false);
     }
@@ -2957,7 +2970,7 @@ export function App() {
     setGatewayBusy(true);
     setRuntimeStatus({
       state: "checking",
-      message: `${targetProfile} · 正在启动 Hermes Gateway...`,
+      message: t("app.notice.gatewayStarting", { profile: targetProfile }),
     });
     try {
       const result = await ensureHermesGateway({ profile: targetProfile });
@@ -2967,17 +2980,17 @@ export function App() {
       });
       setNotice(
         result.ok
-          ? "Hermes Gateway 已就绪。"
+          ? t("app.notice.gatewayReady")
           : result.logPath
-          ? `Gateway 启动未完成，日志：${result.logPath}`
-          : "Gateway 启动未完成。",
+          ? t("app.notice.gatewayIncompleteLog", { logPath: result.logPath })
+          : t("app.notice.gatewayIncomplete"),
       );
       await refreshRuntime();
       return result.ok;
     } catch (error) {
       const message = runtimeErrorMessage(error);
       setRuntimeStatus({ state: "unavailable", message });
-      setNotice("Hermes Gateway 启动失败。");
+      setNotice(t("app.notice.gatewayStartFailed"));
       return false;
     } finally {
       setGatewayBusy(false);
@@ -2990,7 +3003,7 @@ export function App() {
     setGatewayBusy(true);
     setRuntimeStatus({
       state: "checking",
-      message: `${targetProfile} · 正在停止 Hermes Gateway...`,
+      message: t("app.notice.gatewayStopping", { profile: targetProfile }),
     });
     try {
       const result = await stopHermesGateway({ profile: targetProfile });
@@ -3005,7 +3018,7 @@ export function App() {
     } catch (error) {
       const message = runtimeErrorMessage(error);
       setRuntimeStatus({ state: "unavailable", message });
-      setNotice("Hermes Gateway 停止失败。");
+      setNotice(t("app.notice.gatewayStopFailed"));
       return false;
     } finally {
       setGatewayBusy(false);
@@ -3016,14 +3029,14 @@ export function App() {
     const targetProfile =
       profileName ?? profiles.find((profile) => profile.active)?.name ?? profiles[0]?.name ?? "default";
     setKeyBusy(true);
-    setNotice(`${targetProfile} 正在生成 API_SERVER_KEY...`);
+    setNotice(t("app.notice.apiKeyGenerating", { profile: targetProfile }));
     try {
       const result = await generateApiServerKey({ profile: targetProfile });
       setNotice(result.message);
       if (result.ok) {
         setRuntimeStatus({
           state: "checking",
-          message: `${targetProfile} · 正在重启 Gateway 以加载 API key...`,
+          message: t("app.notice.gatewayRestartForKey", { profile: targetProfile }),
         });
         await ensureHermesGateway({ profile: targetProfile, replace: true });
       }
@@ -3034,7 +3047,7 @@ export function App() {
       return result.ok;
     } catch (error) {
       const message = runtimeErrorMessage(error);
-      setNotice(`生成 API_SERVER_KEY 失败：${message}`);
+      setNotice(t("app.notice.apiKeyGenFailed", { error: message }));
       return false;
     } finally {
       setKeyBusy(false);
@@ -3180,7 +3193,7 @@ export function App() {
       // Don't let the wizard claim success if the Gateway never started — surface
       // the failure so SetupStep stays put and shows the error.
       if (!gatewayOk) {
-        throw new Error(gatewayMessage || "Gateway 启动失败，请检查配置后重试。");
+        throw new Error(gatewayMessage || t("app.notice.gatewayStartRetry"));
       }
     } finally {
       setOnboardingBusy(false);
@@ -3201,7 +3214,7 @@ export function App() {
       await refreshHermesCapabilities(targetProfile);
       await refreshConfigHealth(targetProfile);
     } catch (error) {
-      setNotice(`修复配置失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.fixConfigFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setConfigFixingCode(null);
     }
@@ -3234,12 +3247,12 @@ export function App() {
         baseUrl: modelForm.baseUrl,
         contextLength: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
       });
-      setNotice(`模型已保存：${saved.name}`);
+      setNotice(t("app.notice.modelSaved", { name: saved.name }));
       resetModelForm();
       await refreshHermesCapabilities(installStatus?.activeProfile);
       await refreshConfigHealth(installStatus?.activeProfile);
     } catch (error) {
-      setNotice(`保存模型失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.modelSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setModelBusy(false);
     }
@@ -3249,11 +3262,15 @@ export function App() {
     setModelBusy(true);
     try {
       const removed = await removeHermesModel(model.id);
-      setNotice(removed ? `模型已删除：${model.name}` : `未找到模型：${model.name}`);
+      setNotice(
+        removed
+          ? t("app.notice.modelDeleted", { name: model.name })
+          : t("app.notice.modelNotFound", { name: model.name }),
+      );
       await refreshHermesCapabilities(installStatus?.activeProfile);
       await refreshConfigHealth(installStatus?.activeProfile);
     } catch (error) {
-      setNotice(`删除模型失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.modelDeleteFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setModelBusy(false);
     }
@@ -3271,7 +3288,7 @@ export function App() {
         contextLength: model.contextLength,
       });
       setActiveModel(activated);
-      setNotice(`已激活 ${model.name} 到 ${targetProfile}。`);
+      setNotice(t("app.notice.modelActivated", { name: model.name, profile: targetProfile }));
       if (runtimeStatus.state === "ready") {
         await ensureHermesGateway({ profile: targetProfile, replace: true });
         await refreshRuntime({ autoStart: false });
@@ -3280,7 +3297,7 @@ export function App() {
       }
       await refreshConfigHealth(targetProfile);
     } catch (error) {
-      setNotice(`激活模型失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.modelActivateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setModelBusy(false);
     }
@@ -3290,7 +3307,7 @@ export function App() {
     const agent = state.agents[0];
     if (!agent) return;
     updateAgentProfile(agent.id, profileName);
-    setNotice(`聊天 Profile 已切换为 ${profileName}。`);
+    setNotice(t("app.notice.chatProfileSwitched", { profile: profileName }));
     void refreshHermesCapabilities(profileName);
     void refreshConfigHealth(profileName);
   };
@@ -3323,8 +3340,8 @@ export function App() {
     });
     setNotice(
       matchesGlobal
-        ? `当前会话已恢复全局默认模型 ${model.name}。`
-        : `当前会话已切换到 ${model.name}（仅本会话生效，不影响全局默认）。`,
+        ? t("app.notice.sessionModelRestored", { name: model.name })
+        : t("app.notice.sessionModelSwitched", { name: model.name }),
     );
   };
 
@@ -3342,14 +3359,14 @@ export function App() {
         current.map((item) => (item.envKey === saved.envKey ? saved : item)),
       );
       setProviderKeyDrafts((current) => ({ ...current, [envKey]: "" }));
-      setNotice(`${saved.label} API key 已保存到 ${targetProfile}。`);
+      setNotice(t("app.notice.providerKeySaved", { label: saved.label, profile: targetProfile }));
       if (runtimeStatus.state === "ready") {
         await ensureHermesGateway({ profile: targetProfile, replace: true });
         await refreshRuntime({ autoStart: false });
       }
       await refreshConfigHealth(targetProfile);
     } catch (error) {
-      setNotice(`保存 Provider API key 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.providerKeySaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setProviderBusy(false);
     }
@@ -3367,9 +3384,9 @@ export function App() {
       });
       setCredentialPool(nextPool);
       setPoolForm(emptyPoolForm);
-      setNotice(`Credential pool 已添加到 ${targetProfile}。`);
+      setNotice(t("app.notice.poolAdded", { profile: targetProfile }));
     } catch (error) {
-      setNotice(`添加 Credential pool 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.poolAddFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setProviderBusy(false);
     }
@@ -3385,9 +3402,9 @@ export function App() {
         id,
       });
       setCredentialPool(nextPool);
-      setNotice(`Credential pool 已删除。`);
+      setNotice(t("app.notice.poolRemoved"));
     } catch (error) {
-      setNotice(`删除 Credential pool 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.poolRemoveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setProviderBusy(false);
     }
@@ -3410,7 +3427,7 @@ export function App() {
       });
       setProviderDiscovery(discovered);
     } catch (error) {
-      setNotice(`OAuth 登录失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.oauthLoginFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setOauthBusyProvider(null);
     }
@@ -3421,7 +3438,7 @@ export function App() {
     const provider = model?.provider ?? activeModel?.provider ?? "";
     const baseUrl = model?.baseUrl ?? activeModel?.baseUrl ?? "";
     if (!provider) {
-      setNotice("当前没有可诊断的 provider。");
+      setNotice(t("app.notice.noProviderToDiagnose"));
       return;
     }
     setDiscoveryBusy(true);
@@ -3434,7 +3451,7 @@ export function App() {
       setProviderDiscovery(result);
       setNotice(result.message);
     } catch (error) {
-      setNotice(`Provider 诊断失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.providerDiagnoseFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setDiscoveryBusy(false);
     }
@@ -3475,10 +3492,10 @@ export function App() {
         contextLength: item.contextLength,
       });
       setAuxiliaryModels(next);
-      setNotice(`${item.label} 辅助模型已保存到 ${targetProfile}。`);
+      setNotice(t("app.notice.auxModelSaved", { label: item.label, profile: targetProfile }));
       await refreshConfigHealth(targetProfile);
     } catch (error) {
-      setNotice(`保存辅助模型失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.auxModelSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setAuxiliaryBusyTask(null);
     }
@@ -3499,9 +3516,9 @@ export function App() {
     try {
       const next = await listRegistryModelLibrary({ profile: targetProfile });
       setRegistryLibrary(next);
-      setNotice("模型库已刷新。");
+      setNotice(t("app.notice.modelLibraryRefreshed"));
     } catch (error) {
-      setNotice(`刷新模型库失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.modelLibraryRefreshFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setRegistryBusy(false);
     }
@@ -3516,7 +3533,7 @@ export function App() {
       baseUrl: provider.baseUrl,
       contextLength: model.contextLength ? String(model.contextLength) : current.contextLength,
     }));
-    setNotice(`已填入 ${provider.label} · ${model.id}，确认后保存。`);
+    setNotice(t("app.notice.modelFilled", { label: provider.label, model: model.id }));
   };
 
   const toggleToolset = async (toolset: ToolsetInfo) => {
@@ -3529,9 +3546,13 @@ export function App() {
         enabled: !toolset.enabled,
       });
       setToolsets(next);
-      setNotice(`${toolset.label} 已${toolset.enabled ? "关闭" : "开启"}。`);
+      setNotice(
+        toolset.enabled
+          ? t("app.notice.toolsetDisabled", { label: toolset.label })
+          : t("app.notice.toolsetEnabled", { label: toolset.label }),
+      );
     } catch (error) {
-      setNotice(`更新 Toolset 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.toolsetUpdateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3560,9 +3581,9 @@ export function App() {
       });
       setMcpServers(next);
       setMcpForm(emptyMcpForm);
-      setNotice(`MCP server 已保存：${mcpForm.name}`);
+      setNotice(t("app.notice.mcpSaved", { name: mcpForm.name }));
     } catch (error) {
-      setNotice(`保存 MCP server 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.mcpSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3577,9 +3598,9 @@ export function App() {
         name: server.name,
       });
       setMcpServers(next);
-      setNotice(`MCP server 已删除：${server.name}`);
+      setNotice(t("app.notice.mcpDeleted", { name: server.name }));
     } catch (error) {
-      setNotice(`删除 MCP server 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.mcpDeleteFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3593,9 +3614,13 @@ export function App() {
       setMcpCatalog(next.entries);
       setMcpCatalogDiagnostics(next.diagnostics);
       setMcpCatalogError(next.error ?? "");
-      setNotice(next.error ? `MCP Catalog 刷新失败：${next.error}` : "MCP Catalog 已刷新。");
+      setNotice(
+        next.error
+          ? t("app.notice.mcpCatalogRefreshFailedInline", { error: next.error })
+          : t("app.notice.mcpCatalogRefreshed"),
+      );
     } catch (error) {
-      setNotice(`刷新 MCP Catalog 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.mcpCatalogRefreshFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3610,9 +3635,13 @@ export function App() {
         name: server.name,
       });
       setMcpTestResult({ name: server.name, result });
-      setNotice(result.success ? `${server.name} MCP 测试完成。` : `${server.name} MCP 测试失败：${result.error ?? result.output}`);
+      setNotice(
+        result.success
+          ? t("app.notice.mcpTestDone", { name: server.name })
+          : t("app.notice.mcpTestFailedInline", { name: server.name, error: result.error ?? result.output }),
+      );
     } catch (error) {
-      setNotice(`测试 MCP server 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.mcpTestFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setMcpBusyServer(null);
     }
@@ -3636,12 +3665,12 @@ export function App() {
         setMcpCatalog(nextCatalog.entries);
         setMcpCatalogDiagnostics(nextCatalog.diagnostics);
         setMcpCatalogError(nextCatalog.error ?? "");
-        setNotice(`${entry.name} 已通过 hermes mcp install 安装。`);
+        setNotice(t("app.notice.mcpInstalled", { name: entry.name }));
       } else {
-        setNotice(`安装 MCP catalog entry 失败：${result.error ?? result.output}`);
+        setNotice(t("app.notice.mcpInstallFailedInline", { error: result.error ?? result.output }));
       }
     } catch (error) {
-      setNotice(`安装 MCP catalog entry 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.mcpInstallFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setMcpCatalogBusyName(null);
     }
@@ -3732,9 +3761,9 @@ export function App() {
       setMemoryContent(next);
       setMemoryDraft({ memory: next.memory, user: next.user });
       await refreshHermesCapabilities(targetProfile);
-      setNotice(`${kind === "memory" ? "MEMORY.md" : "USER.md"} 已保存。`);
+      setNotice(t("app.notice.fileSaved", { file: kind === "memory" ? "MEMORY.md" : "USER.md" }));
     } catch (error) {
-      setNotice(`保存 Memory 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.memorySaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3750,9 +3779,9 @@ export function App() {
       });
       setPersonaContent(next);
       setPersonaDraft(next.content);
-      setNotice("SOUL.md（Persona）已保存。");
+      setNotice(t("app.notice.personaSaved"));
     } catch (error) {
-      setNotice(`保存 Persona 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.personaSaveFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3767,14 +3796,14 @@ export function App() {
         content: newMemoryEntry,
       });
       if (!result.success) {
-        setNotice(result.error || "新增 Memory 失败。");
+        setNotice(result.error || t("app.notice.memoryAddFailedPlain"));
         return;
       }
       setNewMemoryEntry("");
       await refreshHermesCapabilities(targetProfile);
-      setNotice("Memory 条目已新增。");
+      setNotice(t("app.notice.memoryEntryAdded"));
     } catch (error) {
-      setNotice(`新增 Memory 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.memoryAddFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3791,15 +3820,15 @@ export function App() {
         content: editingMemoryDraft,
       });
       if (!result.success) {
-        setNotice(result.error || "更新 Memory 失败。");
+        setNotice(result.error || t("app.notice.memoryUpdateFailedPlain"));
         return;
       }
       setEditingMemoryIndex(null);
       setEditingMemoryDraft("");
       await refreshHermesCapabilities(targetProfile);
-      setNotice("Memory 条目已更新。");
+      setNotice(t("app.notice.memoryEntryUpdated"));
     } catch (error) {
-      setNotice(`更新 Memory 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.memoryUpdateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3814,7 +3843,7 @@ export function App() {
         index,
       });
       if (!result.success) {
-        setNotice(result.error || "删除 Memory 失败。");
+        setNotice(result.error || t("app.notice.memoryDeleteFailedPlain"));
         return;
       }
       if (editingMemoryIndex === index) {
@@ -3822,9 +3851,9 @@ export function App() {
         setEditingMemoryDraft("");
       }
       await refreshHermesCapabilities(targetProfile);
-      setNotice("Memory 条目已删除。");
+      setNotice(t("app.notice.memoryEntryDeleted"));
     } catch (error) {
-      setNotice(`删除 Memory 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.memoryDeleteFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setCapabilityBusy(false);
     }
@@ -3836,9 +3865,9 @@ export function App() {
     try {
       const next = await activateHermesMemoryProvider({ profile: targetProfile, name });
       setMemoryProviders(next);
-      setNotice(`已将记忆后端切换为 ${name}。`);
+      setNotice(t("app.notice.memoryProviderActivated", { name }));
     } catch (error) {
-      setNotice(`激活记忆后端失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.memoryProviderActivateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setMemoryProviderBusy(null);
     }
@@ -3850,9 +3879,9 @@ export function App() {
     try {
       const next = await deactivateHermesMemoryProvider({ profile: targetProfile });
       setMemoryProviders(next);
-      setNotice("已停用外部记忆后端，仅使用内置记忆。");
+      setNotice(t("app.notice.memoryProviderDeactivated"));
     } catch (error) {
-      setNotice(`停用记忆后端失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.memoryProviderDeactivateFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setMemoryProviderBusy(null);
     }
@@ -3873,9 +3902,9 @@ export function App() {
         delete updated[envKey];
         return updated;
       });
-      setNotice(`${envKey} 已写入当前 profile 的 .env。`);
+      setNotice(t("app.notice.envWritten", { envKey }));
     } catch (error) {
-      setNotice(`保存 ${envKey} 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.envSaveFailed", { envKey, error: runtimeErrorMessage(error) }));
     } finally {
       setMemoryProviderBusy(null);
     }
@@ -3890,9 +3919,13 @@ export function App() {
         query: skillQuery,
       });
       setSkills(next);
-      setNotice(skillQuery.trim() ? `Skills 搜索完成：${next.length} 个结果。` : `Skills 已刷新：${next.length} 个。`);
+      setNotice(
+        skillQuery.trim()
+          ? t("app.notice.skillsSearchDone", { count: next.length })
+          : t("app.notice.skillsRefreshed", { count: next.length }),
+      );
     } catch (error) {
-      setNotice(`搜索 Skills 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.skillsSearchFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setSkillBusy(false);
     }
@@ -3912,9 +3945,9 @@ export function App() {
       setBundledSkills(await listHermesBundledSkills({ profile: targetProfile }));
       setSkillInstallForm(emptySkillInstallForm);
       setSkillQuery("");
-      setNotice(`Skill 已安装到 ${targetProfile}。`);
+      setNotice(t("app.notice.skillInstalledTo", { profile: targetProfile }));
     } catch (error) {
-      setNotice(`安装 Skill 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.skillInstallFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setSkillBusy(false);
     }
@@ -3932,9 +3965,9 @@ export function App() {
       });
       setSkills(next);
       setBundledSkills(await listHermesBundledSkills({ profile: targetProfile }));
-      setNotice(`Skill 已安装：${skill.name}`);
+      setNotice(t("app.notice.skillInstalled", { name: skill.name }));
     } catch (error) {
-      setNotice(`安装 bundled Skill 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.bundledSkillInstallFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setSkillBusy(false);
     }
@@ -3947,7 +3980,7 @@ export function App() {
       setSkillDetail(skill);
       setSkillDetailContent(content);
     } catch (error) {
-      setNotice(`读取 Skill 详情失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.skillDetailReadFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setSkillBusy(false);
     }
@@ -3968,9 +4001,9 @@ export function App() {
         setSkillDetail(null);
         setSkillDetailContent("");
       }
-      setNotice(`Skill 已删除：${skill.name}`);
+      setNotice(t("app.notice.skillDeleted", { name: skill.name }));
     } catch (error) {
-      setNotice(`删除 Skill 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.skillDeleteFailed", { error: runtimeErrorMessage(error) }));
     } finally {
       setSkillBusy(false);
     }
@@ -4027,9 +4060,9 @@ export function App() {
         }
         return next;
       });
-      setNotice(`已添加 ${selected.filter((item) => item.isFile).length} 个附件。`);
+      setNotice(t("app.notice.attachmentsAdded", { count: selected.filter((item) => item.isFile).length }));
     } catch (error) {
-      setNotice(`选择附件失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.pickAttachmentFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -4044,6 +4077,7 @@ export function App() {
         files,
         existingCount: draftAttachments.length,
         sessionId: state.workspace.id,
+        t,
       });
       if (result.attachments.length > 0) {
         setDraftAttachments((current) => {
@@ -4059,12 +4093,14 @@ export function App() {
         });
       }
       const detail = [
-        result.attachments.length > 0 ? `已添加 ${result.attachments.length} 个附件。` : "",
+        result.attachments.length > 0
+          ? t("app.notice.attachmentsAdded", { count: result.attachments.length })
+          : "",
         ...result.errors,
       ].filter(Boolean);
       if (detail.length > 0) setNotice(detail.join(" "));
     } catch (error) {
-      setNotice(`处理附件失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.processAttachmentFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -4079,7 +4115,7 @@ export function App() {
           : binding,
       ),
     }));
-    setNotice(path ? `Context folder 已设置：${path}` : "Context folder 已清除。");
+    setNotice(path ? t("app.notice.contextFolderSet", { path }) : t("app.notice.contextFolderCleared"));
     if (!path) setWorktreeVisible(false);
   };
 
@@ -4089,7 +4125,7 @@ export function App() {
       if (!selected) return;
       setChatContextFolder(selected.path);
     } catch (error) {
-      setNotice(`选择 Context folder 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.pickContextFolderFailed", { error: runtimeErrorMessage(error) }));
     }
   };
 
@@ -4106,16 +4142,16 @@ export function App() {
       cancelTaskWithSystemMessage({
         state: current,
         taskId,
-        reason: "用户主动终止",
+        reason: t("app.notice.userAborted"),
       }),
     );
     addRuntimeEvent({
       taskId,
       label: "aborted",
-      detail: "用户已终止任务，迟到的 Hermes 响应会被忽略。",
+      detail: t("app.notice.userAbortedDetail"),
       level: "warning",
     });
-    setNotice("任务已取消。");
+    setNotice(t("app.notice.taskCancelled"));
   };
 
   const settleCompletedTask = (taskId: string) => {
@@ -4139,45 +4175,45 @@ export function App() {
         serialTrackerRef.current.bindTask(task.workspaceId, serialAdvance.agentId, appended.taskId);
         nextTaskId = appended.taskId;
         nextStateForRun = appended.state;
-        nextNotice = "串行链已推进到下一位 Agent。";
+        nextNotice = t("app.notice.serialAdvanced");
         return appended.state;
       }
       if (serialAdvance.kind === "last") {
-        nextNotice = "串行链已完成。";
+        nextNotice = t("app.notice.serialDone");
         return appendSystemMessage({
           state: current,
-          content: "串行链已完成，所有步骤都已返回真实 Hermes 输出。",
+          content: t("app.notice.serialDoneContent"),
           replyToMessageId: task.triggerMessageId,
         });
       }
       if (serialAdvance.kind === "last_user_intervened") {
-        nextNotice = "串行链因用户介入已静默收口。";
+        nextNotice = t("app.notice.serialClosedIntervened");
         return appendSystemMessage({
           state: current,
-          content: "串行链已收口：用户介入后不再自动推进后续步骤。",
+          content: t("app.notice.serialClosedIntervenedContent"),
           replyToMessageId: task.triggerMessageId,
         });
       }
 
       const batchResult = parallelTrackerRef.current.markComplete(task.workspaceId, task.agentId);
       if (batchResult === "last") {
-        nextNotice = "并行批次已汇合。";
+        nextNotice = t("app.notice.parallelMerged");
         return appendSystemMessage({
           state: current,
-          content: "并行批次已汇合，所有参与 Agent 都已完成真实 Hermes 输出。",
+          content: t("app.notice.parallelMergedContent"),
           replyToMessageId: task.triggerMessageId,
         });
       }
       if (batchResult === "last_user_intervened") {
-        nextNotice = "并行批次因用户介入已静默收口。";
+        nextNotice = t("app.notice.parallelClosedIntervened");
         return appendSystemMessage({
           state: current,
-          content: "并行批次已收口：用户介入后不再自动派发汇合后的下一步。",
+          content: t("app.notice.parallelClosedIntervenedContent"),
           replyToMessageId: task.triggerMessageId,
         });
       }
       if (batchResult === "pending") {
-        nextNotice = `${agent?.name ?? "Agent"} 已完成，等待并行批次其它成员。`;
+        nextNotice = t("app.notice.agentDonePending", { name: agent?.name ?? "Agent" });
       }
       return current;
     });
@@ -4191,7 +4227,7 @@ export function App() {
 
   const clearChat = () => {
     if (hasActiveSessionTasks(state)) {
-      setNotice("当前会话仍有运行中的 Agent，请先停止任务后再清空。");
+      setNotice(t("app.notice.activeTasksClear"));
       return;
     }
     setState((current) => ({
@@ -4204,7 +4240,7 @@ export function App() {
     setDraft("");
     setDraftAttachments([]);
       setRuntimeEvents([]);
-      setNotice("当前会话已清空。");
+      setNotice(t("app.notice.sessionCleared"));
   };
 
   const runLocalSlashCommand = (content: string) => {
@@ -4240,9 +4276,10 @@ export function App() {
       tokenUsage,
       sessionModelOverride: state.workspace.modelOverride ?? null,
       commands: SLASH_COMMANDS,
+      t,
     })
-      .then((reply) => appendReply(reply ?? "命令无输出。"))
-      .catch((error) => appendReply(`命令执行失败：${runtimeErrorMessage(error)}`));
+      .then((reply) => appendReply(reply ?? t("app.notice.commandNoOutput")))
+      .catch((error) => appendReply(t("app.notice.commandFailed", { error: runtimeErrorMessage(error) })));
   };
 
   const runFastModeCommand = (content: string) => {
@@ -4276,13 +4313,9 @@ export function App() {
     };
     void setFastMode(next)
       .then(() =>
-        appendReply(
-          next
-            ? "**Fast Mode：开启** — 已为当前聊天 Profile 启用优先处理（更低延迟）。"
-            : "**Fast Mode：关闭** — 已恢复标准处理。",
-        ),
+        appendReply(next ? t("app.notice.fastModeOnReply") : t("app.notice.fastModeOffReply")),
       )
-      .catch((error) => appendReply(`切换 Fast Mode 失败：${runtimeErrorMessage(error)}`));
+      .catch((error) => appendReply(t("app.notice.fastModeToggleFailed", { error: runtimeErrorMessage(error) })));
   };
 
   const sendMessage = (contentOverride?: string) => {
@@ -4293,7 +4326,7 @@ export function App() {
       setWebPreviewUrl(browseUrl);
       setDraft("");
       setDraftAttachments([]);
-      setNotice(`已打开 Web preview：${browseUrl}`);
+      setNotice(t("app.notice.webPreviewOpened", { url: browseUrl }));
       return;
     }
     const slashName = slashCommandName(content);
@@ -4324,24 +4357,24 @@ export function App() {
         ...current,
         {
           id: `queued-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          text: content || "请查看附件并处理。",
+          text: content || t("app.notice.checkAttachments"),
           attachments,
         },
       ]);
       setDraft("");
       setDraftAttachments([]);
-      setNotice("当前 Agent 正在执行，消息已加入队列。");
+      setNotice(t("app.notice.messageQueued"));
       return;
     }
     parallelTrackerRef.current.markUserIntervention(state.workspace.id);
     serialTrackerRef.current.markUserIntervention(state.workspace.id);
     const result = handleUserMessage(
       state,
-      backgroundQuestion !== null ? `💭 ${backgroundQuestion || content}` : content || "请查看附件并处理。",
+      backgroundQuestion !== null ? `💭 ${backgroundQuestion || content}` : content || t("app.notice.checkAttachments"),
       attachments,
     );
     setState(result.state);
-    setNotice(backgroundQuestion !== null ? "旁支问题已启动，不会阻塞主对话。" : result.notice);
+    setNotice(backgroundQuestion !== null ? t("app.notice.backgroundStarted") : result.notice);
     setDraft("");
     setDraftAttachments([]);
     const latestDecision = result.state.logs[0]?.decision;
@@ -4364,7 +4397,7 @@ export function App() {
 
   const regenerateFromMessage = (messageId: string) => {
     if (hasActiveSessionTasks(state)) {
-      setNotice("当前会话仍有运行中的 Agent，请先停止后再重新生成。");
+      setNotice(t("app.notice.activeTasksRegenerate"));
       return;
     }
     const index = state.messages.findIndex((message) => message.id === messageId);
@@ -4373,7 +4406,7 @@ export function App() {
       .reverse()
       .find((message) => message.authorKind === "user");
     if (!previousUser) {
-      setNotice("没有找到可重新生成的用户消息。");
+      setNotice(t("app.notice.noUserMessageToRegenerate"));
       return;
     }
     setDraftAttachments([]);
@@ -4382,7 +4415,7 @@ export function App() {
 
   const branchFromMessage = (messageId: string) => {
     if (hasActiveSessionTasks(state)) {
-      setNotice("当前会话仍有运行中的 Agent，请先停止后再分支。");
+      setNotice(t("app.notice.activeTasksBranch"));
       return;
     }
     const index = state.messages.findIndex((message) => message.id === messageId);
@@ -4413,7 +4446,7 @@ export function App() {
     setDraftAttachments([]);
     setRuntimeEvents([]);
     setActiveView("team");
-    setNotice("已在新对话中分支。");
+    setNotice(t("app.notice.branched"));
     if (isTauriRuntimeAvailable()) {
       void saveHermesTeamState(nextState).catch(() => undefined);
       void saveHermesTeamSession(buildSessionSummary(nextState))
@@ -4451,7 +4484,7 @@ export function App() {
       };
     });
     if (alreadyResolved) return;
-    sendMessage(trimmed || "你来决定，按你认为合理的默认继续即可。");
+    sendMessage(trimmed || t("app.notice.clarifyDefault"));
   };
 
   const scheduleDispatchedTasks = (nextState: OrchestrationState, taskIds: string[]) => {
@@ -4480,31 +4513,29 @@ export function App() {
         : binding;
 
     setState((current) => markTaskRunning(current, taskId));
-    setNotice(`${agent.name} 正在通过真实 Hermes Runtime 执行...`);
+    setNotice(t("app.notice.taskRunning", { name: agent.name }));
     addRuntimeEvent({
       taskId,
       label: "running",
-      detail: `${agent.name} 已开始调用 Hermes Gateway。`,
+      detail: t("app.notice.taskRunningDetail", { name: agent.name }),
       level: "info",
     });
 
     try {
       if (profiles.length > 0 && !selectedProfile) {
-        throw new Error(
-          `Agent 绑定的 Hermes profile「${profileName}」未在本机发现。请刷新 Runtime 或重新选择 profile。`,
-        );
+        throw new Error(t("app.notice.profileNotFound", { profile: profileName }));
       }
       if (selectedProfile && !selectedProfile.hasApiKey) {
         const created = await createApiKey(profileName);
         if (!created) {
-          throw new Error(`Hermes profile「${profileName}」没有 API_SERVER_KEY，无法执行真实 Agent 任务。`);
+          throw new Error(t("app.notice.profileNoApiKey", { profile: profileName }));
         }
       }
       if (runtimeStatus.state !== "ready") {
-        setNotice(`${agent.name} 等待 Hermes Gateway 启动...`);
+        setNotice(t("app.notice.waitingGateway", { name: agent.name }));
         const ready = await startGateway(profileName);
         if (!ready) {
-          throw new Error("Hermes Gateway 未就绪，无法执行真实 Agent 任务。");
+          throw new Error(t("app.notice.gatewayNotReady"));
         }
       }
       const output = await runHermesTaskStream({
@@ -4518,7 +4549,7 @@ export function App() {
         addRuntimeEvent({
           taskId,
           label: "ignored",
-          detail: `${agent.name} 返回了迟到响应，因任务已取消未写入消息流。`,
+          detail: t("app.notice.lateResponseIgnored", { name: agent.name }),
           level: "warning",
         });
         return;
@@ -4539,7 +4570,7 @@ export function App() {
                 message.id === streamMessageId && shouldReplacePlaceholder
                   ? {
                       ...message,
-                      content: message.content === "正在生成..." || message.content.trim().length === 0 ? content : message.content,
+                      content: message.content === t("app.generating") || message.content.trim().length === 0 ? content : message.content,
                     }
                   : message,
               ),
@@ -4561,7 +4592,7 @@ export function App() {
             message.id === streamMessageId && shouldReplacePlaceholder
               ? {
                   ...message,
-                  content: message.content === "正在生成..." || message.content.trim().length === 0 ? content : message.content,
+                  content: message.content === t("app.generating") || message.content.trim().length === 0 ? content : message.content,
                 }
               : message,
           ),
@@ -4573,10 +4604,10 @@ export function App() {
       addRuntimeEvent({
         taskId,
         label: "completed",
-        detail: `${agent.name} 已完成流式 Hermes 输出。`,
+        detail: t("app.notice.streamCompletedDetail", { name: agent.name }),
         level: "ok",
       });
-      setNotice(`${agent.name} 已返回真实 Hermes 输出。`);
+      setNotice(t("app.notice.taskReturned", { name: agent.name }));
       settleCompletedTask(taskId);
     } catch (error) {
       const message = runtimeErrorMessage(error);
@@ -4587,13 +4618,13 @@ export function App() {
             : cancelTaskWithSystemMessage({
                 state: current,
                 taskId,
-                reason: "用户主动终止",
+                reason: t("app.notice.userAborted"),
               }),
         );
         addRuntimeEvent({
           taskId,
           label: "aborted",
-          detail: `${agent.name} 的运行请求已取消。`,
+          detail: t("app.notice.runRequestCancelled", { name: agent.name }),
           level: "warning",
         });
         return;
@@ -4613,7 +4644,7 @@ export function App() {
         detail: message,
         level: "warning",
       });
-      setNotice("Hermes Runtime 调用失败。");
+      setNotice(t("app.notice.runtimeCallFailed"));
     }
   };
 
@@ -4624,7 +4655,7 @@ export function App() {
     setQueuedMessages((current) => current.slice(1));
     const result = handleUserMessage(state, next.text, next.attachments);
     setState(result.state);
-    setNotice("正在发送队列中的下一条消息。");
+    setNotice(t("app.notice.sendingNextQueued"));
     scheduleDispatchedTasks(result.state, result.createdTaskIds);
   }, [queuedMessages, state]);
 
@@ -4704,7 +4735,7 @@ export function App() {
   const { reasoningEffort, setReasoningEffort } = useReasoningEffort(currentChatProfile);
   const selectReasoningEffort = async (value: typeof reasoningEffort) => {
     await setReasoningEffort(value);
-    setNotice(`Reasoning effort 已保存到聊天 Profile「${currentChatProfile}」：${value}。`);
+    setNotice(t("app.notice.reasoningSaved", { profile: currentChatProfile, value }));
   };
   const { fastMode, setFastMode } = useFastMode(currentChatProfile);
   const toggleFastMode = async () => {
@@ -4713,11 +4744,11 @@ export function App() {
       await setFastMode(next);
       setNotice(
         next
-          ? `Fast Mode 已开启（聊天 Profile「${currentChatProfile}」优先处理、更低延迟）。`
-          : `Fast Mode 已关闭（聊天 Profile「${currentChatProfile}」恢复标准处理）。`,
+          ? t("app.notice.fastModeOnProfile", { profile: currentChatProfile })
+          : t("app.notice.fastModeOffProfile", { profile: currentChatProfile }),
       );
     } catch (error) {
-      setNotice(`切换 Fast Mode 失败：${runtimeErrorMessage(error)}`);
+      setNotice(t("app.notice.fastModeToggleFailed", { error: runtimeErrorMessage(error) }));
     }
   };
   const activeRuntimeEvent = activeTask
@@ -4860,17 +4891,17 @@ export function App() {
             <header className="workspace-header">
               <div>
                 <p className="panel-label">Settings</p>
-                <h1>Hermes 运行环境</h1>
-                <p>安装检测、profile 配置、API Server key 与 Gateway 进程状态。</p>
+                <h1>{t("settings.header.envTitle")}</h1>
+                <p>{t("settings.header.envSubtitle")}</p>
               </div>
               <div className="status-card">
                 <TerminalSquare size={18} />
-                <span>{installStatus?.installed ? "Hermes CLI 已发现" : "等待安装检测"}</span>
+                <span>{installStatus?.installed ? t("settings.header.cliFound") : t("settings.header.waitingInstall")}</span>
               </div>
             </header>
 
             <div className="settings-content">
-              <nav className="settings-section-tabs" aria-label="设置分组">
+              <nav className="settings-section-tabs" aria-label={t("settings.sectionsLabel")}>
                 {settingsPanels.map((panel) => (
                   <button
                     className={activeSettingsPanel === panel.id ? "selected" : ""}
@@ -4887,12 +4918,12 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Install</p>
-                    <h2>安装检测</h2>
+                    <h2>{t("settings.overview.installTitle")}</h2>
                   </div>
                   <div className="settings-card-head-actions">
                     <button className="refresh-runtime" type="button" onClick={startOnboarding}>
                       <WandSparkles size={14} />
-                      <span>引导式安装</span>
+                      <span>{t("settings.overview.guidedInstall")}</span>
                     </button>
                     <button
                       className="refresh-runtime"
@@ -4901,19 +4932,19 @@ export function App() {
                       onClick={() => void refreshInstallStatus()}
                     >
                       <RefreshCw size={14} />
-                      <span>{installBusy ? "检测中..." : "重新检测"}</span>
+                      <span>{installBusy ? t("settings.overview.detecting") : t("settings.overview.recheck")}</span>
                     </button>
                   </div>
                 </div>
                 {installStatus ? (
                   <div className="settings-rows">
-                    <StatusRow label="Hermes CLI" value={installStatus.command ?? "未找到"} ok={installStatus.installed} />
-                    <StatusRow label="版本" value={installStatus.version ?? "未返回"} ok={Boolean(installStatus.version)} />
+                    <StatusRow label="Hermes CLI" value={installStatus.command ?? t("settings.shared.notFound")} ok={installStatus.installed} />
+                    <StatusRow label={t("settings.overview.versionLabel")} value={installStatus.version ?? t("settings.overview.notReturned")} ok={Boolean(installStatus.version)} />
                     <StatusRow label="Hermes Home" value={installStatus.hermesHome} ok />
-                    <StatusRow label="当前 Profile" value={installStatus.activeProfile} ok />
+                    <StatusRow label={t("settings.overview.currentProfile")} value={installStatus.activeProfile} ok />
                   </div>
                 ) : (
-                  <p className="empty-note">尚未完成安装检测。请在 Tauri 桌面应用中刷新。</p>
+                  <p className="empty-note">{t("settings.overview.installEmpty")}</p>
                 )}
               </section>
 
@@ -4921,7 +4952,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Config</p>
-                    <h2>配置状态</h2>
+                    <h2>{t("settings.overview.configTitle")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -4930,18 +4961,18 @@ export function App() {
                     onClick={() => void createApiKey(installStatus?.activeProfile)}
                   >
                     <Settings size={14} />
-                    <span>{keyBusy ? "生成中..." : "生成 API key"}</span>
+                    <span>{keyBusy ? t("settings.overview.generating") : t("settings.overview.generateKey")}</span>
                   </button>
                 </div>
                 {installStatus ? (
                   <div className="settings-rows">
-                    <StatusRow label="config.yaml" value={installStatus.configExists ? "已存在" : "未发现"} ok={installStatus.configExists} />
-                    <StatusRow label=".env" value={installStatus.envExists ? "已存在" : "未发现"} ok={installStatus.envExists} />
-                    <StatusRow label="API_SERVER_KEY" value={installStatus.apiServerKeyPresent ? "已配置" : "未配置"} ok={installStatus.apiServerKeyPresent} />
-                    <StatusRow label="api_server" value={installStatus.apiServerConfigured ? "已启用" : "未启用"} ok={installStatus.apiServerConfigured} />
+                    <StatusRow label="config.yaml" value={installStatus.configExists ? t("settings.shared.exists") : t("settings.shared.notExists")} ok={installStatus.configExists} />
+                    <StatusRow label=".env" value={installStatus.envExists ? t("settings.shared.exists") : t("settings.shared.notExists")} ok={installStatus.envExists} />
+                    <StatusRow label="API_SERVER_KEY" value={installStatus.apiServerKeyPresent ? t("settings.shared.configured") : t("settings.shared.notConfigured")} ok={installStatus.apiServerKeyPresent} />
+                    <StatusRow label="api_server" value={installStatus.apiServerConfigured ? t("settings.overview.enabled") : t("settings.overview.notEnabled")} ok={installStatus.apiServerConfigured} />
                   </div>
                 ) : (
-                  <p className="empty-note">配置状态需要 Tauri Runtime 读取本机 Hermes 目录。</p>
+                  <p className="empty-note">{t("settings.overview.configEmpty")}</p>
                 )}
               </section>
 
@@ -4949,7 +4980,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Config Health</p>
-                    <h2>配置健康检查</h2>
+                    <h2>{t("settings.overview.healthTitle")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -4958,7 +4989,7 @@ export function App() {
                     onClick={() => void refreshConfigHealth(installStatus?.activeProfile)}
                   >
                     <RefreshCw size={14} />
-                    <span>{configHealthBusy ? "检查中..." : "重新检查"}</span>
+                    <span>{configHealthBusy ? t("settings.overview.checking") : t("settings.overview.recheckHealth")}</span>
                   </button>
                 </div>
                 {configHealth ? (
@@ -4973,7 +5004,7 @@ export function App() {
                       <span>{configHealth.profile} · {formatTime(configHealth.ranAt)}</span>
                     </div>
                     {configHealth.issues.length === 0 ? (
-                      <p className="empty-note">配置健康检查通过。</p>
+                      <p className="empty-note">{t("settings.overview.healthPass")}</p>
                     ) : (
                       <div className="config-health-list">
                         {configHealth.issues.map((issue) => (
@@ -4981,7 +5012,7 @@ export function App() {
                             <div>
                               <div className="config-health-title">
                                 <strong>{issue.message}</strong>
-                                <em>{configSeverityLabel(issue.severity)}</em>
+                                <em>{configSeverityLabel(issue.severity, t)}</em>
                               </div>
                               {issue.detail && <p>{issue.detail}</p>}
                               {issue.locations.length > 0 && (
@@ -4999,7 +5030,7 @@ export function App() {
                                 title={issue.fixLocation ?? undefined}
                               >
                                 <Settings size={14} />
-                                <span>{configFixingCode === issue.code ? "修复中..." : issue.fixDescription ?? "修复"}</span>
+                                <span>{configFixingCode === issue.code ? t("settings.overview.fixing") : issue.fixDescription ?? t("settings.overview.fix")}</span>
                               </button>
                             )}
                           </article>
@@ -5008,7 +5039,7 @@ export function App() {
                     )}
                   </div>
                 ) : (
-                  <p className="empty-note">尚未运行配置健康检查。</p>
+                  <p className="empty-note">{t("settings.overview.healthEmpty")}</p>
                 )}
               </section>
 
@@ -5016,7 +5047,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Doctor</p>
-                    <h2>诊断检查</h2>
+                    <h2>{t("settings.overview.doctorTitle")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -5025,14 +5056,14 @@ export function App() {
                     onClick={() => void runDoctorDiagnostics(installStatus?.activeProfile)}
                   >
                     <Stethoscope size={14} />
-                    <span>{doctorBusy ? "诊断中..." : "运行诊断"}</span>
+                    <span>{doctorBusy ? t("settings.shared.diagnosing") : t("settings.overview.runDoctor")}</span>
                   </button>
                 </div>
                 {doctorReport ? (
                   <div className="config-health-panel">
                     <div className="config-health-summary">
                       <span className={doctorReport.ok ? "ok" : "warning"}>
-                        {doctorReport.ok ? "通过" : "需关注"}
+                        {doctorReport.ok ? t("settings.overview.pass") : t("settings.overview.needAttention")}
                       </span>
                       <span className={doctorReport.configErrors > 0 ? "danger" : "ok"}>
                         {doctorReport.configErrors} errors
@@ -5057,7 +5088,7 @@ export function App() {
                     {doctorReport.doctorOutput.trim().length > 0 && (
                       <div className="doctor-output">
                         <p className="panel-label">
-                          {doctorReport.doctorSupported ? "hermes doctor 输出" : "诊断说明"}
+                          {doctorReport.doctorSupported ? t("settings.overview.doctorOutput") : t("settings.overview.doctorNote")}
                         </p>
                         <pre>{doctorReport.doctorOutput}</pre>
                       </div>
@@ -5065,7 +5096,7 @@ export function App() {
                   </div>
                 ) : (
                   <p className="empty-note">
-                    运行 <code>hermes doctor</code> 等价诊断：聚合 CLI 安装、Gateway、配置健康检查与 doctor 子命令输出。
+                    {t("settings.overview.doctorEmptyPre")} <code>hermes doctor</code> {t("settings.overview.doctorEmptyPost")}
                   </p>
                 )}
               </section>
@@ -5151,19 +5182,19 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Privacy</p>
-                    <h2>隐私设置</h2>
+                    <h2>{t("settings.privacy.title")}</h2>
                   </div>
                   <span className="count-pill">
                     <ShieldCheck size={14} />
-                    {settingsBusy ? "Saving" : "Local"}
+                    {settingsBusy ? t("common.saving") : t("common.local")}
                   </span>
                 </div>
                 <div className="appearance-options">
                   <label className="settings-toggle-row">
                     <span>
-                      <strong>允许匿名使用分析</strong>
+                      <strong>{t("settings.privacy.allowAnalytics")}</strong>
                       <small>
-                        记录你是否同意匿名使用分析。此偏好仅保存在本机的应用设置中。
+                        {t("settings.privacy.allowAnalyticsHint")}
                       </small>
                     </span>
                     <input
@@ -5175,9 +5206,7 @@ export function App() {
                     />
                   </label>
                   <p className="empty-note">
-                    当前状态：Hermes Team 桌面端<strong>不会</strong>采集或上报任何遥测/分析数据，
-                    也未内置分析上报服务。此开关仅作为真实的偏好存储，用于未来若引入匿名分析时
-                    决定是否启用——开启它<strong>不会</strong>立即产生任何网络上报。
+                    {t("settings.privacy.note1")}<strong>{t("settings.privacy.strongNot")}</strong>{t("settings.privacy.note2")}<strong>{t("settings.privacy.strongNot")}</strong>{t("settings.privacy.note3")}
                   </p>
                 </div>
               </section>
@@ -5186,7 +5215,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Network</p>
-                    <h2>网络设置</h2>
+                    <h2>{t("settings.network.title")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -5195,7 +5224,7 @@ export function App() {
                     onClick={() => void refreshNetworkSettings(installStatus?.activeProfile)}
                   >
                     <RefreshCw size={14} />
-                    <span>{networkBusy ? "读取中..." : "刷新"}</span>
+                    <span>{networkBusy ? t("common.loading") : t("common.refresh")}</span>
                   </button>
                 </div>
                 <div className="network-panel">
@@ -5256,7 +5285,7 @@ export function App() {
                     <span className="count-pill">{profiles.length}</span>
                     <button className="refresh-runtime" disabled={profileBusy} type="button" onClick={() => void refreshProfiles()}>
                       <RefreshCw size={14} />
-                      <span>{profileBusy ? "处理中..." : "刷新"}</span>
+                      <span>{profileBusy ? t("common.processing") : t("common.refresh")}</span>
                     </button>
                   </div>
                 </div>
@@ -5286,7 +5315,7 @@ export function App() {
                     </label>
                     <button className="refresh-runtime" disabled={profileBusy || !profileForm.name.trim()} type="button" onClick={() => void createProfileFromForm()}>
                       <Plus size={14} />
-                      <span>创建 Profile</span>
+                      <span>{t("settings.profiles.create")}</span>
                     </button>
                   </div>
 
@@ -5318,27 +5347,27 @@ export function App() {
                           <div className="model-card-actions profile-card-actions">
                             <button type="button" onClick={() => setDetailProfileName(profile.name)}>
                               <Settings size={14} />
-                              <span>详情</span>
+                              <span>{t("settings.shared.detail")}</span>
                             </button>
                             <button disabled={profileBusy || profile.active} type="button" onClick={() => void activateProfile(profile.name)}>
                               <Plug size={14} />
-                              <span>{profile.active ? "已激活" : "激活"}</span>
+                              <span>{profile.active ? t("settings.shared.activated") : t("settings.shared.activate")}</span>
                             </button>
                             <button disabled={profileBusy} type="button" onClick={() => void activateProfile(profile.name, true)}>
                               <MessageSquareText size={14} />
-                              <span>聊天</span>
+                              <span>{t("settings.profiles.chat")}</span>
                             </button>
                             {!profile.isDefault && (
                               <button disabled={profileBusy} type="button" onClick={() => void deleteProfileByName(profile)}>
                                 <Trash2 size={14} />
-                                <span>删除</span>
+                                <span>{t("settings.shared.delete")}</span>
                               </button>
                             )}
                           </div>
                         </article>
                       ))
                     ) : (
-                      <p className="empty-note">未读取到 Hermes profile。请先刷新 Runtime。</p>
+                      <p className="empty-note">{t("settings.profiles.empty")}</p>
                     )}
                   </div>
                 </div>
@@ -5348,7 +5377,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Provider Keys</p>
-                    <h2>API Key 与 Credential Pool</h2>
+                    <h2>{t("settings.providers.title")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -5356,7 +5385,7 @@ export function App() {
                     onClick={() => void refreshHermesCapabilities(installStatus?.activeProfile)}
                   >
                     <RefreshCw size={14} />
-                    <span>刷新密钥</span>
+                    <span>{t("settings.providers.refreshKeys")}</span>
                   </button>
                 </div>
 
@@ -5369,7 +5398,7 @@ export function App() {
                           <span>{item.envKey}</span>
                         </div>
                         <em className={item.present ? "ok" : "warning"}>
-                          {item.present ? item.masked : "未配置"}
+                          {item.present ? item.masked : t("settings.shared.notConfigured")}
                         </em>
                       </div>
                       <div className="provider-key-row">
@@ -5382,7 +5411,7 @@ export function App() {
                               [item.envKey]: event.target.value,
                             }))
                           }
-                          placeholder="输入新 API key"
+                          placeholder={t("settings.providers.newKeyPlaceholder")}
                         />
                         <button
                           disabled={providerBusy || !(providerKeyDrafts[item.envKey] ?? "").trim()}
@@ -5390,7 +5419,7 @@ export function App() {
                           onClick={() => void saveProviderKeyDraft(item.envKey)}
                         >
                           <Save size={14} />
-                          <span>保存</span>
+                          <span>{t("common.save")}</span>
                         </button>
                       </div>
                     </article>
@@ -5401,7 +5430,7 @@ export function App() {
                   <div className="settings-card-head compact-head">
                     <div>
                       <p className="panel-label">Provider Registry</p>
-                      <h3>Provider 注册表诊断</h3>
+                      <h3>{t("settings.providers.registryTitle")}</h3>
                     </div>
                     <span className="count-pill">{providerRegistry.length}</span>
                   </div>
@@ -5427,7 +5456,7 @@ export function App() {
                               onClick={() => void loginOAuthProvider(provider)}
                             >
                               <Plug size={14} />
-                              <span>{oauthBusyProvider === provider.id ? "登录中..." : "OAuth 登录"}</span>
+                              <span>{oauthBusyProvider === provider.id ? t("settings.providers.loggingIn") : t("settings.providers.oauthLogin")}</span>
                             </button>
                           ) : (
                             <button
@@ -5445,7 +5474,7 @@ export function App() {
                               }
                             >
                               <RefreshCw size={14} />
-                              <span>探测</span>
+                              <span>{t("settings.providers.probe")}</span>
                             </button>
                           )}
                         </div>
@@ -5470,7 +5499,7 @@ export function App() {
                     <input
                       value={poolForm.label}
                       onChange={(event) => setPoolForm((current) => ({ ...current, label: event.target.value }))}
-                      placeholder="标签，可选"
+                      placeholder={t("settings.providers.labelOptional")}
                     />
                     <button
                       className="refresh-runtime"
@@ -5479,7 +5508,7 @@ export function App() {
                       onClick={() => void addPoolEntry()}
                     >
                       <Plus size={14} />
-                      <span>添加到 Pool</span>
+                      <span>{t("settings.providers.addToPool")}</span>
                     </button>
                   </div>
                   <div className="credential-pool-list">
@@ -5506,7 +5535,7 @@ export function App() {
                         ) : null,
                       )
                     ) : (
-                      <p className="empty-note">当前 profile 未配置 credential pool。</p>
+                      <p className="empty-note">{t("settings.providers.poolEmpty")}</p>
                     )}
                   </div>
                 </div>
@@ -5516,7 +5545,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Models</p>
-                    <h2>模型与 Provider</h2>
+                    <h2>{t("settings.models.title")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -5524,7 +5553,7 @@ export function App() {
                     onClick={() => void refreshHermesCapabilities(installStatus?.activeProfile)}
                   >
                     <RefreshCw size={14} />
-                    <span>刷新模型</span>
+                    <span>{t("settings.models.refreshModels")}</span>
                   </button>
                   <button
                     className="refresh-runtime"
@@ -5533,14 +5562,14 @@ export function App() {
                     onClick={() => void diagnoseProvider()}
                   >
                     <Plug size={14} />
-                    <span>{discoveryBusy ? "诊断中..." : "诊断 Provider"}</span>
+                    <span>{discoveryBusy ? t("settings.shared.diagnosing") : t("settings.models.diagnoseProvider")}</span>
                   </button>
                 </div>
                 <div className="model-panel">
                   <div className="settings-rows">
-                    <StatusRow label="当前 Provider" value={activeModel?.provider || "未配置"} ok={Boolean(activeModel?.provider && activeModel.provider !== "auto")} />
-                    <StatusRow label="当前 Model" value={activeModel?.model || "未配置"} ok={Boolean(activeModel?.model)} />
-                    <StatusRow label="Base URL" value={activeModel?.baseUrl || "使用 provider 默认值"} ok />
+                    <StatusRow label={t("settings.models.currentProvider")} value={activeModel?.provider || t("settings.shared.notConfigured")} ok={Boolean(activeModel?.provider && activeModel.provider !== "auto")} />
+                    <StatusRow label={t("settings.models.currentModel")} value={activeModel?.model || t("settings.shared.notConfigured")} ok={Boolean(activeModel?.model)} />
+                    <StatusRow label="Base URL" value={activeModel?.baseUrl || t("settings.models.baseUrlDefault")} ok />
                   </div>
 
                   {providerDiscovery && (
@@ -5575,11 +5604,11 @@ export function App() {
 
                   <div className="model-form">
                     <label>
-                      <span>名称</span>
+                      <span>{t("settings.models.name")}</span>
                       <input
                         value={modelForm.name}
                         onChange={(event) => setModelForm((current) => ({ ...current, name: event.target.value }))}
-                        placeholder="例如 GPT-4.1"
+                        placeholder={t("settings.models.namePlaceholder")}
                       />
                     </label>
                     <label>
@@ -5595,7 +5624,7 @@ export function App() {
                       <input
                         value={modelForm.model}
                         onChange={(event) => setModelForm((current) => ({ ...current, model: event.target.value }))}
-                        placeholder="模型 ID"
+                        placeholder={t("settings.models.modelIdPlaceholder")}
                         list="provider-discovered-models"
                       />
                       {providerDiscovery?.models.length ? (
@@ -5611,7 +5640,7 @@ export function App() {
                       <input
                         value={modelForm.baseUrl}
                         onChange={(event) => setModelForm((current) => ({ ...current, baseUrl: event.target.value }))}
-                        placeholder="可选"
+                        placeholder={t("settings.models.optional")}
                       />
                     </label>
                     <label>
@@ -5619,17 +5648,17 @@ export function App() {
                       <input
                         value={modelForm.contextLength}
                         onChange={(event) => setModelForm((current) => ({ ...current, contextLength: event.target.value }))}
-                        placeholder="可选 token 数"
+                        placeholder={t("settings.models.optionalTokens")}
                       />
                     </label>
                     <div className="model-form-actions">
                       <button className="refresh-runtime" disabled={modelBusy} type="button" onClick={saveModelFromForm}>
                         <Save size={14} />
-                        <span>{modelForm.id ? "更新" : "保存"}</span>
+                        <span>{modelForm.id ? t("common.update") : t("common.save")}</span>
                       </button>
                       <button className="refresh-runtime" type="button" onClick={resetModelForm}>
                         <Plus size={14} />
-                        <span>新建</span>
+                        <span>{t("settings.models.new")}</span>
                       </button>
                     </div>
                   </div>
@@ -5637,8 +5666,8 @@ export function App() {
                   <div className="model-subpanel">
                     <div className="model-subpanel-head">
                       <div>
-                        <strong>辅助模型</strong>
-                        <span>为 Hermes 的标题、压缩、图片理解等后台任务单独指定模型。</span>
+                        <strong>{t("settings.models.auxTitle")}</strong>
+                        <span>{t("settings.models.auxHint")}</span>
                       </div>
                     </div>
                     <div className="auxiliary-model-grid">
@@ -5667,7 +5696,7 @@ export function App() {
                                 <input
                                   value={item.model}
                                   onChange={(event) => updateAuxiliaryModelDraft(item.task, { model: event.target.value })}
-                                  placeholder="auto 使用主模型"
+                                  placeholder={t("settings.models.autoUseMain")}
                                 />
                               </label>
                               <label>
@@ -5675,7 +5704,7 @@ export function App() {
                                 <input
                                   value={item.baseUrl}
                                   onChange={(event) => updateAuxiliaryModelDraft(item.task, { baseUrl: event.target.value })}
-                                  placeholder="可选"
+                                  placeholder={t("settings.models.optional")}
                                 />
                               </label>
                               <label>
@@ -5688,14 +5717,14 @@ export function App() {
                                       contextLength: Number.isFinite(value) && value > 0 ? value : undefined,
                                     });
                                   }}
-                                  placeholder="可选"
+                                  placeholder={t("settings.models.optional")}
                                 />
                               </label>
                             </div>
                             <div className="model-card-actions">
                               <button disabled={busy} type="button" onClick={() => void saveAuxiliaryModel(item)}>
                                 <Save size={14} />
-                                <span>{busy ? "保存中..." : "保存"}</span>
+                                <span>{busy ? t("settings.shared.saving") : t("common.save")}</span>
                               </button>
                               <button disabled={busy} type="button" onClick={() => resetAuxiliaryDraftToAuto(item.task)}>
                                 <RefreshCw size={14} />
@@ -5712,11 +5741,11 @@ export function App() {
                     <div className="model-subpanel-head">
                       <div>
                         <strong>Registry Model Library</strong>
-                        <span>从 Hermes provider registry、默认模型、本地模型和 OAuth registry 聚合。</span>
+                        <span>{t("settings.models.registryHint")}</span>
                       </div>
                       <button className="refresh-runtime" disabled={registryBusy} type="button" onClick={() => void refreshRegistryLibrary()}>
                         <RefreshCw size={14} />
-                        <span>{registryBusy ? "刷新中..." : "刷新模型库"}</span>
+                        <span>{registryBusy ? t("settings.models.refreshing") : t("settings.models.refreshLibrary")}</span>
                       </button>
                     </div>
                     <div className="registry-library-grid">
@@ -5751,7 +5780,7 @@ export function App() {
                             </article>
                           ))
                       ) : (
-                        <p className="empty-note">模型库暂无可显示模型。可以先刷新 Provider 或保存一个模型。</p>
+                        <p className="empty-note">{t("settings.models.libraryEmpty")}</p>
                       )}
                     </div>
                   </div>
@@ -5770,26 +5799,26 @@ export function App() {
                             <div className="model-card-actions">
                               <button disabled={modelBusy || isActive} type="button" onClick={() => void activateModel(model)}>
                                 <Plug size={14} />
-                                <span>{isActive ? "已激活" : "激活"}</span>
+                                <span>{isActive ? t("settings.shared.activated") : t("settings.shared.activate")}</span>
                               </button>
                               <button disabled={discoveryBusy} type="button" onClick={() => void diagnoseProvider(model)}>
                                 <RefreshCw size={14} />
-                                <span>诊断</span>
+                                <span>{t("settings.shared.diagnose")}</span>
                               </button>
                               <button disabled={modelBusy} type="button" onClick={() => editModel(model)}>
                                 <Settings size={14} />
-                                <span>编辑</span>
+                                <span>{t("settings.shared.edit")}</span>
                               </button>
                               <button disabled={modelBusy} type="button" onClick={() => void deleteModel(model)}>
                                 <Trash2 size={14} />
-                                <span>删除</span>
+                                <span>{t("settings.shared.delete")}</span>
                               </button>
                             </div>
                           </article>
                         );
                       })
                     ) : (
-                      <p className="empty-note">模型库为空。可以先新增模型条目。</p>
+                      <p className="empty-note">{t("settings.models.listEmpty")}</p>
                     )}
                   </div>
                 </div>
@@ -5799,7 +5828,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Gateway</p>
-                    <h2>Gateway 控制</h2>
+                    <h2>{t("settings.gateway.title")}</h2>
                   </div>
                   <div className="settings-actions">
                     <button
@@ -5808,7 +5837,7 @@ export function App() {
                       onClick={() => void refreshRuntime({ autoStart: false })}
                     >
                       <RefreshCw size={14} />
-                      <span>刷新</span>
+                      <span>{t("common.refresh")}</span>
                     </button>
                     <button
                       className="refresh-runtime"
@@ -5817,7 +5846,7 @@ export function App() {
                       onClick={() => void startGateway(installStatus?.activeProfile)}
                     >
                       <Plug size={14} />
-                      <span>{gatewayBusy ? "处理中..." : "启动"}</span>
+                      <span>{gatewayBusy ? t("common.processing") : t("settings.gateway.start")}</span>
                     </button>
                     <button
                       className="refresh-runtime"
@@ -5826,13 +5855,13 @@ export function App() {
                       onClick={() => void stopGateway(installStatus?.activeProfile)}
                     >
                       <Power size={14} />
-                      <span>停止</span>
+                      <span>{t("settings.gateway.stop")}</span>
                     </button>
                   </div>
                 </div>
                 <div className="settings-rows">
                   <StatusRow
-                    label="健康状态"
+                    label={t("settings.gateway.health")}
                     value={installStatus?.gatewayHealth ?? runtimeStatus.message}
                     ok={installStatus?.gatewayRunning ?? runtimeStatus.state === "ready"}
                   />
@@ -5849,7 +5878,7 @@ export function App() {
                     ))}
                   </div>
                 ) : (
-                  <p className="empty-note">未发现 Hermes profile。请先完成安装检测或刷新 Runtime。</p>
+                  <p className="empty-note">{t("settings.gateway.empty")}</p>
                 )}
               </section>
 
@@ -5857,20 +5886,20 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Remote</p>
-                    <h2>远程 / SSH 连接</h2>
+                    <h2>{t("settings.remote.title")}</h2>
                   </div>
                   <div className="settings-actions">
                     <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void refreshRemoteConnection()}>
                       <RefreshCw size={14} />
-                      <span>刷新</span>
+                      <span>{t("common.refresh")}</span>
                     </button>
                     <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void saveRemoteConfig()}>
                       <Save size={14} />
-                      <span>保存</span>
+                      <span>{t("common.save")}</span>
                     </button>
                     <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void testRemoteConfig()}>
                       <Plug size={14} />
-                      <span>测试</span>
+                      <span>{t("settings.shared.test")}</span>
                     </button>
                   </div>
                 </div>
@@ -5883,14 +5912,14 @@ export function App() {
                         type="button"
                         onClick={() => setRemoteConfig((current) => ({ ...current, mode: modeName }))}
                       >
-                        {modeName === "local" ? "本机" : modeName === "remote" ? "远程 URL" : "SSH 隧道"}
+                        {modeName === "local" ? t("settings.remote.local") : modeName === "remote" ? t("settings.remote.remoteUrl") : t("settings.remote.sshTunnel")}
                       </button>
                     ))}
                   </div>
                   <div className="settings-rows">
-                    <StatusRow label="当前模式" value={remoteConfig.mode} ok />
-                    <StatusRow label="连接状态" value={remoteStatus?.message ?? "尚未测试"} ok={Boolean(remoteStatus?.ok)} />
-                    <StatusRow label="Base URL" value={remoteStatus?.baseUrl || (remoteConfig.mode === "remote" ? remoteConfig.remoteUrl : "按模式解析")} ok={Boolean(remoteStatus?.baseUrl || remoteConfig.mode !== "remote" || remoteConfig.remoteUrl)} />
+                    <StatusRow label={t("settings.remote.currentMode")} value={remoteConfig.mode} ok />
+                    <StatusRow label={t("settings.remote.connStatus")} value={remoteStatus?.message ?? t("settings.shared.notTested")} ok={Boolean(remoteStatus?.ok)} />
+                    <StatusRow label="Base URL" value={remoteStatus?.baseUrl || (remoteConfig.mode === "remote" ? remoteConfig.remoteUrl : t("settings.remote.baseUrlByMode"))} ok={Boolean(remoteStatus?.baseUrl || remoteConfig.mode !== "remote" || remoteConfig.remoteUrl)} />
                     <StatusRow label="SSH Tunnel" value={remoteStatus?.sshTunnelActive ? "active" : "inactive"} ok={Boolean(remoteStatus?.sshTunnelActive) || remoteConfig.mode !== "ssh"} />
                   </div>
                   <div className="remote-form">
@@ -5908,7 +5937,7 @@ export function App() {
                         type="password"
                         value={remoteConfig.apiKey}
                         onChange={(event) => setRemoteConfig((current) => ({ ...current, apiKey: event.target.value }))}
-                        placeholder="远端 Gateway token，可选"
+                        placeholder={t("settings.remote.remoteTokenPlaceholder")}
                       />
                     </label>
                     <label>
@@ -5960,11 +5989,11 @@ export function App() {
                   <div className="settings-actions remote-actions">
                     <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void connectSsh()}>
                       <Plug size={14} />
-                      <span>{remoteBusy ? "连接中..." : "启动 SSH 隧道"}</span>
+                      <span>{remoteBusy ? t("settings.remote.connecting") : t("settings.remote.startSsh")}</span>
                     </button>
                     <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void disconnectSsh()}>
                       <Power size={14} />
-                      <span>停止 SSH 隧道</span>
+                      <span>{t("settings.remote.stopSsh")}</span>
                     </button>
                   </div>
                 </div>
@@ -5974,13 +6003,13 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Messaging</p>
-                    <h2>消息平台</h2>
+                    <h2>{t("settings.messaging.title")}</h2>
                   </div>
                   <div className="settings-actions">
                     <span className="count-pill">{messagingResponse?.platforms.length ?? 0}</span>
                     <button className="refresh-runtime" disabled={messagingBusy} type="button" onClick={() => void refreshMessagingPlatforms(installStatus?.activeProfile)}>
                       <RefreshCw size={14} />
-                      <span>{messagingBusy ? "读取中..." : "刷新"}</span>
+                      <span>{messagingBusy ? t("common.loading") : t("common.refresh")}</span>
                     </button>
                   </div>
                 </div>
@@ -5998,11 +6027,11 @@ export function App() {
                           <div className="model-card-actions">
                             <button disabled={messagingBusy} type="button" onClick={() => void toggleMessagingPlatform(platform)}>
                               <Power size={14} />
-                              <span>{platform.enabled ? "禁用" : "启用"}</span>
+                              <span>{platform.enabled ? t("settings.messaging.disable") : t("settings.messaging.enable")}</span>
                             </button>
                             <button disabled={messagingBusy} type="button" onClick={() => void runMessagingPlatformTest(platform)}>
                               <Plug size={14} />
-                              <span>测试</span>
+                              <span>{t("settings.shared.test")}</span>
                             </button>
                           </div>
                         </div>
@@ -6028,7 +6057,7 @@ export function App() {
                               <small>{field.key}{field.isSet ? ` · ${field.redactedValue}` : ""}</small>
                               {field.isSet && (
                                 <button disabled={messagingBusy} type="button" onClick={() => void clearMessagingEnv(platform, field.key)}>
-                                  清空
+                                  {t("settings.messaging.clear")}
                                 </button>
                               )}
                             </label>
@@ -6038,7 +6067,7 @@ export function App() {
                         <div className="settings-actions messaging-actions">
                           <button className="refresh-runtime" disabled={messagingBusy} type="button" onClick={() => void saveMessagingPlatformEnv(platform)}>
                             <Save size={14} />
-                            <span>保存 env</span>
+                            <span>{t("settings.messaging.saveEnv")}</span>
                           </button>
                         </div>
 
@@ -6060,7 +6089,7 @@ export function App() {
                     ))}
                   </div>
                 ) : (
-                  <p className="empty-note">尚未读取 Messaging Platforms；这里会绑定真实 Hermes config、env 与 Gateway API。</p>
+                  <p className="empty-note">{t("settings.messaging.empty")}</p>
                 )}
               </section>
 
@@ -6068,17 +6097,17 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Schedules</p>
-                    <h2>定时任务排程</h2>
+                    <h2>{t("app.schedules.heading")}</h2>
                   </div>
                   <div className="settings-actions">
                     <span className="count-pill">{cronJobs.length}</span>
-                    <span className="cron-autorefresh-hint" title="列表每 15 秒自动刷新">
+                    <span className="cron-autorefresh-hint" title={t("app.schedules.autoRefreshHint")}>
                       <RefreshCw size={12} />
-                      自动刷新
+                      {t("app.schedules.autoRefresh")}
                     </span>
                     <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => { void refreshCronJobs(installStatus?.activeProfile); void refreshCronScripts(installStatus?.activeProfile); }}>
                       <RefreshCw size={14} />
-                      <span>{cronBusy ? "读取中..." : "刷新"}</span>
+                      <span>{cronBusy ? t("common.loading") : t("common.refresh")}</span>
                     </button>
                   </div>
                 </div>
@@ -6088,34 +6117,34 @@ export function App() {
                     {cronEditId && (
                       <div className="cron-edit-banner model-form-wide">
                         <Pencil size={13} />
-                        <span>正在编辑任务，保存后将更新现有排程。</span>
+                        <span>{t("app.schedules.editBanner")}</span>
                         <button type="button" onClick={cancelCronEdit}>
-                          取消
+                          {t("common.cancel")}
                         </button>
                       </div>
                     )}
                     <label>
-                      <span>名称</span>
+                      <span>{t("app.schedules.name")}</span>
                       <input
                         ref={cronNameInputRef}
                         value={cronForm.name}
                         onChange={(event) => setCronForm((current) => ({ ...current, name: event.target.value }))}
-                        placeholder="每日摘要"
+                        placeholder={t("app.schedules.namePlaceholder")}
                       />
                     </label>
                     <label>
-                      <span>重复次数</span>
+                      <span>{t("app.schedules.repeatTimes")}</span>
                       <input
                         type="number"
                         min={1}
                         value={cronForm.repeatTimes}
                         onChange={(event) => setCronForm((current) => ({ ...current, repeatTimes: event.target.value }))}
-                        placeholder="留空 = 一直运行"
+                        placeholder={t("app.schedules.repeatPlaceholder")}
                       />
                     </label>
 
                     <div className="cron-field model-form-wide">
-                      <span className="cron-field-label">任务类型</span>
+                      <span className="cron-field-label">{t("app.schedules.taskType")}</span>
                       <div className="cron-type-tabs">
                         <button
                           type="button"
@@ -6123,7 +6152,7 @@ export function App() {
                           onClick={() => setCronForm((current) => ({ ...current, noAgent: false }))}
                         >
                           <WandSparkles size={13} />
-                          <span>Agent 任务</span>
+                          <span>{t("app.schedules.agentTask")}</span>
                         </button>
                         <button
                           type="button"
@@ -6131,26 +6160,26 @@ export function App() {
                           onClick={() => setCronForm((current) => ({ ...current, noAgent: true }))}
                         >
                           <TerminalSquare size={13} />
-                          <span>脚本任务（no-agent）</span>
+                          <span>{t("app.schedules.scriptTask")}</span>
                         </button>
                       </div>
                       <span className="cron-field-hint">
                         {cronForm.noAgent
-                          ? "到点直接运行脚本并把 stdout 原样投递，不经过 LLM（适合看门狗 / 巡检脚本）。"
-                          : "到点把 prompt 交给 Hermes Agent 跑一轮，可选附加脚本，其 stdout 注入到 prompt。"}
+                          ? t("app.schedules.scriptTaskHint")
+                          : t("app.schedules.agentTaskHint")}
                       </span>
                     </div>
 
                     <div className="cron-field model-form-wide">
                       <span className="cron-field-label">
-                        脚本{cronForm.noAgent ? "（必填）" : "（可选）"}
+                        {cronForm.noAgent ? t("app.schedules.scriptRequired") : t("app.schedules.scriptOptional")}
                       </span>
                       <div className="cron-script-row">
                         <FileCode2 size={14} />
                         <input
                           list="cron-script-options"
                           value={cronForm.script}
-                          placeholder="脚本文件名，如 watchdog.py（位于 ~/.hermes/scripts/）"
+                          placeholder={t("app.schedules.scriptPlaceholder")}
                           onChange={(event) => setCronForm((current) => ({ ...current, script: event.target.value }))}
                         />
                         <datalist id="cron-script-options">
@@ -6162,7 +6191,7 @@ export function App() {
                           <button
                             type="button"
                             className="cron-script-clear"
-                            aria-label="清除脚本"
+                            aria-label={t("app.schedules.clearScript")}
                             onClick={() => setCronForm((current) => ({ ...current, script: "", noAgent: false }))}
                           >
                             <X size={13} />
@@ -6186,13 +6215,11 @@ export function App() {
                             ))}
                         </div>
                       )}
-                      <span className="cron-field-hint">
-                        脚本需放在 ~/.hermes/scripts/ 下；.sh/.bash 走 bash，其余走 Python。
-                      </span>
+                      <span className="cron-field-hint">{t("app.schedules.scriptHint")}</span>
                     </div>
 
                     <div className="cron-builder model-form-wide">
-                      <span className="cron-builder-title">调度频率</span>
+                      <span className="cron-builder-title">{t("app.schedules.frequency")}</span>
                       <div className="cron-freq-tabs">
                         {CRON_FREQ_OPTIONS.map((option) => (
                           <button
@@ -6201,7 +6228,7 @@ export function App() {
                             className={cronForm.freq === option.id ? "active" : ""}
                             onClick={() => setCronForm((current) => ({ ...current, freq: option.id }))}
                           >
-                            {option.label}
+                            {t(option.labelKey)}
                           </button>
                         ))}
                       </div>
@@ -6209,7 +6236,7 @@ export function App() {
                       <div className="cron-builder-controls">
                         {cronForm.freq === "minutes" && (
                           <div className="cron-control-row">
-                            <span>每</span>
+                            <span>{t("app.schedules.every")}</span>
                             <input
                               type="number"
                               min={1}
@@ -6222,12 +6249,12 @@ export function App() {
                                 }))
                               }
                             />
-                            <span>分钟执行一次</span>
+                            <span>{t("app.schedules.minutesOnce")}</span>
                           </div>
                         )}
                         {cronForm.freq === "hourly" && (
                           <div className="cron-control-row">
-                            <span>每小时第</span>
+                            <span>{t("app.schedules.hourlyAt")}</span>
                             <input
                               type="number"
                               min={0}
@@ -6240,7 +6267,7 @@ export function App() {
                                 }))
                               }
                             />
-                            <span>分钟执行</span>
+                            <span>{t("app.schedules.minuteRun")}</span>
                           </div>
                         )}
                         {(cronForm.freq === "daily" || cronForm.freq === "weekly") && (
@@ -6261,13 +6288,13 @@ export function App() {
                                       }))
                                     }
                                   >
-                                    {day.short}
+                                    {t(`cron.weekdayShort.${day.value}`)}
                                   </button>
                                 ))}
                               </div>
                             )}
                             <div className="cron-control-row">
-                              <span>时间</span>
+                              <span>{t("app.schedules.time")}</span>
                               <input
                                 type="number"
                                 min={0}
@@ -6319,11 +6346,13 @@ export function App() {
                         ) : (
                           <>
                             <code className="cron-preview-expr">{cronSchedulePreview.value}</code>
-                            <span className="cron-preview-desc">{describeCronSchedule(cronForm)}</span>
+                            <span className="cron-preview-desc">{describeCronSchedule(cronForm, t)}</span>
                             {cronNextRun && (
                               <span className="cron-preview-next">
-                                下次将在 {formatCronRelative(cronNextRun.toISOString())}（
-                                {formatCronDate(cronNextRun.toISOString())}）运行
+                                {t("app.schedules.nextRunPreview", {
+                                  relative: formatCronRelative(cronNextRun.toISOString(), t) ?? "",
+                                  date: formatCronDate(cronNextRun.toISOString(), t),
+                                })}
                               </span>
                             )}
                           </>
@@ -6332,7 +6361,7 @@ export function App() {
                     </div>
 
                     <div className="cron-field model-form-wide">
-                      <span className="cron-field-label">投递目标</span>
+                      <span className="cron-field-label">{t("app.schedules.deliverTargets")}</span>
                       <div className="cron-chip-row">
                         {CRON_DELIVER_OPTIONS.map((option) => {
                           const selected = cronForm.deliverTargets.includes(option.id);
@@ -6355,21 +6384,21 @@ export function App() {
                           );
                         })}
                       </div>
-                      <span className="cron-field-hint">未选时默认投递到 local（保存到 cron 输出目录）。</span>
+                      <span className="cron-field-hint">{t("app.schedules.deliverHint")}</span>
                     </div>
 
                     <div className="cron-field model-form-wide">
-                      <span className="cron-field-label">关联技能（可选）</span>
+                      <span className="cron-field-label">{t("app.schedules.linkedSkills")}</span>
                       <div className="cron-chip-row">
                         {cronForm.skills.length === 0 && (
-                          <span className="cron-field-hint">未关联技能时按默认会话运行。</span>
+                          <span className="cron-field-hint">{t("app.schedules.noSkillsHint")}</span>
                         )}
                         {cronForm.skills.map((skill) => (
                           <span key={skill} className="cron-skill-chip">
                             {skill}
                             <button
                               type="button"
-                              aria-label={`移除 ${skill}`}
+                              aria-label={t("app.schedules.removeSkill", { skill })}
                               onClick={() =>
                                 setCronForm((current) => ({
                                   ...current,
@@ -6385,7 +6414,7 @@ export function App() {
                       <div className="cron-skill-add">
                         <input
                           value={cronSkillDraft}
-                          placeholder="技能名，回车添加"
+                          placeholder={t("app.schedules.skillDraftPlaceholder")}
                           onChange={(event) => setCronSkillDraft(event.target.value)}
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
@@ -6426,31 +6455,31 @@ export function App() {
                     </div>
 
                     <label className="model-form-wide">
-                      <span>Prompt{cronForm.noAgent ? "（可选）" : ""}</span>
+                      <span>{cronForm.noAgent ? t("app.schedules.promptOptional") : "Prompt"}</span>
                       <textarea
                         value={cronForm.prompt}
                         onChange={(event) => setCronForm((current) => ({ ...current, prompt: event.target.value }))}
                         placeholder={
                           cronForm.noAgent
-                            ? "脚本任务通常不需要 prompt；留空即可。"
-                            : "定时执行的真实 Hermes prompt"
+                            ? t("app.schedules.promptScriptPlaceholder")
+                            : t("app.schedules.promptPlaceholder")
                         }
                       />
                     </label>
                     <div className="model-form-actions">
                       <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => void submitCronForm()}>
                         <Save size={14} />
-                        <span>{cronEditId ? "保存修改" : "创建"}</span>
+                        <span>{cronEditId ? t("app.schedules.saveChanges") : t("app.schedules.create")}</span>
                       </button>
                       {cronEditId ? (
                         <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={cancelCronEdit}>
                           <X size={14} />
-                          <span>取消编辑</span>
+                          <span>{t("app.schedules.cancelEdit")}</span>
                         </button>
                       ) : (
                         <button className="refresh-runtime" disabled={cronBusy} type="button" onClick={() => setCronForm(emptyCronJobForm)}>
                           <Plus size={14} />
-                          <span>重置</span>
+                          <span>{t("app.schedules.reset")}</span>
                         </button>
                       )}
                     </div>
@@ -6465,8 +6494,8 @@ export function App() {
                     ) : cronJobs.length > 0 ? (
                       cronJobs.map((job) => {
                         const meta = cronStateMeta(job.state);
-                        const nextRelative = formatCronRelative(job.nextRunAt);
-                        const lastRelative = formatCronRelative(job.lastRunAt);
+                        const nextRelative = formatCronRelative(job.nextRunAt, t);
+                        const lastRelative = formatCronRelative(job.lastRunAt, t);
                         const lastKind = job.lastError ? "fail" : job.lastRunAt ? "ok" : "none";
                         const deliverTargets = job.deliver.length ? job.deliver : ["local"];
                         const operating = cronOperatingId === job.id;
@@ -6479,7 +6508,7 @@ export function App() {
                               <div className="schedule-card-title">
                                 <strong>{job.name}</strong>
                                 <span className={`schedule-badge ${meta.cls}`}>{meta.label}</span>
-                                {cronEditId === job.id && <span className="schedule-editing-tag">编辑中</span>}
+                                {cronEditId === job.id && <span className="schedule-editing-tag">{t("app.schedules.editing")}</span>}
                               </div>
                               <div className="schedule-card-meta">
                                 <span className="schedule-meta-item">
@@ -6489,23 +6518,28 @@ export function App() {
                                 {job.script && (
                                   <span
                                     className="schedule-meta-item schedule-meta-script"
-                                    title={job.noAgent ? "脚本任务（no-agent）" : "附加脚本"}
+                                    title={job.noAgent ? t("app.schedules.scriptTaskTitle") : t("app.schedules.scriptAttachTitle")}
                                   >
                                     {job.noAgent ? <TerminalSquare size={13} /> : <FileCode2 size={13} />}
-                                    {job.noAgent ? `脚本 · ${job.script}` : job.script}
+                                    {job.noAgent ? t("app.schedules.scriptPrefix", { script: job.script }) : job.script}
                                   </span>
                                 )}
                                 {job.repeat?.times != null && (
                                   <span className="schedule-meta-item">
                                     <Repeat size={13} />
-                                    已执行 {job.repeat.completed}/{job.repeat.times}
+                                    {t("app.schedules.executed", {
+                                      completed: job.repeat.completed,
+                                      times: job.repeat.times,
+                                    })}
                                   </span>
                                 )}
                                 <span
                                   className="schedule-meta-item"
-                                  title={job.nextRunAt ? formatCronDate(job.nextRunAt) : undefined}
+                                  title={job.nextRunAt ? formatCronDate(job.nextRunAt, t) : undefined}
                                 >
-                                  下次 {nextRelative ?? formatCronDate(job.nextRunAt)}
+                                  {t("app.schedules.nextPrefix", {
+                                    value: nextRelative ?? formatCronDate(job.nextRunAt, t),
+                                  })}
                                 </span>
                                 <span
                                   className={`schedule-meta-item schedule-last-${lastKind}`}
@@ -6516,12 +6550,19 @@ export function App() {
                                   ) : lastKind === "ok" ? (
                                     <CheckCircle2 size={13} />
                                   ) : null}
-                                  上次 {lastKind === "fail" ? "失败" : lastKind === "ok" ? "成功" : "未运行"}
+                                  {t("app.schedules.lastPrefix", {
+                                    value:
+                                      lastKind === "fail"
+                                        ? t("app.schedules.lastFail")
+                                        : lastKind === "ok"
+                                          ? t("app.schedules.lastOk")
+                                          : t("app.schedules.lastNone"),
+                                  })}
                                 </span>
                               </div>
                               {job.prompt && <p className="schedule-card-prompt">{job.prompt}</p>}
                               <div className="schedule-card-deliver">
-                                <span className="schedule-deliver-label">投递</span>
+                                <span className="schedule-deliver-label">{t("app.schedules.deliver")}</span>
                                 {deliverTargets.map((target) => (
                                   <span className="schedule-chip" key={target}>
                                     {target}
@@ -6530,7 +6571,7 @@ export function App() {
                               </div>
                               {job.lastError && (
                                 <details className="schedule-error">
-                                  <summary>上次失败原因</summary>
+                                  <summary>{t("app.schedules.lastErrorSummary")}</summary>
                                   <pre>{job.lastError}</pre>
                                 </details>
                               )}
@@ -6547,7 +6588,7 @@ export function App() {
                                 ) : (
                                   <Play size={14} />
                                 )}
-                                <span>运行</span>
+                                <span>{t("app.schedules.run")}</span>
                               </button>
                               <button
                                 className="schedule-action"
@@ -6556,7 +6597,7 @@ export function App() {
                                 onClick={() => startCronEdit(job)}
                               >
                                 <Pencil size={14} />
-                                <span>编辑</span>
+                                <span>{t("app.schedules.edit")}</span>
                               </button>
                               {job.state === "paused" ? (
                                 <button
@@ -6566,7 +6607,7 @@ export function App() {
                                   onClick={() => void runCronJobOperation(job, "resume")}
                                 >
                                   <Power size={14} />
-                                  <span>恢复</span>
+                                  <span>{t("app.schedules.resume")}</span>
                                 </button>
                               ) : (
                                 <button
@@ -6576,7 +6617,7 @@ export function App() {
                                   onClick={() => void runCronJobOperation(job, "pause")}
                                 >
                                   <Pause size={14} />
-                                  <span>暂停</span>
+                                  <span>{t("app.schedules.pause")}</span>
                                 </button>
                               )}
                               <button
@@ -6586,13 +6627,13 @@ export function App() {
                                 onClick={() => void runCronJobOperation(job, "remove")}
                               >
                                 <Trash2 size={14} />
-                                <span>删除</span>
+                                <span>{t("app.schedules.delete")}</span>
                               </button>
                               <div className="schedule-overflow">
                                 <button
                                   className="schedule-action schedule-overflow-trigger"
                                   type="button"
-                                  aria-label="更多操作"
+                                  aria-label={t("app.schedules.moreActions")}
                                   aria-expanded={cronMenuJobId === job.id}
                                   onClick={(event) => {
                                     event.stopPropagation();
@@ -6600,24 +6641,24 @@ export function App() {
                                   }}
                                 >
                                   <MoreHorizontal size={14} />
-                                  <span>更多</span>
+                                  <span>{t("app.schedules.more")}</span>
                                 </button>
                                 {cronMenuJobId === job.id && (
                                   <div className="schedule-overflow-menu" onClick={(event) => event.stopPropagation()}>
                                     <button type="button" onClick={() => void openCronRuns(job)}>
                                       <History size={13} />
-                                      <span>查看运行历史</span>
+                                      <span>{t("app.schedules.viewRuns")}</span>
                                     </button>
                                     <button
                                       type="button"
                                       onClick={() => {
                                         void navigator.clipboard?.writeText(job.id);
                                         setCronMenuJobId(null);
-                                        setNotice(`已复制任务 ID：${job.id}`);
+                                        setNotice(t("app.schedules.copiedJobId", { id: job.id }));
                                       }}
                                     >
                                       <ScrollText size={13} />
-                                      <span>复制任务 ID</span>
+                                      <span>{t("app.schedules.copyJobId")}</span>
                                     </button>
                                   </div>
                                 )}
@@ -6629,11 +6670,11 @@ export function App() {
                     ) : (
                       <div className="schedule-empty">
                         <Clock size={26} />
-                        <strong>还没有定时任务</strong>
-                        <span>创建一个排程，让 Hermes 按时自动执行 prompt 并投递结果。</span>
+                        <strong>{t("app.schedules.emptyTitle")}</strong>
+                        <span>{t("app.schedules.emptyText")}</span>
                         <button type="button" onClick={() => cronNameInputRef.current?.focus()}>
                           <Plus size={14} />
-                          <span>新建第一个定时任务</span>
+                          <span>{t("app.schedules.createFirst")}</span>
                         </button>
                       </div>
                     )}
@@ -6646,12 +6687,12 @@ export function App() {
                   <div className="snippet-modal schedule-runs-modal" onClick={(event) => event.stopPropagation()}>
                     <div className="snippet-modal-head">
                       <div>
-                        <h2>运行历史</h2>
+                        <h2>{t("app.schedules.runsTitle")}</h2>
                         <p>
-                          {cronRunsJob.name} · 最近 {cronRuns.length} 次记录
+                          {t("app.schedules.runsSubtitle", { name: cronRunsJob.name, count: cronRuns.length })}
                         </p>
                       </div>
-                      <button className="snippet-modal-close" type="button" aria-label="关闭" onClick={closeCronRuns}>
+                      <button className="snippet-modal-close" type="button" aria-label={t("common.close")} onClick={closeCronRuns}>
                         <X size={18} />
                       </button>
                     </div>
@@ -6659,20 +6700,20 @@ export function App() {
                       {cronRunsBusy ? (
                         <div className="schedule-runs-empty">
                           <RefreshCw className="schedule-spin" size={18} />
-                          <span>正在读取运行历史…</span>
+                          <span>{t("app.schedules.runsLoading")}</span>
                         </div>
                       ) : cronRunsError ? (
                         <div className="schedule-runs-empty schedule-runs-error">
                           <AlertTriangle size={18} />
-                          <span>读取运行历史失败：{cronRunsError}</span>
+                          <span>{t("app.schedules.runsLoadFailed", { error: cronRunsError })}</span>
                         </div>
                       ) : cronRuns.length === 0 ? (
                         <div className="schedule-runs-empty">
                           <History size={20} />
                           <span>
                             {remoteConfig.mode === "local"
-                              ? "暂无运行记录（任务尚未运行，或投递目标不含 local）。"
-                              : "远程模式下运行历史保存在服务端，桌面端暂不可读取。"}
+                              ? t("app.schedules.runsEmptyLocal")
+                              : t("app.schedules.runsEmptyRemote")}
                           </span>
                         </div>
                       ) : (
@@ -6686,7 +6727,7 @@ export function App() {
                                 className="schedule-run-head"
                                 onClick={() => setCronExpandedRun((current) => (current === run.name ? null : run.name))}
                               >
-                                <span className="schedule-run-time">{formatCronRunTime(run.ranAt)}</span>
+                                <span className="schedule-run-time">{formatCronRunTime(run.ranAt, t)}</span>
                                 <span className="schedule-run-tags">
                                   {run.mode && <span className="schedule-run-mode">{run.mode}</span>}
                                   {run.status && (
@@ -6710,7 +6751,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Capabilities</p>
-                    <h2>工具与 MCP</h2>
+                    <h2>{t("settings.capabilities.title")}</h2>
                   </div>
                   <button
                     className="refresh-runtime"
@@ -6718,23 +6759,23 @@ export function App() {
                     onClick={() => void refreshHermesCapabilities(installStatus?.activeProfile)}
                   >
                     <RefreshCw size={14} />
-                    <span>刷新能力</span>
+                    <span>{t("settings.capabilities.refreshCaps")}</span>
                   </button>
                 </div>
                 <div className="tools-remote-pane">
                   <div>
-                    <strong>Tools 运行位置</strong>
+                    <strong>{t("settings.capabilities.toolsLocation")}</strong>
                     <span>
                       {remoteConfig.mode === "local"
-                        ? "本机 Hermes profile"
+                        ? t("settings.capabilities.locLocal")
                         : remoteConfig.mode === "remote"
-                          ? "远程 Hermes Gateway"
-                          : "SSH 隧道到 Hermes Gateway"}
+                          ? t("settings.capabilities.locRemote")
+                          : t("settings.capabilities.locSsh")}
                     </span>
                   </div>
                   <div>
-                    <strong>连接状态</strong>
-                    <span>{remoteStatus?.message ?? "尚未测试远程连接"}</span>
+                    <strong>{t("settings.capabilities.connStatus")}</strong>
+                    <span>{remoteStatus?.message ?? t("settings.capabilities.notTestedRemote")}</span>
                   </div>
                   <div>
                     <strong>Base URL</strong>
@@ -6742,7 +6783,7 @@ export function App() {
                   </div>
                   <button className="refresh-runtime" disabled={remoteBusy} type="button" onClick={() => void refreshRemoteConnection()}>
                     <RefreshCw size={14} />
-                    <span>刷新连接</span>
+                    <span>{t("settings.capabilities.refreshConn")}</span>
                   </button>
                 </div>
                 <div className="capability-split">
@@ -6768,7 +6809,7 @@ export function App() {
                                     type="button"
                                     onClick={() => void toggleToolset(toolset)}
                                   >
-                                    {toolset.enabled ? "关闭" : "开启"}
+                                    {toolset.enabled ? t("settings.capabilities.off") : t("settings.capabilities.on")}
                                   </button>
                                 </article>
                               ))}
@@ -6776,7 +6817,7 @@ export function App() {
                           </section>
                         ))
                       ) : (
-                        <p className="empty-note">未读取到 toolset 配置。</p>
+                        <p className="empty-note">{t("settings.capabilities.toolsetsEmpty")}</p>
                       )}
                     </div>
                   </div>
@@ -6826,12 +6867,12 @@ export function App() {
                           <textarea
                             value={mcpForm.args}
                             onChange={(event) => setMcpForm((current) => ({ ...current, args: event.target.value }))}
-                            placeholder="args，每行一个"
+                            placeholder={t("settings.capabilities.argsPlaceholder")}
                           />
                           <textarea
                             value={mcpForm.env}
                             onChange={(event) => setMcpForm((current) => ({ ...current, env: event.target.value }))}
-                            placeholder="ENV=value，每行一个"
+                            placeholder={t("settings.capabilities.envPlaceholder")}
                           />
                         </>
                       )}
@@ -6839,17 +6880,17 @@ export function App() {
                         <input
                           value={mcpForm.auth}
                           onChange={(event) => setMcpForm((current) => ({ ...current, auth: event.target.value }))}
-                          placeholder="auth，可选"
+                          placeholder={t("settings.capabilities.authPlaceholder")}
                         />
                       )}
                       <div className="settings-actions">
                         <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMcpFromForm()}>
                           <Save size={14} />
-                          <span>保存 MCP</span>
+                          <span>{t("settings.capabilities.saveMcp")}</span>
                         </button>
                         <button className="refresh-runtime" type="button" onClick={() => setMcpForm(emptyMcpForm)}>
                           <Plus size={14} />
-                          <span>新建</span>
+                          <span>{t("settings.capabilities.new")}</span>
                         </button>
                       </div>
                     </div>
@@ -6862,15 +6903,15 @@ export function App() {
                             <small>{server.transport} · {server.enabled ? "enabled" : "disabled"}</small>
                             <div className="mini-actions">
                               <button disabled={mcpBusyServer === server.name} type="button" onClick={() => void testMcpServer(server)}>
-                                {mcpBusyServer === server.name ? "测试中" : "测试"}
+                                {mcpBusyServer === server.name ? t("settings.capabilities.testing") : t("settings.shared.test")}
                               </button>
-                              <button type="button" onClick={() => editMcpServer(server)}>编辑</button>
-                              <button disabled={capabilityBusy} type="button" onClick={() => void deleteMcpServer(server)}>删除</button>
+                              <button type="button" onClick={() => editMcpServer(server)}>{t("settings.shared.edit")}</button>
+                              <button disabled={capabilityBusy} type="button" onClick={() => void deleteMcpServer(server)}>{t("settings.shared.delete")}</button>
                             </div>
                           </article>
                         ))
                       ) : (
-                        <p className="empty-note">当前 profile 未配置 MCP server。</p>
+                        <p className="empty-note">{t("settings.capabilities.mcpEmpty")}</p>
                       )}
                     </div>
                     {mcpTestResult && (
@@ -6889,7 +6930,7 @@ export function App() {
                             ))}
                           </div>
                         ) : (
-                          <p className="empty-note">没有解析到 tools；请查看原始输出。</p>
+                          <p className="empty-note">{t("settings.capabilities.noTools")}</p>
                         )}
                         {mcpTestResult.result.output && <pre>{mcpTestResult.result.output}</pre>}
                       </div>
@@ -6902,7 +6943,7 @@ export function App() {
                         </div>
                         <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void refreshMcpCatalog()}>
                           <RefreshCw size={14} />
-                          <span>刷新 Catalog</span>
+                          <span>{t("settings.capabilities.refreshCatalog")}</span>
                         </button>
                       </div>
                       <div className="session-search">
@@ -6910,13 +6951,13 @@ export function App() {
                         <input
                           value={mcpCatalogQuery}
                           onChange={(event) => setMcpCatalogQuery(event.target.value)}
-                          placeholder="搜索 MCP catalog"
+                          placeholder={t("settings.capabilities.searchCatalogPlaceholder")}
                         />
                         <button type="button" onClick={() => setMcpCatalogQuery("")}>
                           <StopCircle size={13} />
                         </button>
                       </div>
-                      {mcpCatalogError && <p className="warning-text">Catalog 命令失败：{mcpCatalogError}</p>}
+                      {mcpCatalogError && <p className="warning-text">{t("settings.capabilities.catalogCmdFailed", { error: mcpCatalogError })}</p>}
                       {mcpCatalogDiagnostics.map((item) => (
                         <p className="empty-note" key={item}>{item}</p>
                       ))}
@@ -6936,13 +6977,13 @@ export function App() {
                                   type="button"
                                   onClick={() => void installMcpCatalogEntry(entry)}
                                 >
-                                  {entry.installed ? "已安装" : mcpCatalogBusyName === entry.name ? "安装中" : "安装"}
+                                  {entry.installed ? t("settings.shared.installed") : mcpCatalogBusyName === entry.name ? t("settings.shared.installing") : t("settings.shared.install")}
                                 </button>
                               </div>
                             </article>
                           ))
                         ) : (
-                          <p className="empty-note">未读取到 catalog entry；如果 Hermes CLI 不支持 catalog，会在上方显示真实错误。</p>
+                          <p className="empty-note">{t("settings.capabilities.catalogEmpty")}</p>
                         )}
                       </div>
                     </div>
@@ -6954,7 +6995,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Skills</p>
-                    <h2>Skills 管理</h2>
+                    <h2>{t("settings.skills.title")}</h2>
                   </div>
                   <div className="settings-actions">
                     <span className="count-pill">{skills.length} installed</span>
@@ -6969,22 +7010,22 @@ export function App() {
                       onKeyDown={(event) => {
                         if (event.key === "Enter") void searchSkills();
                       }}
-                      placeholder="搜索 name/category/description"
+                      placeholder={t("settings.skills.searchPlaceholder")}
                     />
                     <button className="refresh-runtime" disabled={skillBusy} type="button" onClick={() => void searchSkills()}>
                       <Search size={14} />
-                      <span>搜索</span>
+                      <span>{t("settings.skills.search")}</span>
                     </button>
                   </div>
                   <div className="skill-search">
                     <input
                       value={skillCatalogQuery}
                       onChange={(event) => setSkillCatalogQuery(event.target.value)}
-                      placeholder="搜索 bundled skills"
+                      placeholder={t("settings.skills.searchBundledPlaceholder")}
                     />
                     <button className="refresh-runtime" disabled={skillBusy} type="button" onClick={() => void refreshHermesCapabilities(installStatus?.activeProfile)}>
                       <RefreshCw size={14} />
-                      <span>刷新</span>
+                      <span>{t("common.refresh")}</span>
                     </button>
                   </div>
                   <div className="skill-install-form">
@@ -7001,11 +7042,11 @@ export function App() {
                     <input
                       value={skillInstallForm.name}
                       onChange={(event) => setSkillInstallForm((current) => ({ ...current, name: event.target.value }))}
-                      placeholder="name，可选"
+                      placeholder={t("settings.skills.nameOptional")}
                     />
                     <button className="refresh-runtime" disabled={skillBusy} type="button" onClick={() => void installSkillFromForm()}>
                       <FolderPlus size={14} />
-                      <span>安装</span>
+                      <span>{t("settings.shared.install")}</span>
                     </button>
                   </div>
                 </div>
@@ -7024,16 +7065,16 @@ export function App() {
                             </div>
                             <div className="mini-actions">
                               <button disabled={skillBusy} type="button" onClick={() => void openSkillDetail(skill)}>
-                                详情
+                                {t("settings.shared.detail")}
                               </button>
                               <button disabled={skillBusy} type="button" onClick={() => void deleteSkill(skill)}>
-                                删除
+                                {t("settings.shared.delete")}
                               </button>
                             </div>
                           </article>
                         ))
                       ) : (
-                        <p className="empty-note">当前 profile 未发现已安装 Skill。</p>
+                        <p className="empty-note">{t("settings.skills.installedEmpty")}</p>
                       )}
                     </div>
                   </div>
@@ -7051,16 +7092,16 @@ export function App() {
                             </div>
                             <div className="mini-actions">
                               <button disabled={skillBusy} type="button" onClick={() => void openSkillDetail(skill)}>
-                                详情
+                                {t("settings.shared.detail")}
                               </button>
                               <button disabled={skillBusy || skill.installed} type="button" onClick={() => void installBundledSkill(skill)}>
-                                {skill.installed ? "已安装" : "安装"}
+                                {skill.installed ? t("settings.shared.installed") : t("settings.shared.install")}
                               </button>
                             </div>
                           </article>
                         ))
                       ) : (
-                        <p className="empty-note">未发现 bundled Skill，确认 Hermes Agent 已安装。</p>
+                        <p className="empty-note">{t("settings.skills.bundledEmpty")}</p>
                       )}
                     </div>
                   </div>
@@ -7077,10 +7118,10 @@ export function App() {
                         setSkillDetail(null);
                         setSkillDetailContent("");
                       }}>
-                        <span>关闭</span>
+                        <span>{t("common.close")}</span>
                       </button>
                     </div>
-                    <pre>{skillDetailContent || "未读取到 SKILL.md 内容。"}</pre>
+                    <pre>{skillDetailContent || t("settings.skills.skillContentEmpty")}</pre>
                   </div>
                   )}
               </section>
@@ -7089,13 +7130,13 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Memory</p>
-                    <h2>记忆管理</h2>
+                    <h2>{t("settings.memory.title")}</h2>
                   </div>
                 </div>
                 {memoryDetails && memorySummary ? (
                   <div className="memory-editor">
                     <div className="settings-rows memory-summary-grid">
-                      <StatusRow label="MEMORY.md" value={`${memorySummary.memoryEntries} 条 · ${memoryDetails.memory.charCount}/${memoryDetails.memory.charLimit} chars`} ok={memorySummary.memoryExists} />
+                      <StatusRow label="MEMORY.md" value={t("settings.memory.entriesValue", { count: memorySummary.memoryEntries, chars: memoryDetails.memory.charCount, limit: memoryDetails.memory.charLimit })} ok={memorySummary.memoryExists} />
                       <StatusRow label="USER.md" value={`${memoryDetails.user.charCount}/${memoryDetails.user.charLimit} chars`} ok={memorySummary.userExists} />
                       <StatusRow label="state.db" value={`${memoryDetails.stats.totalSessions} sessions · ${memoryDetails.stats.totalMessages} messages`} ok />
                     </div>
@@ -7104,7 +7145,7 @@ export function App() {
                       <textarea
                         value={newMemoryEntry}
                         onChange={(event) => setNewMemoryEntry(event.target.value)}
-                        placeholder="新增一条长期记忆..."
+                        placeholder={t("settings.memory.newEntryPlaceholder")}
                       />
                       <div className="memory-entry-compose-actions">
                         <span>{newMemoryEntry.length} chars</span>
@@ -7115,7 +7156,7 @@ export function App() {
                           onClick={() => void addMemoryEntryFromDraft()}
                         >
                           <Plus size={14} />
-                          <span>新增 Memory</span>
+                          <span>{t("settings.memory.addMemory")}</span>
                         </button>
                       </div>
                     </div>
@@ -7136,13 +7177,13 @@ export function App() {
                                     <span>{editingMemoryDraft.length} chars</span>
                                     <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveEditingMemoryEntry()}>
                                       <Save size={14} />
-                                      <span>保存</span>
+                                      <span>{t("common.save")}</span>
                                     </button>
                                     <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => {
                                       setEditingMemoryIndex(null);
                                       setEditingMemoryDraft("");
                                     }}>
-                                      <span>取消</span>
+                                      <span>{t("common.cancel")}</span>
                                     </button>
                                   </div>
                                 </>
@@ -7155,15 +7196,15 @@ export function App() {
                                       setEditingMemoryDraft(entry.content);
                                     }}>
                                       <Settings size={14} />
-                                      <span>编辑</span>
+                                      <span>{t("settings.shared.edit")}</span>
                                     </button>
                                     <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => {
-                                      if (window.confirm("删除这条 Memory？")) {
+                                      if (window.confirm(t("settings.memory.confirmDeleteEntry"))) {
                                         void deleteMemoryEntry(entry.index);
                                       }
                                     }}>
                                       <Trash2 size={14} />
-                                      <span>删除</span>
+                                      <span>{t("settings.shared.delete")}</span>
                                     </button>
                                   </div>
                                 </>
@@ -7172,13 +7213,13 @@ export function App() {
                           );
                         })
                       ) : (
-                        <p className="empty-note">当前 MEMORY.md 还没有条目。</p>
+                        <p className="empty-note">{t("settings.memory.entriesEmpty")}</p>
                       )}
                     </div>
 
                     <div className="memory-raw-grid">
                       <label>
-                        <span>MEMORY.md 原始内容</span>
+                        <span>{t("settings.memory.rawTitle")}</span>
                         <textarea
                           value={memoryDraft.memory}
                           onChange={(event) => setMemoryDraft((current) => ({ ...current, memory: event.target.value }))}
@@ -7186,7 +7227,7 @@ export function App() {
                         />
                         <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMemoryDraft("memory")}>
                           <Save size={14} />
-                          <span>保存 MEMORY</span>
+                          <span>{t("settings.memory.saveMemory")}</span>
                         </button>
                       </label>
                       <label>
@@ -7198,7 +7239,7 @@ export function App() {
                         />
                         <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void saveMemoryDraft("user")}>
                           <Save size={14} />
-                          <span>保存 USER</span>
+                          <span>{t("settings.memory.saveUser")}</span>
                         </button>
                       </label>
                     </div>
@@ -7210,11 +7251,11 @@ export function App() {
                         <textarea
                           value={personaDraft}
                           onChange={(event) => setPersonaDraft(event.target.value)}
-                          placeholder="描述该 Agent 的人格、语气与行为准则（写入 profile 的 SOUL.md）"
+                          placeholder={t("settings.memory.personaPlaceholder")}
                         />
                         <button className="refresh-runtime" disabled={capabilityBusy} type="button" onClick={() => void savePersonaDraft()}>
                           <Save size={14} />
-                          <span>保存 Persona</span>
+                          <span>{t("settings.memory.savePersona")}</span>
                         </button>
                       </label>
                     </div>
@@ -7222,29 +7263,29 @@ export function App() {
 
                     <div className="memory-providers">
                       <div className="memory-providers-head">
-                        <h3>外部记忆后端</h3>
+                        <h3>{t("settings.memory.providersTitle")}</h3>
                         <p className="empty-note">
-                          内置 MEMORY.md / USER.md 始终生效；可额外选择一个外部记忆后端，写入当前 profile 的 <code>memory.provider</code>。
+                          {t("settings.memory.providersDescPre")}<code>memory.provider</code>{t("settings.memory.providersDescPost")}
                           {memoryProviders?.activeProvider
-                            ? ` 当前已激活：${memoryProviders.activeProvider}。`
-                            : " 当前未启用外部后端。"}
+                            ? t("settings.memory.providersActive", { name: memoryProviders.activeProvider })
+                            : t("settings.memory.providersInactive")}
                         </p>
                       </div>
                       {memoryProviders && !memoryProviders.pluginsDirExists && (
                         <p className="empty-note">
-                          未检测到本地记忆插件目录（{memoryProviders.pluginsDir}）。仍可写入配置与密钥，待 Hermes 安装对应插件后即可生效。
+                          {t("settings.memory.pluginDirMissing", { dir: memoryProviders.pluginsDir })}
                         </p>
                       )}
                       {memoryProviders && memoryProviders.providers.length > 0 ? (
                         <div className="memory-providers-grid">
                           {memoryProviders.providers.map((provider: MemoryProviderInfo) => {
                             const statusLabel = provider.active
-                              ? "已激活"
+                              ? t("settings.shared.activated")
                               : !provider.installed
-                                ? "未安装"
+                                ? t("settings.memory.statusNotInstalled")
                                 : provider.configured
-                                  ? "可激活"
-                                  : "需配置密钥";
+                                  ? t("settings.memory.statusActivatable")
+                                  : t("settings.memory.statusNeedKey");
                             return (
                               <article
                                 className={`memory-provider-card${provider.active ? " memory-provider-active" : ""}`}
@@ -7261,7 +7302,7 @@ export function App() {
                                     <button
                                       className="refresh-runtime"
                                       type="button"
-                                      title="打开后端官网"
+                                      title={t("settings.memory.openWebsite")}
                                       onClick={() => void openExternalUrl(provider.website ?? "")}
                                     >
                                       <ExternalLink size={13} />
@@ -7276,14 +7317,14 @@ export function App() {
                                         <span>
                                           {envVar.key}
                                           <span className={`memory-provider-env-flag${envVar.present ? " present" : ""}`}>
-                                            {envVar.present ? "已配置" : "未配置"}
+                                            {envVar.present ? t("settings.shared.configured") : t("settings.shared.notConfigured")}
                                           </span>
                                         </span>
                                         <div className="memory-provider-env-row">
                                           <input
                                             type="password"
                                             value={memoryProviderEnvDraft[envVar.key] ?? ""}
-                                            placeholder={envVar.present ? "已写入（输入可覆盖）" : `输入 ${envVar.key}`}
+                                            placeholder={envVar.present ? t("settings.memory.envWrittenPlaceholder") : t("settings.memory.envInputPlaceholder", { key: envVar.key })}
                                             onChange={(event) =>
                                               setMemoryProviderEnvDraft((current) => ({
                                                 ...current,
@@ -7298,7 +7339,7 @@ export function App() {
                                             onClick={() => void saveMemoryProviderEnv(envVar.key)}
                                           >
                                             <Save size={13} />
-                                            <span>保存</span>
+                                            <span>{t("common.save")}</span>
                                           </button>
                                         </div>
                                       </label>
@@ -7313,7 +7354,7 @@ export function App() {
                                       disabled={memoryProviderBusy !== null}
                                       onClick={() => void deactivateMemoryProvider()}
                                     >
-                                      <span>{memoryProviderBusy === "__deactivate__" ? "停用中..." : "停用"}</span>
+                                      <span>{memoryProviderBusy === "__deactivate__" ? t("settings.memory.deactivating") : t("settings.memory.deactivate")}</span>
                                     </button>
                                   ) : (
                                     <button
@@ -7322,7 +7363,7 @@ export function App() {
                                       disabled={memoryProviderBusy !== null}
                                       onClick={() => void activateMemoryProvider(provider.name)}
                                     >
-                                      <span>{memoryProviderBusy === provider.name ? "激活中..." : "激活"}</span>
+                                      <span>{memoryProviderBusy === provider.name ? t("settings.memory.activating") : t("settings.shared.activate")}</span>
                                     </button>
                                   )}
                                 </div>
@@ -7331,12 +7372,12 @@ export function App() {
                           })}
                         </div>
                       ) : (
-                        <p className="empty-note">未发现可用的记忆后端。</p>
+                        <p className="empty-note">{t("settings.memory.providersEmpty")}</p>
                       )}
                     </div>
                   </div>
                 ) : (
-                  <p className="empty-note">尚未读取 Memory 摘要。</p>
+                  <p className="empty-note">{t("settings.memory.summaryEmpty")}</p>
                 )}
               </section>
 
@@ -7344,16 +7385,16 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Update</p>
-                    <h2>更新检查</h2>
+                    <h2>{t("settings.update.title")}</h2>
                   </div>
                   <div className="settings-actions">
                     <button className="refresh-runtime" disabled={updateBusy} type="button" onClick={() => void checkUpdatesNow()}>
                       <RefreshCw size={14} />
-                      <span>{updateBusy ? "检查中..." : "检查桌面更新"}</span>
+                      <span>{updateBusy ? t("settings.update.checking") : t("settings.update.checkDesktop")}</span>
                     </button>
                     <button className="refresh-runtime" disabled={updateBusy} type="button" onClick={() => void runHermesUpdateNow()}>
                       <Upload size={14} />
-                      <span>{updateBusy ? "运行中..." : "运行 hermes update"}</span>
+                      <span>{updateBusy ? t("settings.update.running") : t("settings.update.runHermesUpdate")}</span>
                     </button>
                   </div>
                 </div>
@@ -7362,18 +7403,18 @@ export function App() {
                     <div className="settings-rows">
                       <StatusRow label="App Version" value={updateStatus.appVersion} ok />
                       <StatusRow
-                        label="最新版本"
-                        value={updateStatus.latestVersion ?? (updateStatus.checked ? "未知" : "尚未检查")}
+                        label={t("settings.update.latestVersion")}
+                        value={updateStatus.latestVersion ?? (updateStatus.checked ? t("settings.update.unknown") : t("settings.update.notChecked"))}
                         ok={!updateStatus.updateAvailable && updateStatus.checkOk}
                       />
-                      <StatusRow label="Hermes CLI" value={updateStatus.hermesVersion ?? "未找到"} ok={Boolean(updateStatus.hermesVersion)} />
+                      <StatusRow label="Hermes CLI" value={updateStatus.hermesVersion ?? t("settings.shared.notFound")} ok={Boolean(updateStatus.hermesVersion)} />
                       <StatusRow label="Last Check" value={formatTime(updateStatus.lastCheckedAt)} ok />
                       <StatusRow label="Update Log" value={updateStatus.logPath} ok />
                     </div>
                     <label className="settings-field">
                       <span>
-                        <strong>Release 源（GitHub owner/repo）</strong>
-                        <small>桌面更新检查的发布源；Hermes Team 暂无独立 release 仓库，默认对齐桌面基线发布流。</small>
+                        <strong>{t("settings.update.releaseSource")}</strong>
+                        <small>{t("settings.update.releaseSourceHint")}</small>
                       </span>
                       <div className="settings-inline-input">
                         <input
@@ -7391,14 +7432,14 @@ export function App() {
                           onClick={() => void saveReleaseRepo()}
                         >
                           <Save size={14} />
-                          <span>保存</span>
+                          <span>{t("common.save")}</span>
                         </button>
                       </div>
                     </label>
                     <label className="settings-toggle-row">
                       <span>
-                        <strong>启动时自动检查桌面更新</strong>
-                        <small>应用启动后查询 release 源；发现新版本时自动弹出更新窗口。</small>
+                        <strong>{t("settings.update.autoCheck")}</strong>
+                        <small>{t("settings.update.autoCheckHint")}</small>
                       </span>
                       <input
                         checked={updateStatus.autoCheck}
@@ -7409,7 +7450,7 @@ export function App() {
                     <label className="settings-toggle-row">
                       <span>
                         <strong>Auto upgrade</strong>
-                        <small>保存自动更新偏好；手动更新仍走 hermes update。</small>
+                        <small>{t("settings.update.autoUpgradeHint")}</small>
                       </span>
                       <input
                         checked={updateStatus.autoUpgrade}
@@ -7426,13 +7467,13 @@ export function App() {
                         onClick={() => setUpdateDialogOpen(true)}
                       >
                         <RefreshCw size={14} />
-                        <span>查看更新详情</span>
+                        <span>{t("settings.update.viewDetails")}</span>
                       </button>
                     )}
                     {updateOutput && <pre className="update-output">{updateOutput}</pre>}
                   </div>
                 ) : (
-                  <p className="empty-note">尚未读取更新状态。</p>
+                  <p className="empty-note">{t("settings.update.empty")}</p>
                 )}
               </section>
 
@@ -7440,7 +7481,7 @@ export function App() {
                 <div className="settings-card-head">
                   <div>
                     <p className="panel-label">Logs</p>
-                    <h2>日志查看器</h2>
+                    <h2>{t("settings.logs.title")}</h2>
                   </div>
                   <div className="settings-actions">
                     <button
@@ -7450,7 +7491,7 @@ export function App() {
                       onClick={() => void exportHermesBundle("backup")}
                     >
                       <Save size={14} />
-                      <span>{bundleBusy ? "导出中..." : "生成备份"}</span>
+                      <span>{bundleBusy ? t("settings.logs.exporting") : t("settings.logs.genBackup")}</span>
                     </button>
                     <button
                       className="refresh-runtime"
@@ -7459,11 +7500,11 @@ export function App() {
                       onClick={() => void exportHermesBundle("debug")}
                     >
                       <Save size={14} />
-                      <span>{bundleBusy ? "导出中..." : "导出诊断"}</span>
+                      <span>{bundleBusy ? t("settings.logs.exporting") : t("settings.logs.exportDiag")}</span>
                     </button>
                     <button className="refresh-runtime" disabled={logBusy} type="button" onClick={() => void refreshHermesLogs()}>
                       <RefreshCw size={14} />
-                      <span>{logBusy ? "读取中..." : "刷新日志"}</span>
+                      <span>{logBusy ? t("common.loading") : t("settings.logs.refreshLogs")}</span>
                     </button>
                   </div>
                 </div>
@@ -7481,7 +7522,7 @@ export function App() {
                       setRestoreBackupPath(event.target.value);
                       setRestoreBackupContent("");
                     }}
-                    placeholder="输入 hermes-team-*.json 的路径"
+                    placeholder={t("settings.logs.pathPlaceholder")}
                   />
                   <button
                     className="refresh-runtime"
@@ -7490,7 +7531,7 @@ export function App() {
                     disabled={restoreBusy || bundleBusy || logBusy}
                   >
                     <FolderPlus size={14} />
-                    <span>选择文件</span>
+                    <span>{t("settings.logs.pickFile")}</span>
                   </button>
                   <button
                     className="refresh-runtime"
@@ -7499,11 +7540,11 @@ export function App() {
                     onClick={() => void restoreHermesBackup()}
                   >
                     <Upload size={14} />
-                    <span>{restoreBusy ? "恢复中..." : "恢复备份"}</span>
+                    <span>{restoreBusy ? t("settings.logs.restoring") : t("settings.logs.restoreBackup")}</span>
                   </button>
                 </div>
                 <p className="restore-bundle-hint">
-                  {canRestoreBackup ? `恢复来源：${restoreSourceHint}` : "先选择备份文件或输入备份路径后可恢复"}
+                  {canRestoreBackup ? t("settings.logs.restoreSource", { hint: restoreSourceHint }) : t("settings.logs.restoreHint")}
                 </p>
                 <div className="log-viewer">
                   <div className="log-file-list">
@@ -7521,7 +7562,7 @@ export function App() {
                         </button>
                       ))
                     ) : (
-                      <p className="empty-note">尚未发现 Hermes Team/Hermes 日志文件。</p>
+                      <p className="empty-note">{t("settings.logs.logsEmpty")}</p>
                     )}
                   </div>
                   <div className="log-content-panel">
@@ -7534,14 +7575,14 @@ export function App() {
                           </div>
                           {logContent.truncated && <em>tail</em>}
                         </div>
-                        <pre>{logContent.content || "日志为空。"}</pre>
+                        <pre>{logContent.content || t("settings.logs.logEmpty")}</pre>
                       </>
                     ) : (
-                      <p className="empty-note">选择一个日志文件查看最近内容。</p>
+                      <p className="empty-note">{t("settings.logs.selectLog")}</p>
                     )}
                   </div>
                 </div>
-                {lastBundlePath && <p className="bundle-path">已导出：{lastBundlePath}</p>}
+                {lastBundlePath && <p className="bundle-path">{t("settings.logs.exported", { path: lastBundlePath })}</p>}
               </section>
             </div>
           </>
@@ -7622,8 +7663,8 @@ export function App() {
             runtimeStatus.state === "unavailable"
               ? {
                   ok: false,
-                  message: runtimeStatus.message || "Hermes 运行时不可用",
-                  fixLabel: "打开设置",
+                  message: runtimeStatus.message || t("settings.chatReady.runtimeUnavailable"),
+                  fixLabel: t("settings.chatReady.openSettings"),
                   onFix: () => {
                     setActiveView("settings");
                     setActiveSettingsPanel("overview");
@@ -7632,8 +7673,8 @@ export function App() {
               : !effectiveModel?.model
                 ? {
                     ok: false,
-                    message: "尚未配置模型，发送可能失败",
-                    fixLabel: "配置模型",
+                    message: t("settings.chatReady.noModelWarn"),
+                    fixLabel: t("settings.chatReady.configModel"),
                     onFix: () => {
                       setActiveView("settings");
                       setActiveSettingsPanel("models");
@@ -7687,12 +7728,12 @@ export function App() {
             url={webPreviewUrl}
             onClose={() => setWebPreviewUrl(null)}
             onOpenExternal={(url) => {
-              void openExternalUrl(url).catch((error) => setNotice(`打开外部浏览器失败：${runtimeErrorMessage(error)}`));
+              void openExternalUrl(url).catch((error) => setNotice(t("app.notice.openExternalBrowserFailed", { error: runtimeErrorMessage(error) })));
             }}
             onInspectElement={(payload) => {
               const block = formatInspectInjection(payload);
               setDraft((current) => (current.trim() ? `${current.replace(/\s+$/, "")}\n\n${block}\n` : `${block}\n`));
-              setNotice("已将拾取的元素注入聊天输入。");
+              setNotice(t("app.notice.pickedElementInjected"));
             }}
           />
         )}
@@ -7702,7 +7743,7 @@ export function App() {
 
       {activeView === "team" && showInspector && (
       <aside className="inspector">
-        <nav className="inspector-tabs" aria-label="右侧面板">
+        <nav className="inspector-tabs" aria-label={t("settings.inspector.panelAria")}>
           {inspectorPanels.map((panel) => (
             <button
               className={activeInspectorPanel === panel.id ? "selected" : ""}
@@ -7718,7 +7759,7 @@ export function App() {
         <section className={inspectorSectionClass("agents")}>
           <div className="section-title">
             <BrainCircuit size={18} />
-            <h2>Agent 名册</h2>
+            <h2>{t("settings.inspector.agents")}</h2>
           </div>
           <div className="agent-list">
             {agents.map((agent) => {
@@ -7751,7 +7792,7 @@ export function App() {
                   </label>
                   <div className={profileStatusClass(profile, profiles.length > 0)}>
                     <AlertTriangle size={13} />
-                    <span>{profileStatusText(profile, profiles.length > 0)}</span>
+                    <span>{profileStatusText(profile, profiles.length > 0, t)}</span>
                   </div>
                 </article>
               );
@@ -7762,18 +7803,18 @@ export function App() {
         <section className={inspectorSectionClass("dispatch")}>
           <div className="section-title">
             <GitBranch size={18} />
-            <h2>调度状态</h2>
+            <h2>{t("settings.inspector.dispatch")}</h2>
           </div>
           <div className="dispatch-summary">
             <CheckCircle2 size={18} />
             <div>
-              <strong>{taskSummary(state) || (handoff.kind === "single" ? "检测到快路径接力" : "等待下一次调度")}</strong>
+              <strong>{taskSummary(state, t) || (handoff.kind === "single" ? t("settings.inspector.fastHandoff") : t("settings.inspector.waitingDispatch"))}</strong>
               <span>
                 {state.logs[0]
-                  ? decisionLabel(state.logs[0].decision.type)
+                  ? decisionLabel(state.logs[0].decision.type, t)
                   : handoff.kind === "single"
-                  ? `下一棒：${handoff.targetNames[0]}`
-                  : "Hermes Chat 处于待命状态"}
+                  ? t("settings.inspector.nextHop", { name: handoff.targetNames[0] })
+                  : t("settings.inspector.standby")}
               </span>
             </div>
           </div>
@@ -7786,12 +7827,12 @@ export function App() {
                 return (
                   <article className="task-action-card" key={task.id}>
                     <div>
-                      <strong>{agent?.name ?? "未知 Agent"}</strong>
+                      <strong>{agent?.name ?? t("app.unknownAgent")}</strong>
                       <span>{task.status} · {task.instruction.slice(0, 54)}</span>
                     </div>
                     <button type="button" onClick={() => void cancelTask(task.id)}>
                       <StopCircle size={14} />
-                      <span>终止</span>
+                      <span>{t("settings.inspector.abort")}</span>
                     </button>
                   </article>
                 );
@@ -7802,17 +7843,17 @@ export function App() {
         <section className={inspectorSectionClass("sessions")}>
           <div className="section-title">
             <History size={18} />
-            <h2>Session 历史</h2>
+            <h2>{t("settings.inspector.sessions")}</h2>
             <div className="section-title-actions">
               <button className="refresh-runtime" type="button" onClick={() => void createNewSession()}>
                 <Plus size={14} />
-                <span>新建会话</span>
+                <span>{t("settings.inspector.newSession")}</span>
               </button>
             </div>
           </div>
           <div className="log-list">
             {sessions.length === 0 ? (
-              <p className="empty-note">当前还没有本地 session 快照。</p>
+              <p className="empty-note">{t("settings.inspector.noSnapshot")}</p>
             ) : (
               sessions.slice(0, 4).map((session) => (
                 <article className="log-card" key={session.id}>
@@ -7829,7 +7870,7 @@ export function App() {
                     className="log-card-action"
                     onClick={() => void restoreSession(session)}
                   >
-                    恢复此会话
+                    {t("settings.inspector.restoreThis")}
                   </button>
                 </article>
               ))
@@ -7840,11 +7881,11 @@ export function App() {
         <section className={inspectorSectionClass("runtime")}>
           <div className="section-title">
             <Activity size={18} />
-            <h2>运行事件</h2>
+            <h2>{t("settings.inspector.runtimeEvents")}</h2>
           </div>
           <div className="log-list">
             {runtimeEvents.length === 0 ? (
-              <p className="empty-note">Agent 运行时会在这里记录开始、完成、失败或取消事件。</p>
+              <p className="empty-note">{t("settings.inspector.runtimeEmpty")}</p>
             ) : (
               runtimeEvents.slice(0, 5).map((event) => (
                 <article className={`log-card runtime-event ${event.level}`} key={event.id}>
@@ -7860,17 +7901,17 @@ export function App() {
         <section className={inspectorSectionClass("logs")}>
           <div className="section-title">
             <Activity size={18} />
-            <h2>调度日志</h2>
+            <h2>{t("settings.inspector.dispatchLogs")}</h2>
           </div>
           <div className="log-list">
             {state.logs.length === 0 ? (
-              <p className="empty-note">发送一条 @Agent 消息后，这里会记录调度决策。</p>
+              <p className="empty-note">{t("settings.inspector.dispatchEmpty")}</p>
             ) : (
               state.logs.slice(0, 5).map((log) => (
                 <article className="log-card" key={log.id}>
-                  <strong>{decisionLabel(log.decision.type)}</strong>
+                  <strong>{decisionLabel(log.decision.type, t)}</strong>
                   <span>{formatTime(log.createdAt)} · {log.status}</span>
-                  <p>{decisionDetail(log.decision)}</p>
+                  <p>{decisionDetail(log.decision, t)}</p>
                 </article>
               ))
             )}
@@ -7879,12 +7920,12 @@ export function App() {
       </aside>
       )}
 
-      <footer className="status-bar" aria-label="运行状态">
+      <footer className="status-bar" aria-label={t("settings.statusbar.aria")}>
         <button
           type="button"
           className={`status-pill status-action status-${runtimeStatus.state}`}
           onClick={() => void refreshRuntime()}
-          title="点击刷新 Hermes Runtime"
+          title={t("settings.statusbar.refreshTitle")}
         >
           <CircleDot size={12} />
           <span>{runtimeStatus.message}</span>
@@ -7898,7 +7939,7 @@ export function App() {
           <span className="status-val">
             {activeModel?.model
               ? `${activeModel.provider ? `${activeModel.provider}/` : ""}${activeModel.model}`
-              : "未配置"}
+              : t("settings.shared.notConfigured")}
           </span>
         </span>
         <ContextUsageStat
@@ -7908,7 +7949,7 @@ export function App() {
           cacheWriteTokens={tokenUsage?.cacheWriteTokens}
         />
         <span className="status-spacer" />
-        <span className="status-seg" title="当前会话已运行时长">
+        <span className="status-seg" title={t("settings.statusbar.sessionDuration")}>
           <Clock size={12} className="status-ico" />
           <SessionTimer startedAt={sessionStartedAt} />
         </span>
@@ -7920,14 +7961,14 @@ export function App() {
             if (installStatus?.gatewayRunning) void refreshRuntime({ autoStart: false });
             else void startGateway();
           }}
-          title={installStatus?.gatewayRunning ? "Gateway 运行中（点击刷新）" : "点击启动 Gateway"}
+          title={installStatus?.gatewayRunning ? t("settings.statusbar.gatewayUpTitle") : t("settings.statusbar.gatewayDownTitle")}
         >
           <span className={`status-led ${installStatus?.gatewayRunning ? "on" : ""}`} />
           <span className="status-val">
-            {gatewayBusy ? "启动中..." : installStatus?.gatewayRunning ? "gateway up" : "gateway down"}
+            {gatewayBusy ? t("settings.statusbar.starting") : installStatus?.gatewayRunning ? "gateway up" : "gateway down"}
           </span>
         </button>
-        <span className="status-tag" title="版本 / 距最新 tag 的提交数 / commit">
+        <span className="status-tag" title={t("settings.statusbar.buildTitle")}>
           {buildLabel() || "Hermes Team"}
         </span>
       </footer>
@@ -8008,6 +8049,7 @@ function ContextUsageStat({
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
 }) {
+  const t = useTranslation();
   const hasWindow = ctxWindow > 0;
   const hasUsed = used > 0;
   const pct = hasWindow && hasUsed ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
@@ -8019,14 +8061,16 @@ function ContextUsageStat({
       ? Math.min(100, Math.round(((cacheReadTokens ?? 0) / used) * 100))
       : 0;
   const cacheTitle = hasCache
-    ? `\n缓存命中 ${cacheHitPct}% · 读 ${formatTokens(cacheReadTokens ?? 0)} / 写 ${formatTokens(
-        cacheWriteTokens ?? 0,
-      )}`
+    ? t("settings.statusbar.cacheTitle", {
+        pct: cacheHitPct,
+        read: formatTokens(cacheReadTokens ?? 0),
+        write: formatTokens(cacheWriteTokens ?? 0),
+      })
     : "";
   return (
     <span
       className="status-seg status-ctx"
-      title={`上下文占用：最近一轮 prompt tokens / 模型上下文窗口${cacheTitle}`}
+      title={t("settings.statusbar.contextTitle", { cache: cacheTitle })}
     >
       <span className="status-key">ctx</span>
       <span className="status-ctx-bar" aria-hidden>
@@ -8069,8 +8113,9 @@ function StatusRow({
   ok: boolean;
   warn?: boolean;
 }) {
+  const t = useTranslation();
   const tone = ok ? "ok" : warn ? "warning" : "danger";
-  const text = ok ? "OK" : warn ? "注意" : "需要处理";
+  const text = ok ? "OK" : warn ? t("app.status.warn") : t("app.status.needAction");
   return (
     <div className="status-row">
       <span>{label}</span>
@@ -8089,6 +8134,7 @@ function TransportSelector({
   value: "auto" | "dashboard" | "legacy";
   onChange: (value: "auto" | "dashboard" | "legacy") => void;
 }) {
+  const t = useTranslation();
   return (
     <div className="transport-selector">
       <strong>{label}</strong>
@@ -8099,7 +8145,7 @@ function TransportSelector({
             key={option.id}
             type="button"
             onClick={() => onChange(option.id)}
-            title={option.detail}
+            title={t(option.detailKey)}
           >
             {option.label}
           </button>
@@ -8109,14 +8155,14 @@ function TransportSelector({
   );
 }
 
-function configSeverityLabel(severity: string): string {
+function configSeverityLabel(severity: string, t: TranslateFn): string {
   switch (severity) {
     case "error":
-      return "错误";
+      return t("app.severity.error");
     case "warning":
-      return "警告";
+      return t("app.severity.warning");
     case "info":
-      return "提示";
+      return t("app.severity.info");
     default:
       return severity;
   }
@@ -8126,43 +8172,48 @@ function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
 }
 
-function decisionLabel(type: string): string {
+function decisionLabel(type: string, t: TranslateFn): string {
   switch (type) {
     case "dispatch":
-      return "已派发";
+      return t("app.dispatch.dispatched");
     case "ask_user":
-      return "等待用户";
+      return t("app.dispatch.askUser");
     case "blocked":
-      return "已阻断";
+      return t("app.dispatch.blocked");
     default:
-      return "无需动作";
+      return t("app.dispatch.noAction");
   }
 }
 
-function decisionDetail(decision: OrchestrationState["logs"][number]["decision"]): string {
+function decisionDetail(decision: OrchestrationState["logs"][number]["decision"], t: TranslateFn): string {
   if (decision.type === "dispatch") {
-    return `${decision.mode} · ${decision.assignments.length} 个目标 · ${decision.reason}`;
+    return t("app.dispatch.detail", {
+      mode: decision.mode,
+      count: decision.assignments.length,
+      reason: decision.reason,
+    });
   }
   if (decision.type === "ask_user") return decision.question;
   return decision.reason;
 }
 
-function taskSummary(state: OrchestrationState): string {
+function taskSummary(state: OrchestrationState, t: TranslateFn): string {
   if (state.tasks.length === 0) return "";
   const running = state.tasks.filter((task) => task.status === "running").length;
   const pending = state.tasks.filter((task) => task.status === "pending").length;
   const completed = state.tasks.filter((task) => task.status === "completed").length;
   const failed = state.tasks.filter((task) => task.status === "failed").length;
-  if (running > 0) return `${running} 个任务运行中`;
-  if (pending > 0) return `${pending} 个任务等待执行`;
-  if (failed > 0) return `${failed} 个任务失败`;
-  return `已完成 ${completed} 个任务`;
+  if (running > 0) return t("app.taskSummary.running", { count: running });
+  if (pending > 0) return t("app.taskSummary.pending", { count: pending });
+  if (failed > 0) return t("app.taskSummary.failed", { count: failed });
+  return t("app.taskSummary.completed", { count: completed });
 }
 
 function buildStateFromHermesStateSession(
   session: HermesStateSessionSummary,
   rows: HermesStateMessage[],
   workspaceMode: WorkspaceMode,
+  t: TranslateFn,
 ): OrchestrationState {
   const base = buildFreshOrchestrationState(workspaceMode);
   const importedWorkspaceId = `desktop-${session.id}`;
@@ -8173,7 +8224,7 @@ function buildStateFromHermesStateSession(
       ...base.workspace,
       id: importedWorkspaceId,
       name: "Hermes Chat",
-      description: `从本地 state.db 导入：${session.title}`,
+      description: t("app.importDesc", { title: session.title }),
     },
     agents: base.agents.map((agent) => ({ ...agent, workspaceId: importedWorkspaceId })),
     messages: rows.map((row, index) => {
@@ -8184,7 +8235,7 @@ function buildStateFromHermesStateSession(
         kind,
         authorKind: row.kind === "user" ? "user" : "agent",
         authorId: row.kind === "user" ? undefined : agentId,
-        authorName: row.kind === "user" ? "You" : row.kind === "tool" ? row.name || "工具调用" : "Hermes",
+        authorName: row.kind === "user" ? "You" : row.kind === "tool" ? row.name || t("app.toolCall") : "Hermes",
         content: decodeHermesStateContent(row.content),
         createdAt: normalizeHermesStateTimestamp(row.timestamp),
       } satisfies Message;
@@ -8361,9 +8412,10 @@ function profileStatusClass(
 function profileStatusText(
   profile: HermesProfileInfo | undefined,
   discoveryReady: boolean,
+  t: TranslateFn,
 ): string {
-  if (!discoveryReady) return "等待 Tauri Runtime 发现本机 profile";
-  if (!profile) return "本机未发现该 profile";
-  if (!profile.hasApiKey) return `${profile.gatewayUrl} · 未发现 API_SERVER_KEY`;
-  return `${profile.gatewayUrl} · 已发现 API_SERVER_KEY`;
+  if (!discoveryReady) return t("app.profileStatus.waiting");
+  if (!profile) return t("app.profileStatus.notFound");
+  if (!profile.hasApiKey) return t("app.profileStatus.noKey", { url: profile.gatewayUrl });
+  return t("app.profileStatus.hasKey", { url: profile.gatewayUrl });
 }

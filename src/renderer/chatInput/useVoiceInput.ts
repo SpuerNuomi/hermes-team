@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeHermesAudio } from "../../runtime/hermes-runtime";
+import { useTranslation } from "../../i18n";
 
 /**
  * Voice input for the chat composer.
@@ -61,6 +62,7 @@ export function useVoiceInput(
   onResult: (text: string, isFinal: boolean) => void,
   profile?: string,
 ): UseVoiceInput {
+  const t = useTranslation();
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,20 +107,20 @@ export function useVoiceInput(
         // A late interim must not overwrite the final transcript.
         if (!isFinal && finalizingRef.current) return;
         if (text) onResultRef.current(text, isFinal);
-        else if (isFinal) setError("未检测到语音。");
+        else if (isFinal) setError(t("voiceInput.noSpeech"));
       } catch (e) {
         // Interim failures are transient — only surface the final one.
-        if (isFinal) setError((e as Error).message || "语音转写失败。");
+        if (isFinal) setError((e as Error).message || t("voiceInput.transcribeFailed"));
       } finally {
         inFlightRef.current = false;
       }
     },
-    [profile],
+    [profile, t],
   );
 
   const startMediaRecorder = useCallback(async () => {
     if (!canRecord) {
-      setError("此环境暂不支持语音输入。");
+      setError(t("voiceInput.unsupported"));
       return;
     }
     try {
@@ -154,10 +156,10 @@ export function useVoiceInput(
       setRecording(true);
       setError(null);
     } catch {
-      setError("麦克风访问被拒绝或不可用。");
+      setError(t("voiceInput.micDenied"));
       setRecording(false);
     }
-  }, [canRecord, stopStream, transcribeAccumulated]);
+  }, [canRecord, stopStream, transcribeAccumulated, t]);
 
   const startSpeechRecognition = useCallback(() => {
     if (!SpeechCtor) {

@@ -15,6 +15,7 @@ import type {
   ProviderRegistryEntry,
   RemoteConnectionStatus,
 } from "../runtime/hermes-runtime";
+import { useTranslation } from "../i18n";
 
 const UNIX_INSTALL_CMD =
   "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash";
@@ -77,12 +78,13 @@ export function OnboardingFlow({
   onFinish,
   onSkip,
 }: OnboardingFlowProps) {
+  const t = useTranslation();
   const [step, setStep] = useState<Step>("welcome");
   return (
-    <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Hermes 引导式安装">
+    <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-label={t("onboarding.ariaLabel")}>
       <div className="onboarding-card">
         <button type="button" className="onboarding-skip" onClick={onSkip}>
-          稍后再说
+          {t("onboarding.skip")}
         </button>
         {step === "welcome" && <WelcomeStep onPick={setStep} />}
         {step === "local" && (
@@ -126,35 +128,36 @@ export function OnboardingFlow({
 }
 
 function WelcomeStep({ onPick }: { onPick: (step: Step) => void }) {
+  const t = useTranslation();
   return (
     <div className="onboarding-step">
       <div className="onboarding-brand">H</div>
-      <h1>欢迎使用 Hermes Team</h1>
+      <h1>{t("onboarding.welcomeTitle")}</h1>
       <p className="onboarding-subtitle">
-        选择如何连接到 Hermes Agent 运行时。我们会带你完成检测、模型配置与首次启动。
+        {t("onboarding.welcomeSubtitle")}
       </p>
       <div className="onboarding-paths">
         <button type="button" className="onboarding-path" onClick={() => onPick("local")}>
           <ServerCog size={20} />
           <div>
-            <strong>本地 Hermes</strong>
-            <span>在本机运行 Gateway（推荐）</span>
+            <strong>{t("onboarding.localTitle")}</strong>
+            <span>{t("onboarding.localDesc")}</span>
           </div>
           <ArrowRight size={16} />
         </button>
         <button type="button" className="onboarding-path" onClick={() => onPick("remote")}>
           <Globe size={20} />
           <div>
-            <strong>远程地址</strong>
-            <span>连接已运行的 Hermes 服务 URL</span>
+            <strong>{t("onboarding.remoteTitle")}</strong>
+            <span>{t("onboarding.remoteDesc")}</span>
           </div>
           <ArrowRight size={16} />
         </button>
         <button type="button" className="onboarding-path" onClick={() => onPick("ssh")}>
           <KeyRound size={20} />
           <div>
-            <strong>SSH 隧道</strong>
-            <span>通过 SSH 转发到远端 Gateway</span>
+            <strong>{t("onboarding.sshTitle")}</strong>
+            <span>{t("onboarding.sshDesc")}</span>
           </div>
           <ArrowRight size={16} />
         </button>
@@ -176,6 +179,7 @@ function LocalStep({
   onBack: () => void;
   onNext: () => void;
 }) {
+  const t = useTranslation();
   const [copied, setCopied] = useState(false);
   const installed = Boolean(installStatus?.installed);
   const command = useMemo(installCommand, []);
@@ -188,18 +192,18 @@ function LocalStep({
 
   return (
     <div className="onboarding-step">
-      <h1>检测本地 Hermes</h1>
+      <h1>{t("onboarding.localStepTitle")}</h1>
       <p className="onboarding-subtitle">
-        Hermes Team 会复用你本机的 Hermes Agent 运行时，而不是内置一份安装器。
+        {t("onboarding.localStepSubtitle")}
       </p>
 
       <div className={`onboarding-detect ${installed ? "ok" : "missing"}`}>
         <div className="onboarding-detect-row">
           <span>Hermes CLI</span>
-          <strong>{installed ? installStatus?.command || "已发现" : "未找到"}</strong>
+          <strong>{installed ? installStatus?.command || t("onboarding.found") : t("onboarding.notFound")}</strong>
         </div>
         <div className="onboarding-detect-row">
-          <span>版本</span>
+          <span>{t("onboarding.version")}</span>
           <strong>{installStatus?.version || "—"}</strong>
         </div>
         <div className="onboarding-detect-row">
@@ -211,11 +215,11 @@ function LocalStep({
       {!installed && (
         <div className="onboarding-install">
           <p className="onboarding-install-hint">
-            <TerminalSquare size={14} /> 在终端运行下面的官方安装命令，完成后点「重新检测」：
+            <TerminalSquare size={14} /> {t("onboarding.installHint")}
           </p>
           <div className="onboarding-install-box">
             <code>{command}</code>
-            <button type="button" onClick={copyCommand} title="复制安装命令">
+            <button type="button" onClick={copyCommand} title={t("onboarding.copyInstallCmd")}>
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
           </div>
@@ -224,14 +228,14 @@ function LocalStep({
 
       <div className="onboarding-actions">
         <button type="button" className="onboarding-ghost" onClick={onBack}>
-          返回
+          {t("onboarding.back")}
         </button>
         <button type="button" className="onboarding-secondary" disabled={busy} onClick={() => void onRecheck()}>
           {busy ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-          重新检测
+          {t("onboarding.recheck")}
         </button>
         <button type="button" className="onboarding-primary" disabled={!installed} onClick={onNext}>
-          下一步：配置模型
+          {t("onboarding.nextConfigModel")}
           <ArrowRight size={16} />
         </button>
       </div>
@@ -250,6 +254,7 @@ function RemoteStep({
   onBack: () => void;
   onConnected: () => void;
 }) {
+  const t = useTranslation();
   const [url, setUrl] = useState("");
   const [key, setKey] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -258,7 +263,7 @@ function RemoteStep({
   const connect = async () => {
     const target = url.trim();
     if (!target) {
-      setError("请输入远程服务地址。");
+      setError(t("onboarding.errNoUrl"));
       return;
     }
     setTesting(true);
@@ -268,10 +273,10 @@ function RemoteStep({
       if (status.ok) {
         onConnected();
       } else {
-        setError(status.message || "连接失败，请检查地址与 API key。");
+        setError(status.message || t("onboarding.errConnectCheck"));
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "连接失败。");
+      setError(e instanceof Error ? e.message : t("onboarding.errConnect"));
     } finally {
       setTesting(false);
     }
@@ -279,9 +284,9 @@ function RemoteStep({
 
   return (
     <div className="onboarding-step">
-      <h1>连接远程 Hermes</h1>
-      <p className="onboarding-subtitle">输入已运行的 Hermes 服务地址与 API key。</p>
-      <label className="onboarding-label">服务地址</label>
+      <h1>{t("onboarding.remoteStepTitle")}</h1>
+      <p className="onboarding-subtitle">{t("onboarding.remoteStepSubtitle")}</p>
+      <label className="onboarding-label">{t("onboarding.serviceUrl")}</label>
       <input
         className="onboarding-input"
         type="url"
@@ -291,7 +296,7 @@ function RemoteStep({
         onKeyDown={(event) => event.key === "Enter" && void connect()}
         autoFocus
       />
-      <label className="onboarding-label">API key（可选）</label>
+      <label className="onboarding-label">{t("onboarding.apiKeyOptional")}</label>
       <input
         className="onboarding-input"
         type="password"
@@ -303,11 +308,11 @@ function RemoteStep({
       {error && <p className="onboarding-error">{error}</p>}
       <div className="onboarding-actions">
         <button type="button" className="onboarding-ghost" onClick={onBack}>
-          返回
+          {t("onboarding.back")}
         </button>
         <button type="button" className="onboarding-primary" disabled={testing || busy} onClick={() => void connect()}>
           {testing ? <Loader2 size={14} className="spin" /> : <Globe size={14} />}
-          {testing ? "正在连接..." : "连接"}
+          {testing ? t("onboarding.connecting") : t("onboarding.connect")}
         </button>
       </div>
     </div>
@@ -331,6 +336,7 @@ function SshStep({
   onBack: () => void;
   onConnected: () => void;
 }) {
+  const t = useTranslation();
   const [host, setHost] = useState("");
   const [port, setPort] = useState("22");
   const [username, setUsername] = useState("");
@@ -341,7 +347,7 @@ function SshStep({
 
   const connect = async () => {
     if (!host.trim() || !username.trim()) {
-      setError("请填写主机与用户名。");
+      setError(t("onboarding.errHostUser"));
       return;
     }
     setTesting(true);
@@ -357,10 +363,10 @@ function SshStep({
       if (status.ok) {
         onConnected();
       } else {
-        setError(status.message || "SSH 隧道建立失败。");
+        setError(status.message || t("onboarding.errSshFailed"));
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "SSH 隧道建立失败。");
+      setError(e instanceof Error ? e.message : t("onboarding.errSshFailed"));
     } finally {
       setTesting(false);
     }
@@ -368,11 +374,11 @@ function SshStep({
 
   return (
     <div className="onboarding-step">
-      <h1>SSH 隧道</h1>
-      <p className="onboarding-subtitle">通过 SSH 转发到远端机器上的 Hermes Gateway。</p>
+      <h1>{t("onboarding.sshStepTitle")}</h1>
+      <p className="onboarding-subtitle">{t("onboarding.sshStepSubtitle")}</p>
       <div className="onboarding-row">
         <div className="onboarding-col onboarding-col-grow">
-          <label className="onboarding-label">主机</label>
+          <label className="onboarding-label">{t("onboarding.host")}</label>
           <input
             className="onboarding-input"
             type="text"
@@ -383,7 +389,7 @@ function SshStep({
           />
         </div>
         <div className="onboarding-col">
-          <label className="onboarding-label">端口</label>
+          <label className="onboarding-label">{t("onboarding.port")}</label>
           <input
             className="onboarding-input"
             type="number"
@@ -393,7 +399,7 @@ function SshStep({
           />
         </div>
       </div>
-      <label className="onboarding-label">用户名</label>
+      <label className="onboarding-label">{t("onboarding.username")}</label>
       <input
         className="onboarding-input"
         type="text"
@@ -401,7 +407,7 @@ function SshStep({
         value={username}
         onChange={(event) => setUsername(event.target.value)}
       />
-      <label className="onboarding-label">私钥路径（可选）</label>
+      <label className="onboarding-label">{t("onboarding.keyPathOptional")}</label>
       <input
         className="onboarding-input"
         type="text"
@@ -409,7 +415,7 @@ function SshStep({
         value={keyPath}
         onChange={(event) => setKeyPath(event.target.value)}
       />
-      <label className="onboarding-label">远端 Gateway 端口</label>
+      <label className="onboarding-label">{t("onboarding.remoteGatewayPort")}</label>
       <input
         className="onboarding-input"
         type="number"
@@ -420,7 +426,7 @@ function SshStep({
       {error && <p className="onboarding-error">{error}</p>}
       <div className="onboarding-actions">
         <button type="button" className="onboarding-ghost" onClick={onBack}>
-          返回
+          {t("onboarding.back")}
         </button>
         <button
           type="button"
@@ -429,7 +435,7 @@ function SshStep({
           onClick={() => void connect()}
         >
           {testing ? <Loader2 size={14} className="spin" /> : <KeyRound size={14} />}
-          {testing ? "正在连接..." : "建立隧道"}
+          {testing ? t("onboarding.connecting") : t("onboarding.buildTunnel")}
         </button>
       </div>
     </div>
@@ -449,6 +455,7 @@ function SetupStep({
   onBack: () => void;
   onConfigured: () => void;
 }) {
+  const t = useTranslation();
   const [selectedId, setSelectedId] = useState(providers[0]?.id ?? "");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
@@ -473,20 +480,20 @@ function SetupStep({
 
   const submit = async () => {
     if (!provider) {
-      setError("请先选择一个 Provider。");
+      setError(t("onboarding.errPickProvider"));
       return;
     }
     if (!model.trim()) {
-      setError("请填写模型名称。");
+      setError(t("onboarding.errModelName"));
       return;
     }
     if (needsKey && !apiKey.trim() && !provider.keyPresent) {
-      setError("该 Provider 需要 API key。");
+      setError(t("onboarding.errNeedKey"));
       return;
     }
     const effectiveBaseUrl = (isLocal ? baseUrl.trim() : provider.baseUrl) || provider.baseUrl;
     if (isLocal && !effectiveBaseUrl) {
-      setError("请填写本地服务地址。");
+      setError(t("onboarding.errLocalUrl"));
       return;
     }
     setSaving(true);
@@ -502,7 +509,7 @@ function SetupStep({
       });
       onConfigured();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "配置失败。");
+      setError(e instanceof Error ? e.message : t("onboarding.errConfigFailed"));
       setSaving(false);
     }
   };
@@ -510,14 +517,14 @@ function SetupStep({
   if (providers.length === 0) {
     return (
       <div className="onboarding-step">
-        <h1>配置模型</h1>
-        <p className="onboarding-subtitle">未读取到 Provider 列表，请先完成本地检测或稍后在设置中配置。</p>
+        <h1>{t("onboarding.setupTitle")}</h1>
+        <p className="onboarding-subtitle">{t("onboarding.noProviders")}</p>
         <div className="onboarding-actions">
           <button type="button" className="onboarding-ghost" onClick={onBack}>
-            返回
+            {t("onboarding.back")}
           </button>
           <button type="button" className="onboarding-primary" onClick={onConfigured}>
-            跳过
+            {t("onboarding.skipStep")}
             <ArrowRight size={16} />
           </button>
         </div>
@@ -527,8 +534,8 @@ function SetupStep({
 
   return (
     <div className="onboarding-step">
-      <h1>配置模型</h1>
-      <p className="onboarding-subtitle">选择一个 Provider，填写密钥与模型，即可启动 Gateway。</p>
+      <h1>{t("onboarding.setupTitle")}</h1>
+      <p className="onboarding-subtitle">{t("onboarding.setupSubtitle")}</p>
 
       <div className="onboarding-provider-grid">
         {providers.map((entry) => (
@@ -544,14 +551,14 @@ function SetupStep({
               </span>
             )}
             <strong>{entry.label}</strong>
-            <span>{entry.keyPresent ? "已有 key" : entry.local ? "本地" : entry.authType}</span>
+            <span>{entry.keyPresent ? t("onboarding.hasKey") : entry.local ? t("common.local") : entry.authType}</span>
           </button>
         ))}
       </div>
 
       {isLocal && (
         <>
-          <label className="onboarding-label">服务地址</label>
+          <label className="onboarding-label">{t("onboarding.serviceUrl")}</label>
           <input
             className="onboarding-input"
             type="text"
@@ -565,29 +572,29 @@ function SetupStep({
       {(needsKey || isLocal) && (
         <>
           <label className="onboarding-label">
-            API key{isLocal ? "（可选）" : ""}
-            {provider?.keyPresent && <span className="onboarding-label-note"> · 已配置，可留空</span>}
+            {t("onboarding.apiKey")}{isLocal ? t("onboarding.optionalParen") : ""}
+            {provider?.keyPresent && <span className="onboarding-label-note"> {t("onboarding.keyConfiguredNote")}</span>}
           </label>
           <div className="onboarding-input-group">
             <input
               className="onboarding-input"
               type={showKey ? "text" : "password"}
-              placeholder={provider?.keyPresent ? "保持现有 key" : "sk-..."}
+              placeholder={provider?.keyPresent ? t("onboarding.keepExistingKey") : "sk-..."}
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
             />
             <button type="button" className="onboarding-reveal" onClick={() => setShowKey((value) => !value)}>
-              {showKey ? "隐藏" : "显示"}
+              {showKey ? t("onboarding.hide") : t("onboarding.show")}
             </button>
           </div>
         </>
       )}
 
-      <label className="onboarding-label">模型名称</label>
+      <label className="onboarding-label">{t("onboarding.modelName")}</label>
       <input
         className="onboarding-input"
         type="text"
-        placeholder="例如 anthropic/claude-3.5-sonnet"
+        placeholder={t("onboarding.modelPlaceholder")}
         value={model}
         onChange={(event) => setModel(event.target.value)}
         onKeyDown={(event) => event.key === "Enter" && void submit()}
@@ -597,11 +604,11 @@ function SetupStep({
 
       <div className="onboarding-actions">
         <button type="button" className="onboarding-ghost" onClick={onBack}>
-          返回
+          {t("onboarding.back")}
         </button>
         <button type="button" className="onboarding-primary" disabled={saving || busy} onClick={() => void submit()}>
           {saving ? <Loader2 size={14} className="spin" /> : <ArrowRight size={16} />}
-          {saving ? "正在配置..." : "完成配置"}
+          {saving ? t("onboarding.configuring") : t("onboarding.finishConfig")}
         </button>
       </div>
     </div>
@@ -609,15 +616,16 @@ function SetupStep({
 }
 
 function DoneStep({ onFinish }: { onFinish: () => void }) {
+  const t = useTranslation();
   return (
     <div className="onboarding-step onboarding-done">
       <div className="onboarding-done-icon">
         <Check size={28} strokeWidth={3} />
       </div>
-      <h1>一切就绪</h1>
-      <p className="onboarding-subtitle">Hermes 已连接，可以开始对话了。</p>
+      <h1>{t("onboarding.doneTitle")}</h1>
+      <p className="onboarding-subtitle">{t("onboarding.doneSubtitle")}</p>
       <button type="button" className="onboarding-primary" onClick={onFinish}>
-        进入 Hermes
+        {t("onboarding.enterHermes")}
         <ArrowRight size={16} />
       </button>
     </div>

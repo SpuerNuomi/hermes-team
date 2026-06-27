@@ -1,20 +1,28 @@
+import type { TranslationVars } from "../i18n/types";
+
+type TranslateFn = (key: string, vars?: TranslationVars) => string;
+
 /**
  * Read an image File and produce a small, square, center-cropped PNG data URL
  * suitable for a profile avatar. Keeping it tiny (default 128px) bounds the
  * size of what we persist in the profile's `profile-meta.json`.
  */
-export async function fileToAvatarDataUrl(file: File, size = 128): Promise<string> {
+export async function fileToAvatarDataUrl(
+  file: File,
+  t: TranslateFn,
+  size = 128,
+): Promise<string> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("读取图片失败"));
+    reader.onerror = () => reject(reader.error ?? new Error(t("profileImage.readFailed")));
     reader.readAsDataURL(file);
   });
 
   const img = await new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("解码图片失败"));
+    image.onerror = () => reject(new Error(t("profileImage.decodeFailed")));
     image.src = dataUrl;
   });
 

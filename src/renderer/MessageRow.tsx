@@ -1,6 +1,7 @@
 import { AlertTriangle, Brain, Check, CheckCircle2, ChevronRight, Copy, GitBranch, Loader2, MoreHorizontal, Paperclip, Radio, RefreshCw, Speaker, Terminal, XCircle } from "lucide-react";
 import { memo, useCallback, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { Message } from "../core/types";
+import { useTranslation } from "../i18n";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { BubbleContextMenu, buildBubbleActions } from "./BubbleContextMenu";
 import { formatBubbleTime, formatBubbleTimeAbsolute } from "./bubbleTime";
@@ -57,7 +58,7 @@ function parseToolEvent(content: string): ParsedToolEvent {
     seen.push(lineNorm);
     detailParts.push(line);
   }
-  return { status, title: label || "工具调用", detail: detailParts.join("\n") };
+  return { status, title: label, detail: detailParts.join("\n") };
 }
 
 function ToolStatusIcon({ status }: { status: ToolStatus }) {
@@ -71,6 +72,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
 }: {
   messages: Message[];
 }) {
+  const t = useTranslation();
   const [openId, setOpenId] = useState<string | null>(null);
   if (messages.length === 0) return null;
   return (
@@ -93,7 +95,7 @@ export const ToolCallGroup = memo(function ToolCallGroup({
                 <ToolStatusIcon status={status} />
               </span>
               <span className="tool-call-text">
-                <span className="tool-call-name">{title}</span>
+                <span className="tool-call-name">{title || t("messageRow.toolCall")}</span>
                 {detail && (
                   <span className={`tool-call-detail ${open ? "tool-call-detail-open" : ""}`}>{detail}</span>
                 )}
@@ -140,6 +142,7 @@ export const TypingIndicator = memo(function TypingIndicator({
 }: {
   detail?: string;
 }) {
+  const t = useTranslation();
   return (
     <article className="message agent message-typing" aria-live="polite">
       <div className="message-avatar" aria-hidden="true">
@@ -148,7 +151,7 @@ export const TypingIndicator = memo(function TypingIndicator({
       <div className="message-body">
         <div className="message-meta">
           <span>Hermes</span>
-          <span>{detail || "正在处理..."}</span>
+          <span>{detail || t("messageRow.processing")}</span>
         </div>
         <div className="chat-typing">
           <span className="chat-typing-dot" />
@@ -243,6 +246,7 @@ export const MessageRow = memo(function MessageRow({
   onBranch: () => void;
   onCopyTranscript?: () => void;
 }) {
+  const t = useTranslation();
   const [copied, setCopied] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(
     message.kind === "reasoning" || message.kind === "tool",
@@ -310,13 +314,14 @@ export const MessageRow = memo(function MessageRow({
 
   const contextActions = buildBubbleActions({
     hasContent: message.content.trim().length > 0,
+    t,
     onCopy: () => void handleCopy(),
     onSelectText: selectBubbleText,
     onCopySelection: () => void copySelection(),
     onCopyTranscript,
   });
 
-  const bubbleTime = formatBubbleTime(message.createdAt);
+  const bubbleTime = formatBubbleTime(message.createdAt, t);
   const showBubbleTime = !isReasoning && !isTool && !isRuntime && bubbleTime.length > 0;
 
   return (
@@ -337,7 +342,7 @@ export const MessageRow = memo(function MessageRow({
       <div className="message-body">
         {showMeta && (
           <div className="message-meta">
-            <span>{isReasoning ? "思考过程" : isRuntime ? "Runtime activity" : isTool ? "执行过程" : message.authorName}</span>
+            <span>{isReasoning ? t("messageRow.reasoning") : isRuntime ? "Runtime activity" : isTool ? t("messageRow.toolProcess") : message.authorName}</span>
             <time>{formatTime(message.createdAt)}</time>
           </div>
         )}
@@ -354,7 +359,7 @@ export const MessageRow = memo(function MessageRow({
                 className={`reasoning-chevron ${reasoningOpen ? "reasoning-chevron-open" : ""}`}
               />
               {isRuntime ? <Radio size={14} /> : isTool ? <Terminal size={14} /> : <Brain size={14} />}
-              <span>{isRuntime ? "Runtime activity" : isTool ? formatToolSummary(message.content) : isLoading ? "正在思考" : "思考过程"}</span>
+              <span>{isRuntime ? "Runtime activity" : isTool ? formatToolSummary(message.content) : isLoading ? t("messageRow.thinking") : t("messageRow.reasoning")}</span>
               <small>{message.content.split("\n").length} lines</small>
             </button>
             {reasoningOpen && <pre className="reasoning-pre">{message.content}</pre>}
@@ -364,8 +369,8 @@ export const MessageRow = memo(function MessageRow({
                   className="message-copy"
                   type="button"
                   onClick={handleCopy}
-                  title={copied ? "Copied" : isTool ? "Copy tool event" : "Copy reasoning"}
-                  aria-label={copied ? "Copied" : isTool ? "Copy tool event" : "Copy reasoning"}
+                  title={copied ? t("messageRow.copied") : isTool ? t("messageRow.copyToolEvent") : t("messageRow.copyReasoning")}
+                  aria-label={copied ? t("messageRow.copied") : isTool ? t("messageRow.copyToolEvent") : t("messageRow.copyReasoning")}
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
@@ -388,8 +393,8 @@ export const MessageRow = memo(function MessageRow({
                     className="message-action-button"
                     type="button"
                     onClick={handleCopy}
-                    title={copied ? "Copied" : "Copy message"}
-                    aria-label={copied ? "Copied" : "Copy message"}
+                    title={copied ? t("messageRow.copied") : t("messageRow.copyMessage")}
+                    aria-label={copied ? t("messageRow.copied") : t("messageRow.copyMessage")}
                   >
                     {copied ? <Check size={15} /> : <Copy size={15} />}
                   </button>
@@ -397,8 +402,8 @@ export const MessageRow = memo(function MessageRow({
                     className="message-action-button"
                     type="button"
                     onClick={onRegenerate}
-                    title="重新生成"
-                    aria-label="重新生成"
+                    title={t("messageRow.regenerate")}
+                    aria-label={t("messageRow.regenerate")}
                   >
                     <RefreshCw size={15} />
                   </button>
@@ -407,8 +412,8 @@ export const MessageRow = memo(function MessageRow({
                       className="message-action-button"
                       type="button"
                       onClick={() => setMenuOpen((value) => !value)}
-                      title="更多"
-                      aria-label="更多"
+                      title={t("messageRow.more")}
+                      aria-label={t("messageRow.more")}
                       aria-expanded={menuOpen}
                     >
                       <MoreHorizontal size={17} />
@@ -420,11 +425,11 @@ export const MessageRow = memo(function MessageRow({
                           onBranch();
                         }}>
                           <GitBranch size={15} />
-                          <span>在新对话中分支</span>
+                          <span>{t("messageRow.branch")}</span>
                         </button>
                         <button type="button" onClick={speakMessage}>
                           <Speaker size={15} />
-                          <span>朗读</span>
+                          <span>{t("messageRow.readAloud")}</span>
                         </button>
                       </div>
                     )}
@@ -436,8 +441,8 @@ export const MessageRow = memo(function MessageRow({
                     className="message-copy"
                     type="button"
                     onClick={handleCopy}
-                    title={copied ? "Copied" : "Copy message"}
-                    aria-label={copied ? "Copied" : "Copy message"}
+                    title={copied ? t("messageRow.copied") : t("messageRow.copyMessage")}
+                    aria-label={copied ? t("messageRow.copied") : t("messageRow.copyMessage")}
                   >
                     {copied ? <Check size={14} /> : <Copy size={14} />}
                   </button>
@@ -450,7 +455,7 @@ export const MessageRow = memo(function MessageRow({
           <time
             className="message-bubble-time"
             dateTime={new Date(message.createdAt).toISOString()}
-            title={formatBubbleTimeAbsolute(message.createdAt)}
+            title={formatBubbleTimeAbsolute(message.createdAt, t)}
           >
             {bubbleTime}
           </time>
@@ -469,10 +474,10 @@ export const MessageRow = memo(function MessageRow({
         {showApprovalBar && (
           <div className="message-approval-bar">
             <button type="button" onClick={onApprove}>
-              Approve
+              {t("messageRow.approve")}
             </button>
             <button type="button" onClick={onDeny}>
-              Deny
+              {t("messageRow.deny")}
             </button>
           </div>
         )}

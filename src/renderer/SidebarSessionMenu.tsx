@@ -1,6 +1,7 @@
 import { Check, FolderInput, FolderMinus, Pin, PinOff } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "../i18n";
 import type { SessionProject } from "./SessionMoveMenu";
 
 export interface SidebarMenuTarget {
@@ -38,6 +39,7 @@ export function SidebarSessionMenu({
   onMove: (folder: string | null) => void;
   onPickFolder: () => void;
 }) {
+  const t = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: target.x, top: target.y });
   const currentFolder = target.contextFolder?.trim() || null;
@@ -102,13 +104,13 @@ export function SidebarSessionMenu({
         }}
       >
         {isPinned ? <PinOff size={15} /> : <Pin size={15} />}
-        <span>{isPinned ? "取消置顶" : "置顶"}</span>
+        <span>{isPinned ? t("sessions.unpin") : t("sessions.pin")}</span>
       </button>
       <div className="sidebar-session-menu-divider" />
-      <p className="sidebar-session-menu-label">移动到分组</p>
+      <p className="sidebar-session-menu-label">{t("sessions.moveToGroup")}</p>
       <div className="sidebar-session-menu-scroll">
         {projects.length === 0 ? (
-          <div className="sidebar-session-menu-empty">还没有分组文件夹</div>
+          <div className="sidebar-session-menu-empty">{t("sessions.noGroupFolders")}</div>
         ) : (
           projects.map((project) => {
             const active = project.path === currentFolder;
@@ -142,7 +144,7 @@ export function SidebarSessionMenu({
         }}
       >
         <FolderInput size={15} />
-        <span>选择新文件夹…</span>
+        <span>{t("sessions.pickNewFolder")}</span>
       </button>
       {currentFolder && (
         <button
@@ -155,7 +157,7 @@ export function SidebarSessionMenu({
           }}
         >
           <FolderMinus size={15} />
-          <span>移出分组</span>
+          <span>{t("sessions.removeFromGroup")}</span>
         </button>
       )}
     </div>,

@@ -1,5 +1,6 @@
 import { ExternalLink, Globe, MousePointerClick, RotateCw, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "../i18n";
 import {
   createInspectorController,
   type InspectorController,
@@ -39,6 +40,7 @@ export const WebPreviewPanel = memo(function WebPreviewPanel({
   onOpenExternal: (url: string) => void;
   onInspectElement?: (payload: InspectPayload) => void;
 }) {
+  const t = useTranslation();
   const [currentUrl, setCurrentUrl] = useState(() => normalizePreviewUrl(url));
   const [draftUrl, setDraftUrl] = useState(() => normalizePreviewUrl(url));
   const [frameKey, setFrameKey] = useState(0);
@@ -80,9 +82,7 @@ export const WebPreviewPanel = memo(function WebPreviewPanel({
     const doc = reachableDocument(frame);
     const win = frame?.contentWindow ?? null;
     if (!doc || !win) {
-      setInspectNotice(
-        "无法拾取该页面元素：受浏览器同源策略限制，仅支持与应用同源的预览页（本地/同源页面）。",
-      );
+      setInspectNotice(t("webPreview.inspectUnavailable"));
       setIsInspecting(false);
       return;
     }
@@ -105,7 +105,7 @@ export const WebPreviewPanel = memo(function WebPreviewPanel({
       controller.destroy();
       if (controllerRef.current === controller) controllerRef.current = null;
     };
-  }, [isInspecting, onInspectElement]);
+  }, [isInspecting, onInspectElement, t]);
 
   useEffect(() => () => controllerRef.current?.destroy(), []);
 
@@ -121,7 +121,7 @@ export const WebPreviewPanel = memo(function WebPreviewPanel({
   return (
     <aside className="web-preview-panel">
       <div className="web-preview-header">
-        <button type="button" className="web-preview-btn" onClick={() => setFrameKey((key) => key + 1)} title="Reload">
+        <button type="button" className="web-preview-btn" onClick={() => setFrameKey((key) => key + 1)} title={t("webPreview.reload")}>
           <RotateCw size={15} />
         </button>
         <button
@@ -129,7 +129,7 @@ export const WebPreviewPanel = memo(function WebPreviewPanel({
           className={`web-preview-btn ${isInspecting ? "web-preview-btn-active" : ""}`}
           onClick={toggleInspect}
           aria-pressed={isInspecting}
-          title={isInspecting ? "退出元素拾取" : "拾取元素并注入聊天"}
+          title={isInspecting ? t("webPreview.exitInspect") : t("webPreview.startInspect")}
         >
           <MousePointerClick size={15} />
         </button>
@@ -144,18 +144,18 @@ export const WebPreviewPanel = memo(function WebPreviewPanel({
           }}
         >
           <Globe size={13} />
-          <input value={draftUrl} onChange={(event) => setDraftUrl(event.target.value)} aria-label="Web preview URL" />
+          <input value={draftUrl} onChange={(event) => setDraftUrl(event.target.value)} aria-label={t("webPreview.urlLabel")} />
         </form>
-        <button type="button" className="web-preview-btn" onClick={() => onOpenExternal(currentUrl)} title="Open externally">
+        <button type="button" className="web-preview-btn" onClick={() => onOpenExternal(currentUrl)} title={t("webPreview.openExternal")}>
           <ExternalLink size={15} />
         </button>
-        <button type="button" className="web-preview-btn" onClick={onClose} title="Close">
+        <button type="button" className="web-preview-btn" onClick={onClose} title={t("common.close")}>
           <X size={15} />
         </button>
       </div>
       {isInspecting && (
         <div className="web-preview-inspect-hint" role="status">
-          点击预览页中的元素以注入聊天，按 Esc 取消。
+          {t("webPreview.inspectHint")}
         </div>
       )}
       {inspectNotice && (

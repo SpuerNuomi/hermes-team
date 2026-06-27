@@ -21,6 +21,7 @@ import type {
   HermesStateSessionSummary,
   HermesTeamSessionSummary,
 } from "../runtime/hermes-runtime";
+import { useTranslation } from "../i18n";
 import { SessionMoveMenu, type SessionProject } from "./SessionMoveMenu";
 
 function folderName(path: string): string {
@@ -62,6 +63,7 @@ export function SessionsView({
   onSearchDesktopSessions: (query: string) => Promise<HermesStateSearchResult[]>;
   onImportDesktopSession: (session: HermesStateSessionSummary) => void;
 }) {
+  const t = useTranslation();
   const [query, setQuery] = useState("");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
@@ -212,12 +214,12 @@ export function SessionsView({
       <header className="workspace-header">
         <div>
           <p className="panel-label">Sessions</p>
-          <h1>会话</h1>
-          <p>恢复历史聊天，或开始一个新的 Hermes 会话。</p>
+          <h1>{t("sessionsView.title")}</h1>
+          <p>{t("sessionsView.subtitle")}</p>
         </div>
         <div className="status-card">
           <History size={18} />
-          <span>{sessions.length} 条记录</span>
+          <span>{t("sessionsView.recordCount", { count: sessions.length })}</span>
         </div>
       </header>
       <div className="settings-content">
@@ -225,11 +227,11 @@ export function SessionsView({
           <div className="settings-card-head">
             <div>
               <p className="panel-label">History</p>
-              <h2>聊天历史</h2>
+              <h2>{t("sessionsView.chatHistory")}</h2>
             </div>
             <button className="refresh-runtime" type="button" onClick={onNewChat}>
               <Plus size={14} />
-              <span>新建聊天</span>
+              <span>{t("nav.newChat")}</span>
             </button>
             <button
               className={`refresh-runtime ${selectMode ? "is-active" : ""}`}
@@ -238,11 +240,11 @@ export function SessionsView({
               disabled={sessions.length === 0}
             >
               <CheckSquare size={14} />
-              <span>{selectMode ? "退出选择" : "选择"}</span>
+              <span>{selectMode ? t("sessionsView.exitSelect") : t("sessionsView.select")}</span>
             </button>
             <button className="refresh-runtime" type="button" onClick={onRefresh}>
               <RefreshCw size={14} />
-              <span>刷新</span>
+              <span>{t("common.refresh")}</span>
             </button>
           </div>
           <label className="session-search">
@@ -250,11 +252,11 @@ export function SessionsView({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索标题、消息或文件夹"
-              aria-label="搜索会话"
+              placeholder={t("sessionsView.searchPlaceholder")}
+              aria-label={t("sessionsView.searchAria")}
             />
             {query && (
-              <button type="button" onClick={() => setQuery("")} aria-label="清除搜索">
+              <button type="button" onClick={() => setQuery("")} aria-label={t("sessionsView.clearSearch")}>
                 <X size={13} />
               </button>
             )}
@@ -263,19 +265,19 @@ export function SessionsView({
             <div className="session-bulk-bar">
               <button type="button" onClick={toggleSelectAll} disabled={visibleIds.length === 0}>
                 {allVisibleSelected ? <CheckSquare size={14} /> : <Square size={14} />}
-                <span>{allVisibleSelected ? "取消全选" : "全选"}</span>
+                <span>{allVisibleSelected ? t("sessionsView.deselectAll") : t("sessionsView.selectAll")}</span>
               </button>
-              <span className="session-bulk-count">已选 {selectedIds.size} 个</span>
+              <span className="session-bulk-count">{t("sessionsView.selectedCount", { count: selectedIds.size })}</span>
               {pendingBulkDelete ? (
                 <>
-                  <span className="session-delete-warning">确认删除选中的 {selectedIds.size} 个会话？</span>
+                  <span className="session-delete-warning">{t("sessionsView.confirmBulkDelete", { count: selectedIds.size })}</span>
                   <button className="danger-action" type="button" onClick={confirmBulkDelete}>
                     <Trash2 size={13} />
-                    <span>删除</span>
+                    <span>{t("sessionsView.delete")}</span>
                   </button>
                   <button type="button" onClick={() => setPendingBulkDelete(false)}>
                     <X size={13} />
-                    <span>取消</span>
+                    <span>{t("common.cancel")}</span>
                   </button>
                 </>
               ) : (
@@ -286,14 +288,14 @@ export function SessionsView({
                   disabled={selectedIds.size === 0}
                 >
                   <Trash2 size={13} />
-                  <span>删除所选</span>
+                  <span>{t("sessionsView.deleteSelected")}</span>
                 </button>
               )}
             </div>
           )}
           <div className="mini-list">
             {sessions.length === 0 ? (
-              <p className="empty-note">还没有会话。发送第一条消息后会自动保存。</p>
+              <p className="empty-note">{t("sessionsView.emptyNote")}</p>
             ) : visibleSessions.length > 0 ? (
               visibleSessions.map((session) => (
                 <article
@@ -307,7 +309,7 @@ export function SessionsView({
                       type="button"
                       className="session-select-toggle"
                       onClick={() => toggleSelected(session.id)}
-                      aria-label={selectedIds.has(session.id) ? "取消选择" : "选择会话"}
+                      aria-label={selectedIds.has(session.id) ? t("sessionsView.deselect") : t("sessionsView.selectSession")}
                     >
                       {selectedIds.has(session.id) ? (
                         <CheckSquare size={18} />
@@ -326,13 +328,13 @@ export function SessionsView({
                           if (event.key === "Enter") confirmRename(session.id);
                           if (event.key === "Escape") cancelRename();
                         }}
-                        aria-label="Session 标题"
+                        aria-label={t("sessionsView.titleAria")}
                         autoFocus
                       />
                     ) : (
                       <strong className="session-title-row">
                         {session.pinned && (
-                          <Pin size={12} className="session-pin-badge" aria-label="已置顶" />
+                          <Pin size={12} className="session-pin-badge" aria-label={t("sessions.pinned")} />
                         )}
                         {session.title}
                       </strong>
@@ -347,7 +349,7 @@ export function SessionsView({
                       </span>
                     )}
                     {pendingDeleteId === session.id && (
-                      <span className="session-delete-warning">确认删除这个会话？</span>
+                      <span className="session-delete-warning">{t("sessionsView.confirmDeleteOne")}</span>
                     )}
                   </div>
                   {!selectMode && (
@@ -356,11 +358,11 @@ export function SessionsView({
                         <>
                           <button type="button" onClick={() => confirmRename(session.id)}>
                             <Check size={13} />
-                            <span>保存</span>
+                            <span>{t("common.save")}</span>
                           </button>
                           <button type="button" onClick={cancelRename}>
                             <X size={13} />
-                            <span>取消</span>
+                            <span>{t("common.cancel")}</span>
                           </button>
                         </>
                       ) : pendingDeleteId === session.id ? (
@@ -374,25 +376,25 @@ export function SessionsView({
                             }}
                           >
                             <Trash2 size={13} />
-                            <span>删除</span>
+                            <span>{t("sessionsView.delete")}</span>
                           </button>
                           <button type="button" onClick={() => setPendingDeleteId(null)}>
                             <X size={13} />
-                            <span>取消</span>
+                            <span>{t("common.cancel")}</span>
                           </button>
                         </>
                       ) : (
                         <>
                           <button type="button" onClick={() => onRestore(session)}>
-                            恢复
+                            {t("sessionsView.restore")}
                           </button>
                           <button
                             type="button"
                             onClick={() => onTogglePin(session.id)}
-                            title={session.pinned ? "取消置顶" : "置顶"}
+                            title={session.pinned ? t("sessions.unpin") : t("sessions.pin")}
                           >
                             {session.pinned ? <PinOff size={13} /> : <Pin size={13} />}
-                            <span>{session.pinned ? "取消置顶" : "置顶"}</span>
+                            <span>{session.pinned ? t("sessions.unpin") : t("sessions.pin")}</span>
                           </button>
                           <div className="session-move-wrap">
                             <button
@@ -402,10 +404,10 @@ export function SessionsView({
                                   current === session.id ? null : session.id,
                                 )
                               }
-                              title="移动到分组"
+                              title={t("sessions.moveToGroup")}
                             >
                               <FolderInput size={13} />
-                              <span>移动</span>
+                              <span>{t("sessionsView.move")}</span>
                             </button>
                             {moveMenuId === session.id && (
                               <SessionMoveMenu
@@ -423,9 +425,9 @@ export function SessionsView({
                               />
                             )}
                           </div>
-                          <button type="button" onClick={() => startRename(session)} title="重命名">
+                          <button type="button" onClick={() => startRename(session)} title={t("sessionsView.rename")}>
                             <Pencil size={13} />
-                            <span>重命名</span>
+                            <span>{t("sessionsView.rename")}</span>
                           </button>
                           <button
                             className="danger-action"
@@ -434,10 +436,10 @@ export function SessionsView({
                               setEditingSessionId(null);
                               setPendingDeleteId(session.id);
                             }}
-                            title="删除"
+                            title={t("sessionsView.delete")}
                           >
                             <Trash2 size={13} />
-                            <span>删除</span>
+                            <span>{t("sessionsView.delete")}</span>
                           </button>
                         </>
                       )}
@@ -446,7 +448,7 @@ export function SessionsView({
                 </article>
               ))
             ) : (
-              <p className="empty-note">没有匹配的会话。</p>
+              <p className="empty-note">{t("sessionsView.noMatch")}</p>
             )}
           </div>
         </section>
@@ -454,19 +456,19 @@ export function SessionsView({
           <div className="settings-card-head">
             <div>
               <p className="panel-label">state.db</p>
-              <h2>本地历史</h2>
+              <h2>{t("sessionsView.localHistory")}</h2>
             </div>
             <button className="refresh-runtime" type="button" onClick={onRefreshDesktopSessions} disabled={desktopBusy}>
               <Database size={14} />
-              <span>{desktopBusy ? "读取中" : "刷新 state.db"}</span>
+              <span>{desktopBusy ? t("sessionsView.reading") : t("sessionsView.refreshStateDb")}</span>
             </button>
           </div>
           {trimmedQuery ? (
             <div className="mini-list">
               {desktopSearching ? (
-                <p className="empty-note">正在全文检索 state.db…</p>
+                <p className="empty-note">{t("sessionsView.fullTextSearching")}</p>
               ) : desktopResults.length === 0 ? (
-                <p className="empty-note">state.db 中没有匹配「{trimmedQuery}」的会话。</p>
+                <p className="empty-note">{t("sessionsView.stateDbNoMatch", { query: trimmedQuery })}</p>
               ) : (
                 desktopResults.map((result) => (
                   <article key={`${result.profile}-${result.id}`}>
@@ -495,7 +497,7 @@ export function SessionsView({
                           })
                         }
                       >
-                        导入
+                        {t("sessionsView.import")}
                       </button>
                     </div>
                   </article>
@@ -505,7 +507,7 @@ export function SessionsView({
           ) : (
             <div className="mini-list">
               {desktopSessions.length === 0 ? (
-                <p className="empty-note">没有读取到本地 state.db 会话。</p>
+                <p className="empty-note">{t("sessionsView.noLocalStateDb")}</p>
               ) : (
                 desktopSessions.slice(0, 30).map((session) => (
                   <article key={`${session.profile}-${session.id}`}>
@@ -518,7 +520,7 @@ export function SessionsView({
                     </div>
                     <div className="mini-actions">
                       <button type="button" onClick={() => onImportDesktopSession(session)}>
-                        导入
+                        {t("sessionsView.import")}
                       </button>
                     </div>
                   </article>
