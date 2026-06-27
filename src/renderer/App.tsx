@@ -48,7 +48,6 @@ import { parseMentions } from "../core/mention-parser";
 import {
   appendSystemMessage,
   appendTask,
-  completeTaskWithAgentMessage,
   cancelTaskWithSystemMessage,
   failTaskWithSystemMessage,
   handleUserMessage,
@@ -58,15 +57,62 @@ import {
 import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
-import { useI18n, useTranslation, type Language } from "../i18n";
+import { useI18n, type Language } from "../i18n";
 import type { Message, MessageAttachment, SessionModelOverride, WorkspaceMode } from "../core/types";
+import {
+  basename,
+  configSeverityLabel,
+  decisionDetail,
+  decisionLabel,
+  profileStatusClass,
+  profileStatusText,
+  taskSummary,
+} from "./appDisplay";
+import {
+  ONBOARDING_STORAGE_KEY,
+  defaultAppSettings,
+  defaultNetworkSettings,
+  defaultRemoteConnectionConfig,
+  emptyMcpForm,
+  emptyModelForm,
+  emptyPoolForm,
+  emptyProfileForm,
+  emptySkillInstallForm,
+  fontOptions,
+  themeOptions,
+} from "./appDefaults";
 import { processDroppedOrPastedFiles } from "./attachmentProcessing";
+import { formatDateTime, formatFileSize, formatTime } from "./appFormatting";
+import type {
+  ActiveView,
+  InspectorPanel,
+  McpForm,
+  MessagingEnvDrafts,
+  ModelForm,
+  PoolForm,
+  ProfileForm,
+  ProviderKeyDrafts,
+  QueuedChatMessage,
+  RuntimeEvent,
+  SettingsPanel,
+  SkillInstallForm,
+} from "./appTypes";
 import { buildLabel } from "./buildInfo";
 import {
-  isLocalReplyCommand,
-  runLocalReplyCommand,
-  slashCommandName,
-} from "./chatInput/localCommands";
+  appendRuntimeEvent,
+  parseTokenUsageEvent,
+  streamRuntimeEvent,
+  type RuntimeEventInput,
+  type TokenUsage,
+} from "./chatStreamEvents";
+import { applyStreamEventSnapshot } from "./chatStreamState";
+import { runLocalReplyCommand } from "./chatInput/localCommands";
+import {
+  applyTaskStreamOutput,
+  executeTaskRuntimeStream,
+  planSendMessage,
+  resolveTaskRuntimeContext,
+} from "./chatRuntimeController";
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
 import { DiscoverView, type DiscoverKind } from "./DiscoverView";
@@ -85,37 +131,108 @@ import { formatInspectInjection } from "./webPreviewInspector";
 import { useFastMode } from "./useFastMode";
 import { useReasoningEffort } from "./useReasoningEffort";
 import {
+  CRON_DELIVER_OPTIONS,
+  CRON_FREQ_OPTIONS,
+  CRON_WEEKDAYS,
+  clampInt,
+  cronFormFromJob,
+  cronRunStatusKind,
+  cronStateMeta,
+  describeCronSchedule,
+  emptyCronJobForm,
+  formatCronDate,
+  formatCronRelative,
+  formatCronRunTime,
+  nextCronRun,
+  serializeCronSchedule,
+  type CronFrequency,
+  type CronJobForm,
+} from "./cronForm";
+import { isConnectionRefused, runtimeErrorMessage } from "./runtimeErrors";
+import { ContextUsageStat, SessionTimer, StatusRow, TransportSelector } from "./statusWidgets";
+import {
+  activeProfileName as deriveActiveProfileName,
+  profileOptionsFor,
+  runtimeStatusFromGateway,
+  runtimeStatusFromRemote,
+  sanitizeProfileName,
+  shouldFallbackToDefaultProfile,
+  targetProfileName,
+} from "./profileRuntime";
+import {
+  connectSshTunnel,
+  createGatewayApiKey,
+  disconnectSshTunnel,
+  loadInstallStatus,
+  loadRemoteConfig,
+  loadRemoteSnapshot,
+  loadRemoteStatus,
+  probeGateway,
+  remoteTransportSettings,
+  saveRemoteConfigValue,
+  startGatewayForProfile,
+  stopGatewayForProfile,
+  testRemoteConfigValue,
+} from "./gatewayActions";
+import {
+  activateStoredProfile,
+  createStoredProfile,
+  deleteStoredProfile,
+  loadProfiles,
+  updateAgentProfileBinding,
+} from "./profileActions";
+import {
+  hasActiveSessionTasks,
+  isScratchSession,
+  normalizeLoadedState,
+  sameSessionModelOverride,
+} from "./sessionState";
+import {
+  planNewSession,
+  planSessionDeletion,
+  planSessionRestore,
+  type SessionStateTransition,
+} from "./sessionLifecycle";
+import {
+  deleteStoredSession,
+  deleteStoredSessions,
+  loadDesktopSessionList,
+  loadImportedSessionTransition,
+  loadLocalSessionList,
+  normalizeSessionFolder,
+  optimisticMoveSessionFolder,
+  optimisticPinSession,
+  optimisticRemoveSessions,
+  optimisticRenameSession,
+  renameStoredSession,
+  saveSessionSnapshot,
+  saveWorkspaceState,
+  searchDesktopSessionList,
+  sessionProfileName,
+  setStoredSessionFolder,
+  setStoredSessionPinned,
+  shouldPersistSessionSnapshot,
+} from "./sessionActions";
+import {
   addHermesMemoryEntry,
   addCredentialPoolEntry,
   activateHermesModel,
   autofixConfigIssue,
-  buildSessionSummary,
   cancelHermesTask,
   checkForAppUpdates,
   createHermesCronJob,
   editHermesCronJob,
   listHermesCronJobRuns,
   listHermesCronScripts,
-  createHermesProfile,
-  deleteHermesTeamSession,
-  deleteHermesTeamSessions,
-  setHermesTeamSessionPinned,
-  setHermesTeamSessionFolder,
-  deleteHermesProfile,
   discoverProviderModels,
-  ensureHermesGateway,
   createHermesBackupFile,
   createHermesDebugDump,
   restoreHermesBackupFile,
-  generateApiServerKey,
   getAppSettings,
   getConfigHealth,
   getHermesModelConfig,
   getNetworkSettings,
-  getRemoteConnectionConfig,
-  getRemoteConnectionStatus,
   getUpdateStatus,
-  inspectHermesInstall,
   installHermesSkill,
   installHermesMcpCatalogEntry,
   fetchHermesRegistry,
@@ -130,11 +247,8 @@ import {
   listHermesCronJobs,
   listHermesLogs,
   listHermesMcpCatalog,
-  listHermesStateSessions,
-  searchHermesStateSessions,
   listHermesMcpServers,
   listHermesModels,
-  listHermesProfiles,
   listHermesSkills,
   listHermesToolsets,
   listMessagingPlatforms,
@@ -142,11 +256,8 @@ import {
   listProviderRegistry,
   listRegistryModelLibrary,
   listenHermesAgentStream,
-  loadHermesTeamSessions,
-  loadHermesStateSession,
   openExternalUrl,
   loadHermesTeamState,
-  probeHermesGateway,
   readHermesMemorySummary,
   readHermesMemoryDetails,
   readHermesLog,
@@ -165,38 +276,28 @@ import {
   removeHermesSkill,
   pauseHermesCronJob,
   runHermesUpdate,
-  runHermesTaskStream,
   saveAppSettings,
   saveAuxiliaryModelConfig,
   saveHermesMcpServer,
-  saveHermesTeamSession,
-  saveHermesTeamState,
   saveHermesModel,
   saveNetworkSettings,
   saveProviderKey,
-  saveRemoteConnectionConfig,
   selectAttachmentFiles,
   selectContextFolder,
   removeHermesModel,
   runHermesDoctor,
   searchHermesSkills,
-  setActiveHermesProfile,
   setAutoUpgradeEnabled,
   setAutoCheckEnabled,
   setUpdateReleaseRepo,
   setHermesToolsetEnabled,
   resumeHermesCronJob,
   runOAuthProviderLogin,
-  startSshTunnel,
-  stopHermesGateway,
-  stopSshTunnel,
   testHermesMcpServer,
-  testRemoteConnection,
   testMessagingPlatform,
   triggerHermesCronJob,
   updateMessagingPlatform,
   updateHermesMemoryEntry,
-  updateHermesTeamSessionTitle,
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
@@ -217,7 +318,6 @@ import {
   type HermesRestoreResult,
   type RestoreHermesBackupInput,
   type HermesTeamSessionSummary,
-  type HermesStateMessage,
   type HermesStateSessionSummary,
   type HermesStateSearchResult,
   type InstalledSkillInfo,
@@ -246,574 +346,6 @@ import {
   type ToolsetInfo,
   type UpdateStatus,
 } from "../runtime/hermes-runtime";
-
-type ActiveView = "team" | "sessions" | "discover" | "kanban" | "multiagent" | "office" | "settings";
-type SettingsPanel = "overview" | "appearance" | "privacy" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
-type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
-type ModelForm = {
-  id?: string;
-  name: string;
-  provider: string;
-  model: string;
-  baseUrl: string;
-  contextLength: string;
-};
-type ProviderKeyDrafts = Record<string, string>;
-type PoolForm = {
-  provider: string;
-  apiKey: string;
-  label: string;
-};
-type ProfileForm = {
-  name: string;
-  cloneConfig: boolean;
-};
-type McpForm = {
-  name: string;
-  transport: "http" | "stdio";
-  url: string;
-  command: string;
-  args: string;
-  env: string;
-  auth: string;
-  enabled: boolean;
-};
-type SkillInstallForm = {
-  sourcePath: string;
-  category: string;
-  name: string;
-};
-type CronFrequency = "minutes" | "hourly" | "daily" | "weekly" | "custom";
-type CronJobForm = {
-  name: string;
-  prompt: string;
-  deliverTargets: string[];
-  repeatTimes: string;
-  skills: string[];
-  freq: CronFrequency;
-  minuteInterval: number;
-  hour: number;
-  minute: number;
-  weekdays: number[];
-  customCron: string;
-  noAgent: boolean;
-  script: string;
-};
-type MessagingEnvDrafts = Record<string, Record<string, string>>;
-type RuntimeEvent = {
-  id: string;
-  taskId: string;
-  label: string;
-  detail: string;
-  createdAt: number;
-  level: "info" | "ok" | "warning";
-};
-type QueuedChatMessage = {
-  id: string;
-  text: string;
-  attachments: MessageAttachment[];
-};
-
-const LEGACY_PRODUCT_RD_WORKSPACE_NAME = "产品研发协作室";
-const LEGACY_AGENT_WORKSPACE_NAME = "Agent 编排工作区";
-const LEGACY_PRODUCT_RD_WORKSPACE_DESCRIPTION = "用于把需求、设计、实现、验证放进同一个 Agent 团队流程。";
-const LEGACY_AGENT_WORKSPACE_DESCRIPTION = "用于组织多个 Agent 的并行、串行与接力协作。";
-const LEGACY_SEED_MESSAGE_CONTENTS = new Set([
-  "@产品经理 帮我把这个想法拆成可执行的研发任务。",
-  "我会先收敛目标、用户场景和验收标准，然后交给 @架构师 做模块边界设计。",
-]);
-const DEFAULT_WORKSPACE_NAME = seedWorkspace.name;
-const DEFAULT_WORKSPACE_DESCRIPTION = seedWorkspace.description;
-const themeOptions = [
-  { id: "light", name: "Light", appearance: "light" },
-  { id: "dark", name: "Dark", appearance: "dark" },
-  { id: "github-light", name: "GitHub Light", appearance: "light" },
-  { id: "github-dark", name: "GitHub Dark", appearance: "dark" },
-  { id: "dracula", name: "Dracula", appearance: "dark" },
-  { id: "nord", name: "Nord", appearance: "dark" },
-  { id: "one-dark", name: "One Dark", appearance: "dark" },
-];
-const fontOptions = [
-  { id: "system", name: "System", stack: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
-  { id: "serif", name: "Serif", stack: "Georgia, 'Times New Roman', serif" },
-  { id: "mono", name: "Mono", stack: "'SFMono-Regular', Consolas, 'Liberation Mono', monospace" },
-];
-const defaultAppSettings: AppSettings = {
-  theme: "light",
-  roundedCorners: true,
-  font: "system",
-  allowAnonymousAnalytics: false,
-};
-const defaultNetworkSettings: NetworkSettings = {
-  forceIpv4: false,
-  proxy: "",
-  localChatTransport: "auto",
-  remoteChatTransport: "auto",
-  sshChatTransport: "auto",
-};
-const chatTransportOptions: Array<{ id: "auto" | "dashboard" | "legacy"; label: string; detailKey: string }> = [
-  { id: "auto", label: "Auto", detailKey: "app.transport.auto" },
-  { id: "dashboard", label: "Dashboard", detailKey: "app.transport.dashboard" },
-  { id: "legacy", label: "Legacy", detailKey: "app.transport.legacy" },
-];
-
-const emptyModelForm: ModelForm = {
-  name: "",
-  provider: "",
-  model: "",
-  baseUrl: "",
-  contextLength: "",
-};
-
-const emptyPoolForm: PoolForm = {
-  provider: "",
-  apiKey: "",
-  label: "",
-};
-
-const emptyProfileForm: ProfileForm = {
-  name: "",
-  cloneConfig: true,
-};
-
-const emptyMcpForm: McpForm = {
-  name: "",
-  transport: "http",
-  url: "",
-  command: "",
-  args: "",
-  env: "",
-  auth: "",
-  enabled: true,
-};
-
-const emptySkillInstallForm: SkillInstallForm = {
-  sourcePath: "",
-  category: "custom",
-  name: "",
-};
-
-const emptyCronJobForm: CronJobForm = {
-  name: "",
-  prompt: "",
-  deliverTargets: ["local"],
-  repeatTimes: "",
-  skills: [],
-  freq: "daily",
-  minuteInterval: 30,
-  hour: 9,
-  minute: 0,
-  weekdays: [1, 2, 3, 4, 5],
-  customCron: "*/30 * * * *",
-  noAgent: false,
-  script: "",
-};
-
-const CRON_DELIVER_OPTIONS: { id: string; label: string }[] = [
-  { id: "local", label: "local" },
-  { id: "origin", label: "origin" },
-  { id: "telegram", label: "telegram" },
-  { id: "discord", label: "discord" },
-  { id: "slack", label: "slack" },
-  { id: "whatsapp", label: "whatsapp" },
-  { id: "signal", label: "signal" },
-  { id: "matrix", label: "matrix" },
-  { id: "mattermost", label: "mattermost" },
-  { id: "email", label: "email" },
-  { id: "webhook", label: "webhook" },
-  { id: "sms", label: "sms" },
-  { id: "homeassistant", label: "homeassistant" },
-  { id: "dingtalk", label: "dingtalk" },
-  { id: "feishu", label: "feishu" },
-  { id: "wecom", label: "wecom" },
-];
-
-const ONBOARDING_STORAGE_KEY = "hermes-team:onboarding-complete";
-
-const defaultRemoteConnectionConfig: RemoteConnectionConfig = {
-  mode: "local",
-  remoteUrl: "http://127.0.0.1:8642",
-  apiKey: "",
-  localChatTransport: "auto",
-  remoteChatTransport: "auto",
-  sshChatTransport: "auto",
-  ssh: {
-    host: "",
-    port: 22,
-    username: "",
-    keyPath: "",
-    remotePort: 8642,
-    localPort: 18642,
-  },
-};
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(timestamp);
-}
-
-function formatDateTime(timestamp: number): string {
-  if (!timestamp) return "unknown";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(timestamp);
-}
-
-type TranslateFn = (key: string, vars?: Record<string, string | number>) => string;
-
-function formatCronDate(value: string | null | undefined, t: TranslateFn): string {
-  if (!value) return t("cron.unscheduled");
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function formatCronRelative(value: string | null | undefined, t: TranslateFn): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const diff = date.getTime() - Date.now();
-  const past = diff < 0;
-  const suffix = past ? t("cron.ago") : t("cron.later");
-  const minutes = Math.round(Math.abs(diff) / 60000);
-  if (minutes < 1) return past ? t("cron.justNow") : t("cron.soon");
-  if (minutes < 60) return t("cron.minutesRel", { count: minutes, suffix });
-  const hours = Math.floor(minutes / 60);
-  const remMinutes = minutes % 60;
-  if (hours < 24) return `${hours}h${remMinutes ? ` ${remMinutes}m` : ""}${suffix}`;
-  const days = Math.floor(hours / 24);
-  return t("cron.daysRel", { count: days, suffix });
-}
-
-const CRON_STATE_META: Record<string, { label: string; cls: string }> = {
-  active: { label: "Active", cls: "schedule-state-active" },
-  paused: { label: "Paused", cls: "schedule-state-paused" },
-  completed: { label: "Completed", cls: "schedule-state-completed" },
-};
-
-function cronStateMeta(state: string): { label: string; cls: string } {
-  return CRON_STATE_META[state] ?? { label: state || "Unknown", cls: "schedule-state-paused" };
-}
-
-const CRON_FREQ_OPTIONS: { id: CronFrequency; labelKey: string }[] = [
-  { id: "minutes", labelKey: "cron.freq.minutes" },
-  { id: "hourly", labelKey: "cron.freq.hourly" },
-  { id: "daily", labelKey: "cron.freq.daily" },
-  { id: "weekly", labelKey: "cron.freq.weekly" },
-  { id: "custom", labelKey: "cron.freq.custom" },
-];
-
-const CRON_WEEKDAYS: { value: number }[] = [
-  { value: 1 },
-  { value: 2 },
-  { value: 3 },
-  { value: 4 },
-  { value: 5 },
-  { value: 6 },
-  { value: 0 },
-];
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function clampInt(raw: string, min: number, max: number, fallback: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(parsed)));
-}
-
-function parseCronField(field: string, min: number, max: number): Set<number> | null {
-  const result = new Set<number>();
-  for (const part of field.split(",")) {
-    if (!part) return null;
-    let step = 1;
-    let range = part;
-    const slash = part.split("/");
-    if (slash.length === 2) {
-      range = slash[0];
-      step = Number(slash[1]);
-      if (!Number.isInteger(step) || step < 1) return null;
-    } else if (slash.length > 2) {
-      return null;
-    }
-    let lo: number;
-    let hi: number;
-    if (range === "*") {
-      lo = min;
-      hi = max;
-    } else if (range.includes("-")) {
-      const [a, b] = range.split("-");
-      lo = Number(a);
-      hi = Number(b);
-    } else {
-      const value = Number(range);
-      lo = value;
-      hi = value;
-    }
-    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) {
-      return null;
-    }
-    for (let i = lo; i <= hi; i += step) result.add(i);
-  }
-  return result.size ? result : null;
-}
-
-function validateCronExpression(expr: string, t: TranslateFn): string | null {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return t("cron.err5");
-  const specs: [number, number][] = [
-    [0, 59],
-    [0, 23],
-    [1, 31],
-    [1, 12],
-    [0, 7],
-  ];
-  for (let i = 0; i < 5; i += 1) {
-    if (!parseCronField(fields[i], specs[i][0], specs[i][1])) {
-      return t("cron.errField", { index: i + 1, field: fields[i] });
-    }
-  }
-  return null;
-}
-
-function nextCronRun(expr: string, from: Date = new Date()): Date | null {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return null;
-  const minute = parseCronField(fields[0], 0, 59);
-  const hour = parseCronField(fields[1], 0, 23);
-  const dom = parseCronField(fields[2], 1, 31);
-  const month = parseCronField(fields[3], 1, 12);
-  const dow = parseCronField(fields[4], 0, 7);
-  if (!minute || !hour || !dom || !month || !dow) return null;
-  if (dow.has(7)) dow.add(0);
-  const domRestricted = fields[2] !== "*";
-  const dowRestricted = fields[4] !== "*";
-  const cursor = new Date(from.getTime());
-  cursor.setSeconds(0, 0);
-  cursor.setMinutes(cursor.getMinutes() + 1);
-  for (let i = 0; i < 535680; i += 1) {
-    const matchDom = dom.has(cursor.getDate());
-    const matchDow = dow.has(cursor.getDay());
-    const dayOk =
-      domRestricted && dowRestricted ? matchDom || matchDow : matchDom && matchDow;
-    if (
-      month.has(cursor.getMonth() + 1) &&
-      dayOk &&
-      hour.has(cursor.getHours()) &&
-      minute.has(cursor.getMinutes())
-    ) {
-      return new Date(cursor.getTime());
-    }
-    cursor.setMinutes(cursor.getMinutes() + 1);
-  }
-  return null;
-}
-
-function serializeCronSchedule(form: CronJobForm, t: TranslateFn): { value: string; error: string | null } {
-  switch (form.freq) {
-    case "minutes": {
-      const n = form.minuteInterval;
-      if (!Number.isInteger(n) || n < 1 || n > 59) {
-        return { value: "", error: t("cron.errMinInterval") };
-      }
-      return { value: `*/${n} * * * *`, error: null };
-    }
-    case "hourly": {
-      const m = form.minute;
-      if (!Number.isInteger(m) || m < 0 || m > 59) {
-        return { value: "", error: t("cron.errMinute") };
-      }
-      return { value: `${m} * * * *`, error: null };
-    }
-    case "daily": {
-      if (form.hour < 0 || form.hour > 23 || form.minute < 0 || form.minute > 59) {
-        return { value: "", error: t("cron.errTime") };
-      }
-      return { value: `${form.minute} ${form.hour} * * *`, error: null };
-    }
-    case "weekly": {
-      if (!form.weekdays.length) {
-        return { value: "", error: t("cron.errPickDay") };
-      }
-      if (form.hour < 0 || form.hour > 23 || form.minute < 0 || form.minute > 59) {
-        return { value: "", error: t("cron.errTime") };
-      }
-      const days = [...form.weekdays].sort((a, b) => a - b).join(",");
-      return { value: `${form.minute} ${form.hour} * * ${days}`, error: null };
-    }
-    case "custom":
-    default: {
-      const expr = form.customCron.trim();
-      if (!expr) return { value: "", error: t("cron.errExpr") };
-      const error = validateCronExpression(expr, t);
-      return { value: error ? "" : expr, error };
-    }
-  }
-}
-
-function describeCronSchedule(form: CronJobForm, t: TranslateFn): string {
-  switch (form.freq) {
-    case "minutes":
-      return t("cron.descMinutes", { n: form.minuteInterval });
-    case "hourly":
-      return t("cron.descHourly", { m: form.minute });
-    case "daily":
-      return t("cron.descDaily", { time: `${pad2(form.hour)}:${pad2(form.minute)}` });
-    case "weekly": {
-      const names = CRON_WEEKDAYS.filter((day) => form.weekdays.includes(day.value)).map((day) =>
-        t(`cron.weekdayLong.${day.value}`),
-      );
-      return t("cron.descWeekly", {
-        days: names.join(t("cron.weekdaySeparator")),
-        time: `${pad2(form.hour)}:${pad2(form.minute)}`,
-      });
-    }
-    case "custom":
-    default:
-      return t("cron.descCustom");
-  }
-}
-
-function parseCronToForm(schedule: string): Partial<CronJobForm> {
-  const fields = schedule.trim().split(/\s+/);
-  if (fields.length === 5) {
-    const [mi, h, dom, mon, dow] = fields;
-    if (dom === "*" && mon === "*") {
-      const minuteMatch = /^\*\/(\d+)$/.exec(mi);
-      if (minuteMatch && h === "*" && dow === "*") {
-        return { freq: "minutes", minuteInterval: Number(minuteMatch[1]) };
-      }
-      if (/^\d+$/.test(mi) && h === "*" && dow === "*") {
-        return { freq: "hourly", minute: Number(mi) };
-      }
-      if (/^\d+$/.test(mi) && /^\d+$/.test(h) && dow === "*") {
-        return { freq: "daily", hour: Number(h), minute: Number(mi) };
-      }
-      if (/^\d+$/.test(mi) && /^\d+$/.test(h) && /^[0-7](,[0-7])*$/.test(dow)) {
-        const weekdays = Array.from(
-          new Set(dow.split(",").map((value) => (Number(value) === 7 ? 0 : Number(value)))),
-        );
-        return { freq: "weekly", hour: Number(h), minute: Number(mi), weekdays };
-      }
-    }
-  }
-  return { freq: "custom", customCron: schedule };
-}
-
-function cronFormFromJob(job: CronJobInfo): CronJobForm {
-  return {
-    ...emptyCronJobForm,
-    name: job.name && job.name !== "(unnamed)" ? job.name : "",
-    prompt: job.prompt ?? "",
-    deliverTargets: job.deliver.length ? job.deliver : ["local"],
-    repeatTimes: job.repeat?.times != null ? String(job.repeat.times) : "",
-    skills: job.skills ?? [],
-    noAgent: job.noAgent,
-    script: job.script ?? "",
-    ...parseCronToForm(job.schedule),
-  };
-}
-
-function formatCronRunTime(value: string | null | undefined, t: TranslateFn): string {
-  if (!value) return t("cron.unknownTime");
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
-}
-
-function cronRunStatusKind(status?: string | null): "ok" | "fail" | "info" {
-  if (!status) return "info";
-  const lower = status.toLowerCase();
-  if (lower.includes("error") || lower.includes("fail") || lower.includes("non-zero")) {
-    return "fail";
-  }
-  if (lower.includes("ok") || lower.includes("success") || lower.includes("silent")) {
-    return "ok";
-  }
-  return "info";
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function buildFreshOrchestrationState(workspaceMode: WorkspaceMode = "smart"): OrchestrationState {
-  const baseTime = Date.now();
-  const workspaceId = `workspace-${baseTime}`;
-  const agentIdMap = new Map<string, string>();
-  const agents = seedAgents.map((agent) => {
-    const nextAgentId = `${agent.id}-${baseTime}`;
-    agentIdMap.set(agent.id, nextAgentId);
-    return {
-      ...agent,
-      id: nextAgentId,
-      workspaceId,
-    };
-  });
-
-  return {
-    workspace: {
-      ...seedWorkspace,
-      id: workspaceId,
-      mode: workspaceMode,
-      defaultAgentId: seedWorkspace.defaultAgentId
-        ? agentIdMap.get(seedWorkspace.defaultAgentId) ?? seedWorkspace.defaultAgentId
-        : undefined,
-    },
-    agents,
-    bindings: seedBindings.map((binding) => ({
-      ...binding,
-      agentId: agentIdMap.get(binding.agentId) ?? binding.agentId,
-    })),
-    messages: [],
-    tasks: [],
-    logs: [],
-  };
-}
-
-function isScratchSession(state: OrchestrationState): boolean {
-  return (
-    state.messages.length === 0 &&
-    state.tasks.every((task) => task.status !== "pending" && task.status !== "running")
-  );
-}
-
-function hasActiveSessionTasks(state: OrchestrationState): boolean {
-  return state.tasks.some((task) => task.status === "pending" || task.status === "running");
-}
-
-function sameSessionModelOverride(
-  left: SessionModelOverride | undefined,
-  right: SessionModelOverride | undefined,
-): boolean {
-  if (!left && !right) return true;
-  if (!left || !right) return false;
-  return (
-    left.provider === right.provider &&
-    left.model === right.model &&
-    (left.baseUrl ?? "") === (right.baseUrl ?? "") &&
-    (left.contextLength ?? 0) === (right.contextLength ?? 0)
-  );
-}
 
 export function App() {
   const { t, language, setLanguage, options: languageOptions } = useI18n();
@@ -903,12 +435,7 @@ export function App() {
   const [skillInstallForm, setSkillInstallForm] = useState<SkillInstallForm>(emptySkillInstallForm);
   const [models, setModels] = useState<SavedModel[]>([]);
   const [activeModel, setActiveModel] = useState<ActiveModelConfig | null>(null);
-  const [tokenUsage, setTokenUsage] = useState<{
-    promptTokens: number;
-    totalTokens: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-  } | null>(null);
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [sessionStartedAt, setSessionStartedAt] = useState<number>(() => Date.now());
   const [auxiliaryModels, setAuxiliaryModels] = useState<AuxiliaryModelConfig[]>([]);
   const [registryLibrary, setRegistryLibrary] = useState<RegistryLibraryProvider[]>([]);
@@ -1065,15 +592,8 @@ export function App() {
   const inspectorSectionClass = (panel: InspectorPanel) =>
     `inspector-section ${activeInspectorPanel === panel ? "" : "inspector-section-hidden"}`.trim();
 
-  function addRuntimeEvent(event: Omit<RuntimeEvent, "id" | "createdAt">) {
-    setRuntimeEvents((current) => [
-      {
-        id: `event-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        createdAt: Date.now(),
-        ...event,
-      },
-      ...current,
-    ].slice(0, 20));
+  function addRuntimeEvent(event: RuntimeEventInput) {
+    setRuntimeEvents((current) => appendRuntimeEvent(current, event));
   }
 
   function ensureTaskAnswerMessage(current: OrchestrationState, taskId: string, content = t("app.generating")) {
@@ -1100,106 +620,29 @@ export function App() {
     };
   }
 
-  function upsertProcessMessageBeforeAnswer(
-    messages: Message[],
-    processMessage: Message,
-    answerPlaceholder: Message,
-    answerMessageId: string,
-  ) {
-    const processExists = messages.some((message) => message.id === processMessage.id);
-    const answerExists = messages.some((message) => message.id === answerMessageId);
-    if (processExists) {
-      return messages.map((message) => (message.id === processMessage.id ? processMessage : message));
-    }
-    if (answerExists) {
-      const nextMessages: Message[] = [];
-      for (const message of messages) {
-        if (message.id === answerMessageId) nextMessages.push(processMessage);
-        nextMessages.push(message);
-      }
-      return nextMessages;
-    }
-    return [...messages, processMessage, answerPlaceholder];
-  }
-
-  function parseClarifyChoices(raw: string | undefined): string[] {
-    if (!raw?.trim()) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed
-          .map((item) => String(item).trim())
-          .filter((item) => item.length > 0)
-          .slice(0, 4);
-      }
-    } catch {
-      // Not JSON — ignore and fall back to a free-text card.
-    }
-    return [];
-  }
-
-  function normalizeProcessText(value: string) {
-    return value.replace(/\s+/g, " ").trim();
-  }
-
-  function isDuplicateProcessSnapshot(processText: string, answerText: string) {
-    const process = normalizeProcessText(processText);
-    const answer = normalizeProcessText(answerText);
-    return Boolean(
-      process &&
-        answer &&
-        (process === answer || process.startsWith(answer) || answer.startsWith(process)),
-    );
-  }
-
-  function mergeToolEventContent(existingContent: string | undefined, nextContent: string) {
-    if (!existingContent?.trim()) return nextContent;
-    if (!nextContent.trim()) return existingContent;
-    const existingLines = existingContent.split("\n").filter((line) => line.trim());
-    const nextLines = nextContent.split("\n").filter((line) => line.trim());
-    if (nextLines.length < existingLines.length) return existingContent;
-    if (nextLines.length === existingLines.length && nextContent.length < existingContent.length) {
-      return existingContent;
-    }
-    return nextContent;
-  }
-
   function handleStreamEvent(event: RuntimeStreamEvent) {
     if (event.kind === "start") {
-      addRuntimeEvent({
-        taskId: event.taskId,
-        label: "stream",
-        detail: t("app.stream.started"),
-        level: "info",
+      const runtimeEvent = streamRuntimeEvent(event, {
+        started: t("app.stream.started"),
+        failed: t("app.stream.failed"),
+        completed: t("app.stream.completed"),
       });
+      if (runtimeEvent) addRuntimeEvent(runtimeEvent);
       return;
     }
     if (event.kind === "usage") {
-      const promptTokens = Number(event.content) || 0;
-      const totalTokens = Number(event.message) || 0;
-      // Optional prompt-cache stats arrive as "read,write" in `delta` when the
-      // gateway/provider exposes them; absent on backends that don't.
-      const [cacheReadRaw, cacheWriteRaw] = (event.delta || "").split(",");
-      const cacheReadTokens = Number(cacheReadRaw) || 0;
-      const cacheWriteTokens = Number(cacheWriteRaw) || 0;
-      if (promptTokens > 0 || totalTokens > 0) {
-        setTokenUsage({
-          promptTokens,
-          totalTokens,
-          cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
-          cacheWriteTokens: cacheWriteTokens > 0 ? cacheWriteTokens : undefined,
-        });
-      }
+      const usage = parseTokenUsageEvent(event);
+      if (usage) setTokenUsage(usage);
       return;
     }
     if (event.kind === "error") {
       const message = event.message || t("app.stream.failed");
-      addRuntimeEvent({
-        taskId: event.taskId,
-        label: "stream error",
-        detail: message,
-        level: "warning",
+      const runtimeEvent = streamRuntimeEvent(event, {
+        started: t("app.stream.started"),
+        failed: t("app.stream.failed"),
+        completed: t("app.stream.completed"),
       });
+      if (runtimeEvent) addRuntimeEvent(runtimeEvent);
       setState((current) => {
         const task = current.tasks.find((item) => item.id === event.taskId);
         if (!task || task.status === "failed" || task.status === "cancelled") return current;
@@ -1211,363 +654,24 @@ export function App() {
       });
       return;
     }
-    if (event.kind === "reasoning") {
-      setState((current) => {
-        const task = current.tasks.find((item) => item.id === event.taskId);
-        if (!task || task.status === "cancelled") return current;
-        const agent = current.agents.find((item) => item.id === task.agentId);
-        const isThinkingProgress = event.message === "thinking";
-        const messageId = isThinkingProgress ? `reasoning-${event.taskId}-thinking` : `reasoning-${event.taskId}`;
-        const existing = current.messages.find((message) => message.id === messageId);
-        const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-        if (!nextContent.trim()) return current;
-        const streamMessageId = `stream-${event.taskId}`;
-        const streamExisting = current.messages.find((message) => message.id === streamMessageId);
-        if (
-          !isThinkingProgress &&
-          streamExisting &&
-          streamExisting.content !== t("app.generating") &&
-          isDuplicateProcessSnapshot(nextContent, streamExisting.content)
-        ) {
-          return {
-            ...current,
-            messages: current.messages.filter((message) => message.id !== messageId),
-          };
-        }
-        const nextMessage = {
-          id: messageId,
-          workspaceId: task.workspaceId,
-          kind: "reasoning" as const,
-          authorKind: "agent" as const,
-          authorId: agent?.id,
-          authorName: agent?.name ?? "Hermes",
-          content: nextContent,
-          createdAt: existing?.createdAt ?? Date.now(),
-          replyToMessageId: task.triggerMessageId,
-        };
-        const streamMessage = {
-          id: streamMessageId,
-          workspaceId: task.workspaceId,
-          authorKind: "agent" as const,
-          authorId: agent?.id,
-          authorName: agent?.name ?? "Hermes",
-          content: t("app.generating"),
-          createdAt: Date.now(),
-          replyToMessageId: task.triggerMessageId,
-        };
-        const updatedMessages = upsertProcessMessageBeforeAnswer(
-          current.messages,
-          nextMessage,
-          streamMessage,
-          streamMessageId,
-        );
-        return {
-          ...current,
-          messages: updatedMessages,
-        };
-      });
-      return;
-    }
-    if (event.kind === "tool") {
-      setState((current) => {
-        const task = current.tasks.find((item) => item.id === event.taskId);
-        if (!task || task.status === "cancelled") return current;
-        const agent = current.agents.find((item) => item.id === task.agentId);
-        const callId = event.message || "tool";
-        const messageId = `tool-${event.taskId}-${callId}`;
-        const existing = current.messages.find((message) => message.id === messageId);
-        const nextRawContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-        const nextContent = mergeToolEventContent(existing?.content, nextRawContent);
-        if (!nextContent.trim()) return current;
-        const nextMessage = {
-          id: messageId,
-          workspaceId: task.workspaceId,
-          kind: "tool" as const,
-          authorKind: "agent" as const,
-          authorId: agent?.id,
-          authorName: agent?.name ?? "Hermes",
-          content: nextContent,
-          createdAt: existing?.createdAt ?? Date.now(),
-          replyToMessageId: task.triggerMessageId,
-        };
-        const streamMessageId = `stream-${event.taskId}`;
-        const streamMessage = {
-          id: streamMessageId,
-          workspaceId: task.workspaceId,
-          authorKind: "agent" as const,
-          authorId: agent?.id,
-          authorName: agent?.name ?? "Hermes",
-          content: t("app.generating"),
-          createdAt: Date.now(),
-          replyToMessageId: task.triggerMessageId,
-        };
-        const updatedMessages = upsertProcessMessageBeforeAnswer(
-          current.messages,
-          nextMessage,
-          streamMessage,
-          streamMessageId,
-        );
-        return {
-          ...current,
-          messages: updatedMessages,
-        };
-      });
-      return;
-    }
-    if (event.kind === "clarify") {
-      setState((current) => {
-        const task = current.tasks.find((item) => item.id === event.taskId);
-        if (!task || task.status === "cancelled") return current;
-        const agent = current.agents.find((item) => item.id === task.agentId);
-        const callId = event.message || "clarify";
-        const messageId = `clarify-${event.taskId}-${callId}`;
-        const existing = current.messages.find((message) => message.id === messageId);
-        const question = event.delta || existing?.content || "";
-        if (!question.trim()) return current;
-        const nextMessage: Message = {
-          id: messageId,
-          workspaceId: task.workspaceId,
-          kind: "clarify" as const,
-          authorKind: "agent" as const,
-          authorId: agent?.id,
-          authorName: agent?.name ?? "Hermes",
-          content: question,
-          clarifyChoices: parseClarifyChoices(event.content),
-          clarifyResolved: existing?.clarifyResolved ?? false,
-          clarifyAnswer: existing?.clarifyAnswer,
-          createdAt: existing?.createdAt ?? Date.now(),
-          replyToMessageId: task.triggerMessageId,
-        };
-        const streamMessageId = `stream-${event.taskId}`;
-        const streamMessage: Message = {
-          id: streamMessageId,
-          workspaceId: task.workspaceId,
-          authorKind: "agent" as const,
-          authorId: agent?.id,
-          authorName: agent?.name ?? "Hermes",
-          content: t("app.generating"),
-          createdAt: Date.now(),
-          replyToMessageId: task.triggerMessageId,
-        };
-        return {
-          ...current,
-          messages: upsertProcessMessageBeforeAnswer(
-            current.messages,
-            nextMessage,
-            streamMessage,
-            streamMessageId,
-          ),
-        };
-      });
-      return;
-    }
-    setState((current) => {
-      const task = current.tasks.find((item) => item.id === event.taskId);
-      if (!task || task.status === "cancelled") return current;
-      const agent = current.agents.find((item) => item.id === task.agentId);
-      const messageId = `stream-${event.taskId}`;
-      const existing = current.messages.find((message) => message.id === messageId);
-      const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-      const nextMessage: Message = {
-        id: messageId,
-        workspaceId: task.workspaceId,
-        authorKind: "agent" as const,
-        authorId: agent?.id,
-        authorName: agent?.name ?? t("app.unknownAgent"),
-        content: nextContent || t("app.generating"),
-        createdAt: existing?.createdAt ?? Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      const nextMessages = existing
-        ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-        : [...current.messages, nextMessage];
-        const filteredMessages =
-        event.kind === "done"
-          ? nextMessages.filter(
-              (message) =>
-                !(
-                  message.kind === "reasoning" &&
-                  message.id === `reasoning-${event.taskId}` &&
-                  message.replyToMessageId === task.triggerMessageId &&
-                  isDuplicateProcessSnapshot(message.content, nextMessage.content)
-                ),
-            )
-          : nextMessages;
-      return {
-        ...current,
-        messages: filteredMessages,
-        tasks: event.kind === "done"
-          ? current.tasks.map((item) =>
-              item.id === task.id ? { ...item, status: "completed" as const, completedAt: Date.now() } : item,
-            )
-          : current.tasks,
-      };
-    });
+    setState((current) =>
+      applyStreamEventSnapshot(current, event, {
+        generating: t("app.generating"),
+        unknownAgentName: t("app.unknownAgent"),
+        completeDoneTask: true,
+      }),
+    );
     if (event.kind === "done") {
-      addRuntimeEvent({
-        taskId: event.taskId,
-        label: "stream done",
-        detail: t("app.stream.completed"),
-        level: "ok",
+      const runtimeEvent = streamRuntimeEvent(event, {
+        started: t("app.stream.started"),
+        failed: t("app.stream.failed"),
+        completed: t("app.stream.completed"),
       });
+      if (runtimeEvent) addRuntimeEvent(runtimeEvent);
     }
   }
 
   streamEventHandlerRef.current = handleStreamEvent;
-
-  function applyStreamEventSnapshot(current: OrchestrationState, event: RuntimeStreamEvent): OrchestrationState {
-    if (event.kind === "start" || event.kind === "error") return current;
-    const task = current.tasks.find((item) => item.id === event.taskId);
-    if (!task || task.status === "cancelled") return current;
-    const agent = current.agents.find((item) => item.id === task.agentId);
-    if (event.kind === "reasoning") {
-      const isThinkingProgress = event.message === "thinking";
-      const messageId = isThinkingProgress ? `reasoning-${event.taskId}-thinking` : `reasoning-${event.taskId}`;
-      const existing = current.messages.find((message) => message.id === messageId);
-      const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-      if (!nextContent.trim()) return current;
-      const streamMessageId = `stream-${event.taskId}`;
-      const streamExisting = current.messages.find((message) => message.id === streamMessageId);
-      if (
-        !isThinkingProgress &&
-        streamExisting &&
-        streamExisting.content !== t("app.generating") &&
-        isDuplicateProcessSnapshot(nextContent, streamExisting.content)
-      ) {
-        return {
-          ...current,
-          messages: current.messages.filter((message) => message.id !== messageId),
-        };
-      }
-      const nextMessage: Message = {
-        id: messageId,
-        workspaceId: task.workspaceId,
-        kind: "reasoning",
-        authorKind: "agent",
-        authorId: agent?.id,
-        authorName: agent?.name ?? "Hermes",
-        content: nextContent,
-        createdAt: existing?.createdAt ?? Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      const streamMessage: Message = {
-        id: streamMessageId,
-        workspaceId: task.workspaceId,
-        authorKind: "agent",
-        authorId: agent?.id,
-        authorName: agent?.name ?? "Hermes",
-        content: t("app.generating"),
-        createdAt: Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      return {
-        ...current,
-        messages: upsertProcessMessageBeforeAnswer(current.messages, nextMessage, streamMessage, streamMessageId),
-      };
-    }
-    if (event.kind === "tool") {
-      const callId = event.message || "tool";
-      const messageId = `tool-${event.taskId}-${callId}`;
-      const existing = current.messages.find((message) => message.id === messageId);
-      const nextRawContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-      const nextContent = mergeToolEventContent(existing?.content, nextRawContent);
-      if (!nextContent.trim()) return current;
-      const streamMessageId = `stream-${event.taskId}`;
-      const nextMessage: Message = {
-        id: messageId,
-        workspaceId: task.workspaceId,
-        kind: "tool",
-        authorKind: "agent",
-        authorId: agent?.id,
-        authorName: agent?.name ?? "Hermes",
-        content: nextContent,
-        createdAt: existing?.createdAt ?? Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      const streamMessage: Message = {
-        id: streamMessageId,
-        workspaceId: task.workspaceId,
-        authorKind: "agent",
-        authorId: agent?.id,
-        authorName: agent?.name ?? "Hermes",
-        content: t("app.generating"),
-        createdAt: Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      return {
-        ...current,
-        messages: upsertProcessMessageBeforeAnswer(current.messages, nextMessage, streamMessage, streamMessageId),
-      };
-    }
-    if (event.kind === "clarify") {
-      const callId = event.message || "clarify";
-      const messageId = `clarify-${event.taskId}-${callId}`;
-      const existing = current.messages.find((message) => message.id === messageId);
-      const question = event.delta || existing?.content || "";
-      if (!question.trim()) return current;
-      const streamMessageId = `stream-${event.taskId}`;
-      const nextMessage: Message = {
-        id: messageId,
-        workspaceId: task.workspaceId,
-        kind: "clarify",
-        authorKind: "agent",
-        authorId: agent?.id,
-        authorName: agent?.name ?? "Hermes",
-        content: question,
-        clarifyChoices: parseClarifyChoices(event.content),
-        clarifyResolved: existing?.clarifyResolved ?? false,
-        clarifyAnswer: existing?.clarifyAnswer,
-        createdAt: existing?.createdAt ?? Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      const streamMessage: Message = {
-        id: streamMessageId,
-        workspaceId: task.workspaceId,
-        authorKind: "agent",
-        authorId: agent?.id,
-        authorName: agent?.name ?? "Hermes",
-        content: t("app.generating"),
-        createdAt: Date.now(),
-        replyToMessageId: task.triggerMessageId,
-      };
-      return {
-        ...current,
-        messages: upsertProcessMessageBeforeAnswer(current.messages, nextMessage, streamMessage, streamMessageId),
-      };
-    }
-
-    const messageId = `stream-${event.taskId}`;
-    const existing = current.messages.find((message) => message.id === messageId);
-    const nextContent = event.content || `${existing?.content ?? ""}${event.delta}`;
-    const nextMessage: Message = {
-      id: messageId,
-      workspaceId: task.workspaceId,
-      authorKind: "agent",
-      authorId: agent?.id,
-      authorName: agent?.name ?? "Hermes",
-      content: nextContent || t("app.generating"),
-      createdAt: existing?.createdAt ?? Date.now(),
-      replyToMessageId: task.triggerMessageId,
-    };
-    const messages = existing
-      ? current.messages.map((message) => (message.id === messageId ? nextMessage : message))
-      : [...current.messages, nextMessage];
-    return {
-      ...current,
-      messages:
-        event.kind === "done"
-          ? messages.filter(
-              (message) =>
-                !(
-                  message.kind === "reasoning" &&
-                  message.id === `reasoning-${event.taskId}` &&
-                  message.replyToMessageId === task.triggerMessageId &&
-                  isDuplicateProcessSnapshot(message.content, nextMessage.content)
-                ),
-            )
-          : messages,
-    };
-  }
 
   const applyAppSettings = (settings: AppSettings) => {
     const fontStack = fontOptions.find((item) => item.id === settings.font)?.stack ?? fontOptions[0].stack;
@@ -1814,7 +918,7 @@ export function App() {
     }
     setInstallBusy(true);
     try {
-      const status = await inspectHermesInstall();
+      const status = await loadInstallStatus();
       setInstallStatus(status);
       void refreshConfigHealth(status.activeProfile);
       return status;
@@ -2381,32 +1485,28 @@ export function App() {
       return Promise.resolve();
     }
     setRuntimeStatus({ state: "checking", message: t("app.notice.probingGateway") });
-    return getRemoteConnectionConfig()
+    return loadRemoteConfig()
       .then(async (connection) => {
         setRemoteConfig(connection);
         if (connection.mode !== "local") {
-          const status = await testRemoteConnection(connection);
+          const status = await testRemoteConfigValue(connection);
           setRemoteStatus(status);
-          setRuntimeStatus({
-            state: status.ok ? "ready" : "unavailable",
-            message: `${status.mode} · ${status.baseUrl} · ${status.message}`,
-          });
+          setRuntimeStatus(runtimeStatusFromRemote(status));
           return null;
         }
-        return Promise.all([listHermesProfiles(), inspectHermesInstall().catch(() => null)])
+        return Promise.all([loadProfiles(), loadInstallStatus().catch(() => null)])
       .then(([items, install]) => {
         setProfiles(items);
         setInstallStatus(install);
-        const active = items.find((item) => item.active) ?? items[0];
-        const profileName = active?.name ?? "default";
-        return probeHermesGateway({ profile: profileName }).catch(async (error: unknown) => {
+        const profileName = deriveActiveProfileName(items);
+        return probeGateway(profileName).catch(async (error: unknown) => {
           if (!isConnectionRefused(error)) throw error;
           if (!autoStart) throw error;
           setRuntimeStatus({
             state: "checking",
             message: t("app.notice.gatewayAutoStart", { profile: profileName }),
           });
-          const started = await ensureHermesGateway({ profile: profileName });
+          const started = await startGatewayForProfile(profileName);
           if (!started.ok) {
             throw new Error(
               started.logPath
@@ -2414,16 +1514,13 @@ export function App() {
                 : started.message,
             );
           }
-          return probeHermesGateway({ profile: profileName });
+          return probeGateway(profileName);
         });
         });
       })
       .then((result) => {
         if (!result) return;
-        setRuntimeStatus({
-          state: result.ok ? "ready" : "unavailable",
-          message: `${result.profile} · ${result.baseUrl} · ${result.message}`,
-        });
+        setRuntimeStatus(runtimeStatusFromGateway(result));
         void refreshHermesCapabilities(result.profile);
         void refreshConfigHealth(result.profile);
       })
@@ -2475,8 +1572,8 @@ export function App() {
         });
       });
       void refreshRemoteConnection();
-        void loadHermesTeamSessions()
-          .then((items) => setSessions(normalizeLoadedSessions(items)))
+        void loadLocalSessionList()
+          .then((items) => setSessions(items))
           .catch(() => undefined);
         void refreshDesktopSessions();
         void refreshRuntime();
@@ -2494,10 +1591,10 @@ export function App() {
     if (!stateReady) return;
     window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
-      void saveHermesTeamState(state).catch(() => undefined);
-      if (state.messages.length > 0) {
-        void saveHermesTeamSession(sessionSummaryForSave(state, sessionsRef.current))
-          .then((items) => setSessions(normalizeLoadedSessions(items)))
+      void saveWorkspaceState(state).catch(() => undefined);
+      if (shouldPersistSessionSnapshot(state)) {
+        void saveSessionSnapshot(state, sessionsRef.current)
+          .then((items) => setSessions(items))
           .catch(() => undefined);
       }
     }, 250);
@@ -2525,15 +1622,34 @@ export function App() {
     };
   }, []);
 
+  const applySessionTransition = (
+    transition: SessionStateTransition,
+    options: { resetUsage?: boolean; resetStartedAt?: boolean } = {},
+  ) => {
+    parallelTrackerRef.current.clear(transition.previousWorkspaceId);
+    serialTrackerRef.current.clear(transition.previousWorkspaceId);
+    cancelledTaskIdsRef.current.clear();
+
+    setModeState(transition.nextState.workspace.mode);
+    setState(transition.nextState);
+    setDraft("");
+    setDraftAttachments([]);
+    setRuntimeEvents([]);
+    if (options.resetUsage) setTokenUsage(null);
+    if (options.resetStartedAt) setSessionStartedAt(Date.now());
+    setActiveView("team");
+  };
+
   const createNewSession = async () => {
-    if (hasActiveSessionTasks(state)) {
+    const plan = planNewSession(state, mode);
+    if (plan.kind === "blocked-active-tasks") {
       setActiveView("team");
       setActiveInspectorPanel("dispatch");
       setNotice(t("app.notice.activeTasksNewSession"));
       return;
     }
 
-    if (isScratchSession(state)) {
+    if (plan.kind === "scratch") {
       setActiveView("team");
       setDraft("");
       setDraftAttachments([]);
@@ -2541,28 +1657,14 @@ export function App() {
       return;
     }
 
-    const previousWorkspaceId = state.workspace.id;
-    const nextState = buildFreshOrchestrationState(mode);
-
-    parallelTrackerRef.current.clear(previousWorkspaceId);
-    serialTrackerRef.current.clear(previousWorkspaceId);
-    cancelledTaskIdsRef.current.clear();
-
-    setModeState(nextState.workspace.mode);
-    setState(nextState);
-    setDraft("");
-    setDraftAttachments([]);
-      setRuntimeEvents([]);
-      setTokenUsage(null);
-      setSessionStartedAt(Date.now());
-      setActiveView("team");
-      setNotice(t("app.notice.openedNewSession"));
+    applySessionTransition(plan, { resetUsage: true, resetStartedAt: true });
+    setNotice(t("app.notice.openedNewSession"));
 
     if (!isTauriRuntimeAvailable()) {
       return;
     }
 
-    void saveHermesTeamState(nextState).catch(() => undefined);
+    void saveWorkspaceState(plan.nextState).catch(() => undefined);
   };
 
   useEffect(() => {
@@ -2577,31 +1679,21 @@ export function App() {
   }, [state, mode]);
 
   const restoreSession = async (session: HermesTeamSessionSummary) => {
-    if (!session.state || !session.state.workspace) {
+    const plan = planSessionRestore(state, session);
+    if (plan.kind === "missing-state") {
       setNotice(t("app.notice.sessionNoState"));
       return;
     }
 
-    const previousWorkspaceId = state.workspace.id;
-    const nextState = normalizeLoadedState(session.state);
-    parallelTrackerRef.current.clear(previousWorkspaceId);
-    serialTrackerRef.current.clear(previousWorkspaceId);
-    cancelledTaskIdsRef.current.clear();
-
-    setModeState(nextState.workspace.mode);
-    setState(nextState);
-    setDraft("");
-    setDraftAttachments([]);
-      setRuntimeEvents([]);
-      setActiveView("team");
-      setNotice(t("app.notice.sessionRestored", { title: session.title }));
+    applySessionTransition(plan);
+    setNotice(t("app.notice.sessionRestored", { title: session.title }));
   };
 
   const refreshLocalSessions = async () => {
     if (!isTauriRuntimeAvailable()) return;
     try {
-      const items = await loadHermesTeamSessions();
-      setSessions(normalizeLoadedSessions(items));
+      const items = await loadLocalSessionList();
+      setSessions(items);
       setNotice(t("app.notice.localSessionsRefreshed"));
     } catch (error) {
       setNotice(t("app.notice.localSessionsRefreshFailed", { error: runtimeErrorMessage(error) }));
@@ -2612,8 +1704,8 @@ export function App() {
     if (!isTauriRuntimeAvailable()) return;
     setDesktopSessionsBusy(true);
     try {
-      const targetProfile = currentChatProfile || installStatus?.activeProfile || "default";
-      const items = await listHermesStateSessions({ profile: targetProfile });
+      const targetProfile = sessionProfileName(currentChatProfile, installStatus?.activeProfile);
+      const items = await loadDesktopSessionList(targetProfile);
       setDesktopSessions(items);
     } catch (error) {
       setNotice(t("app.notice.stateDbReadFailed", { error: runtimeErrorMessage(error) }));
@@ -2628,8 +1720,8 @@ export function App() {
     if (!isTauriRuntimeAvailable()) return [];
     const trimmed = query.trim();
     if (!trimmed) return [];
-    const targetProfile = currentChatProfile || installStatus?.activeProfile || "default";
-    return searchHermesStateSessions({ query: trimmed, profile: targetProfile });
+    const targetProfile = sessionProfileName(currentChatProfile, installStatus?.activeProfile);
+    return searchDesktopSessionList(trimmed, targetProfile);
   };
 
   const importDesktopSession = async (session: HermesStateSessionSummary) => {
@@ -2639,26 +1731,18 @@ export function App() {
     }
     setDesktopSessionsBusy(true);
     try {
-      const rows = await loadHermesStateSession({
-        profile: session.profile,
-        sessionId: session.id,
+      const transition = await loadImportedSessionTransition({
+        currentState: state,
+        session,
+        workspaceMode: mode,
+        t,
       });
-      const imported = buildStateFromHermesStateSession(session, rows, mode, t);
-      const previousWorkspaceId = state.workspace.id;
-      parallelTrackerRef.current.clear(previousWorkspaceId);
-      serialTrackerRef.current.clear(previousWorkspaceId);
-      cancelledTaskIdsRef.current.clear();
-      setModeState(imported.workspace.mode);
-      setState(imported);
-      setDraft("");
-      setDraftAttachments([]);
-      setRuntimeEvents([]);
-      setActiveView("team");
+      applySessionTransition(transition);
       setNotice(t("app.notice.sessionImported", { title: session.title }));
       if (isTauriRuntimeAvailable()) {
-        void saveHermesTeamState(imported).catch(() => undefined);
-        void saveHermesTeamSession(buildSessionSummary(imported))
-          .then((items) => setSessions(normalizeLoadedSessions(items)))
+        void saveWorkspaceState(transition.nextState).catch(() => undefined);
+        void saveSessionSnapshot(transition.nextState)
+          .then((items) => setSessions(items))
           .catch(() => undefined);
       }
     } catch (error) {
@@ -2675,14 +1759,10 @@ export function App() {
       return;
     }
     const previous = sessionsRef.current;
-    setSessions((current) =>
-      current.map((session) =>
-        session.id === sessionId ? { ...session, title: trimmed, titleEdited: true } : session,
-      ),
-    );
+    setSessions((current) => optimisticRenameSession(current, sessionId, trimmed));
     try {
-      const next = await updateHermesTeamSessionTitle(sessionId, trimmed);
-      setSessions(normalizeLoadedSessions(next));
+      const next = await renameStoredSession(sessionId, trimmed);
+      setSessions(next);
       setNotice(t("app.notice.sessionTitleUpdated"));
     } catch (error) {
       setSessions(previous);
@@ -2691,27 +1771,20 @@ export function App() {
   };
 
   const deleteSession = async (sessionId: string) => {
-    if (sessionId === state.workspace.id && hasActiveSessionTasks(state)) {
+    const plan = planSessionDeletion(state, [sessionId], mode);
+    if (plan.kind === "empty") return;
+    if (plan.kind === "blocked-active-tasks") {
       setNotice(t("app.notice.activeTasksDelete"));
       return;
     }
     const previous = sessionsRef.current;
-    setSessions((current) => current.filter((session) => session.id !== sessionId));
+    setSessions((current) => optimisticRemoveSessions(current, plan.removedIds));
     try {
-      const next = await deleteHermesTeamSession(sessionId);
-      setSessions(normalizeLoadedSessions(next));
-      if (sessionId === state.workspace.id) {
-        const nextState = buildFreshOrchestrationState(mode);
-        parallelTrackerRef.current.clear(state.workspace.id);
-        serialTrackerRef.current.clear(state.workspace.id);
-        cancelledTaskIdsRef.current.clear();
-        setModeState(nextState.workspace.mode);
-        setState(nextState);
-        setDraft("");
-        setDraftAttachments([]);
-        setRuntimeEvents([]);
-        setActiveView("team");
-        void saveHermesTeamState(nextState).catch(() => undefined);
+      const next = await deleteStoredSession(plan.ids[0]);
+      setSessions(next);
+      if (plan.kind === "delete-and-reset") {
+        applySessionTransition(plan);
+        void saveWorkspaceState(plan.nextState).catch(() => undefined);
       }
       setNotice(t("app.notice.sessionDeleted"));
     } catch (error) {
@@ -2721,32 +1794,22 @@ export function App() {
   };
 
   const bulkDeleteSessions = async (sessionIds: string[]) => {
-    const ids = Array.from(new Set(sessionIds.map((id) => id.trim()).filter(Boolean)));
-    if (ids.length === 0) return;
-    if (ids.includes(state.workspace.id) && hasActiveSessionTasks(state)) {
+    const plan = planSessionDeletion(state, sessionIds, mode);
+    if (plan.kind === "empty") return;
+    if (plan.kind === "blocked-active-tasks") {
       setNotice(t("app.notice.activeTasksDelete"));
       return;
     }
     const previous = sessionsRef.current;
-    const removed = new Set(ids);
-    setSessions((current) => current.filter((session) => !removed.has(session.id)));
+    setSessions((current) => optimisticRemoveSessions(current, plan.removedIds));
     try {
-      const next = await deleteHermesTeamSessions(ids);
-      setSessions(normalizeLoadedSessions(next));
-      if (removed.has(state.workspace.id)) {
-        const nextState = buildFreshOrchestrationState(mode);
-        parallelTrackerRef.current.clear(state.workspace.id);
-        serialTrackerRef.current.clear(state.workspace.id);
-        cancelledTaskIdsRef.current.clear();
-        setModeState(nextState.workspace.mode);
-        setState(nextState);
-        setDraft("");
-        setDraftAttachments([]);
-        setRuntimeEvents([]);
-        setActiveView("team");
-        void saveHermesTeamState(nextState).catch(() => undefined);
+      const next = await deleteStoredSessions(plan.ids);
+      setSessions(next);
+      if (plan.kind === "delete-and-reset") {
+        applySessionTransition(plan);
+        void saveWorkspaceState(plan.nextState).catch(() => undefined);
       }
-      setNotice(t("app.notice.sessionsBulkDeleted", { count: ids.length }));
+      setNotice(t("app.notice.sessionsBulkDeleted", { count: plan.ids.length }));
     } catch (error) {
       setSessions(previous);
       setNotice(t("app.notice.sessionsBulkDeleteFailed", { error: runtimeErrorMessage(error) }));
@@ -2758,14 +1821,10 @@ export function App() {
     if (!current) return;
     const nextPinned = !current.pinned;
     const previous = sessionsRef.current;
-    setSessions((items) =>
-      items.map((session) =>
-        session.id === sessionId ? { ...session, pinned: nextPinned } : session,
-      ),
-    );
+    setSessions((items) => optimisticPinSession(items, sessionId, nextPinned));
     try {
-      const next = await setHermesTeamSessionPinned(sessionId, nextPinned);
-      setSessions(normalizeLoadedSessions(next));
+      const next = await setStoredSessionPinned(sessionId, nextPinned);
+      setSessions(next);
       setNotice(nextPinned ? t("app.notice.sessionPinned") : t("app.notice.sessionUnpinned"));
     } catch (error) {
       setSessions(previous);
@@ -2774,20 +1833,14 @@ export function App() {
   };
 
   const moveSessionToFolder = async (sessionId: string, folder: string | null) => {
-    const normalized = folder?.trim() || null;
+    const normalized = normalizeSessionFolder(folder);
     const current = sessionsRef.current.find((session) => session.id === sessionId);
     if (current && (current.contextFolder ?? null) === normalized) return;
     const previous = sessionsRef.current;
-    setSessions((items) =>
-      items.map((session) =>
-        session.id === sessionId
-          ? { ...session, contextFolder: normalized, folderEdited: true }
-          : session,
-      ),
-    );
+    setSessions((items) => optimisticMoveSessionFolder(items, sessionId, normalized));
     try {
-      const next = await setHermesTeamSessionFolder(sessionId, normalized);
-      setSessions(normalizeLoadedSessions(next));
+      const next = await setStoredSessionFolder(sessionId, normalized);
+      setSessions(next);
       setNotice(
         normalized
           ? t("app.notice.sessionMovedTo", { folder: basename(normalized) })
@@ -2810,22 +1863,7 @@ export function App() {
   };
 
   const updateAgentProfile = (agentId: string, hermesProfile: string) => {
-    setState((current) => ({
-      ...current,
-      bindings: current.bindings.map((binding) =>
-        binding.agentId === agentId ? { ...binding, hermesProfile } : binding,
-      ),
-    }));
-  };
-
-  const profileOptionsFor = (currentProfile: string) => {
-    const names = new Set(profiles.map((profile) => profile.name));
-    names.add(currentProfile);
-    return Array.from(names).sort((left, right) => {
-      if (left === "default") return -1;
-      if (right === "default") return 1;
-      return left.localeCompare(right);
-    });
+    setState((current) => updateAgentProfileBinding(current, agentId, hermesProfile));
   };
 
   const refreshProfiles = async () => {
@@ -2834,7 +1872,7 @@ export function App() {
       return;
     }
     try {
-      const next = await listHermesProfiles();
+      const next = await loadProfiles();
       setProfiles(next);
     } catch (error) {
       setNotice(t("app.notice.profilesRefreshFailed", { error: runtimeErrorMessage(error) }));
@@ -2842,14 +1880,14 @@ export function App() {
   };
 
   const createProfileFromForm = async () => {
-    const name = profileForm.name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+    const name = sanitizeProfileName(profileForm.name);
     if (!name) {
       setNotice(t("app.notice.profileNameEmpty"));
       return;
     }
     setProfileBusy(true);
     try {
-      const next = await createHermesProfile({
+      const next = await createStoredProfile({
         name,
         cloneConfig: profileForm.cloneConfig,
       });
@@ -2866,7 +1904,7 @@ export function App() {
   const activateProfile = async (profileName: string, openChat = false) => {
     setProfileBusy(true);
     try {
-      const next = await setActiveHermesProfile({ name: profileName });
+      const next = await activateStoredProfile(profileName);
       setProfiles(next);
       if (chatAgent) {
         updateAgentProfile(chatAgent.id, profileName);
@@ -2900,9 +1938,9 @@ export function App() {
     }
     setProfileBusy(true);
     try {
-      const next = await deleteHermesProfile({ name: profile.name });
+      const next = await deleteStoredProfile(profile.name);
       setProfiles(next);
-      if (profile.active || currentChatProfile === profile.name) {
+      if (shouldFallbackToDefaultProfile(profile, currentChatProfile)) {
         if (chatAgent) updateAgentProfile(chatAgent.id, "default");
         await activateProfile("default");
       }
@@ -2917,10 +1955,7 @@ export function App() {
   const refreshRemoteConnection = async () => {
     if (!isTauriRuntimeAvailable()) return;
     try {
-      const [config, status] = await Promise.all([
-        getRemoteConnectionConfig(),
-        getRemoteConnectionStatus().catch(() => null),
-      ]);
+      const { config, status } = await loadRemoteSnapshot();
       setRemoteConfig(config);
       setRemoteStatus(status);
     } catch (error) {
@@ -2931,15 +1966,13 @@ export function App() {
   const saveRemoteConfig = async () => {
     setRemoteBusy(true);
     try {
-      const saved = await saveRemoteConnectionConfig(remoteConfig);
+      const saved = await saveRemoteConfigValue(remoteConfig);
       setRemoteConfig(saved);
       setNetworkSettings((current) => ({
         ...current,
-        localChatTransport: saved.localChatTransport,
-        remoteChatTransport: saved.remoteChatTransport,
-        sshChatTransport: saved.sshChatTransport,
+        ...remoteTransportSettings(saved),
       }));
-      const status = await getRemoteConnectionStatus().catch(() => null);
+      const status = await loadRemoteStatus().catch(() => null);
       setRemoteStatus(status);
       setNotice(t("app.notice.remoteConfigSaved"));
       await refreshRuntime({ autoStart: saved.mode === "local" });
@@ -2953,7 +1986,7 @@ export function App() {
   const testRemoteConfig = async () => {
     setRemoteBusy(true);
     try {
-      const status = await testRemoteConnection(remoteConfig);
+      const status = await testRemoteConfigValue(remoteConfig);
       setRemoteStatus(status);
       setNotice(status.message);
     } catch (error) {
@@ -2966,13 +1999,10 @@ export function App() {
   const connectSsh = async () => {
     setRemoteBusy(true);
     try {
-      const status = await startSshTunnel(remoteConfig);
+      const status = await connectSshTunnel(remoteConfig);
       setRemoteStatus(status);
       setRemoteConfig((current) => ({ ...current, mode: "ssh" }));
-      setRuntimeStatus({
-        state: status.ok ? "ready" : "unavailable",
-        message: `${status.mode} · ${status.baseUrl} · ${status.message}`,
-      });
+      setRuntimeStatus(runtimeStatusFromRemote(status));
       setNotice(status.message);
     } catch (error) {
       setNotice(t("app.notice.sshStartFailed", { error: runtimeErrorMessage(error) }));
@@ -2984,7 +2014,7 @@ export function App() {
   const disconnectSsh = async () => {
     setRemoteBusy(true);
     try {
-      const status = await stopSshTunnel();
+      const status = await disconnectSshTunnel();
       setRemoteStatus(status);
       setNotice(status.message);
     } catch (error) {
@@ -2995,19 +2025,15 @@ export function App() {
   };
 
   const startGateway = async (profileName?: string) => {
-    const targetProfile =
-      profileName ?? profiles.find((profile) => profile.active)?.name ?? profiles[0]?.name ?? "default";
+    const targetProfile = targetProfileName(profileName, profiles);
     setGatewayBusy(true);
     setRuntimeStatus({
       state: "checking",
       message: t("app.notice.gatewayStarting", { profile: targetProfile }),
     });
     try {
-      const result = await ensureHermesGateway({ profile: targetProfile });
-      setRuntimeStatus({
-        state: result.ok ? "ready" : "unavailable",
-        message: `${result.profile} · ${result.baseUrl} · ${result.message}`,
-      });
+      const result = await startGatewayForProfile(targetProfile);
+      setRuntimeStatus(runtimeStatusFromGateway(result));
       setNotice(
         result.ok
           ? t("app.notice.gatewayReady")
@@ -3028,15 +2054,14 @@ export function App() {
   };
 
   const stopGateway = async (profileName?: string) => {
-    const targetProfile =
-      profileName ?? profiles.find((profile) => profile.active)?.name ?? profiles[0]?.name ?? "default";
+    const targetProfile = targetProfileName(profileName, profiles);
     setGatewayBusy(true);
     setRuntimeStatus({
       state: "checking",
       message: t("app.notice.gatewayStopping", { profile: targetProfile }),
     });
     try {
-      const result = await stopHermesGateway({ profile: targetProfile });
+      const result = await stopGatewayForProfile(targetProfile);
       setRuntimeStatus({
         state: result.ok ? "unavailable" : "ready",
         message: `${result.profile} · ${result.baseUrl} · ${result.message}`,
@@ -3056,19 +2081,18 @@ export function App() {
   };
 
   const createApiKey = async (profileName?: string) => {
-    const targetProfile =
-      profileName ?? profiles.find((profile) => profile.active)?.name ?? profiles[0]?.name ?? "default";
+    const targetProfile = targetProfileName(profileName, profiles);
     setKeyBusy(true);
     setNotice(t("app.notice.apiKeyGenerating", { profile: targetProfile }));
     try {
-      const result = await generateApiServerKey({ profile: targetProfile });
+      const result = await createGatewayApiKey(targetProfile);
       setNotice(result.message);
       if (result.ok) {
         setRuntimeStatus({
           state: "checking",
           message: t("app.notice.gatewayRestartForKey", { profile: targetProfile }),
         });
-        await ensureHermesGateway({ profile: targetProfile, replace: true });
+        await startGatewayForProfile(targetProfile, { replace: true });
       }
       await refreshRuntime();
       await refreshInstallStatus();
@@ -3133,9 +2157,9 @@ export function App() {
     };
     setOnboardingBusy(true);
     try {
-      const status = await testRemoteConnection(config);
+      const status = await testRemoteConfigValue(config);
       if (status.ok) {
-        await saveRemoteConnectionConfig(config);
+        await saveRemoteConfigValue(config);
         setRemoteConfig(config);
         setRemoteStatus(status);
         await refreshInstallStatus();
@@ -3167,9 +2191,9 @@ export function App() {
     };
     setOnboardingBusy(true);
     try {
-      const status = await startSshTunnel(config);
+      const status = await connectSshTunnel(config);
       if (status.ok) {
-        await saveRemoteConnectionConfig(config);
+        await saveRemoteConfigValue(config);
         setRemoteConfig(config);
         setRemoteStatus(status);
         await refreshInstallStatus();
@@ -3204,12 +2228,12 @@ export function App() {
       });
       setActiveModel(activated);
       if (!installStatus?.apiServerKeyPresent) {
-        await generateApiServerKey({ profile: targetProfile }).catch(() => undefined);
+        await createGatewayApiKey(targetProfile).catch(() => undefined);
       }
       let gatewayOk = true;
       let gatewayMessage = "";
       try {
-        const gateway = await ensureHermesGateway({ profile: targetProfile, replace: true });
+        const gateway = await startGatewayForProfile(targetProfile, { replace: true });
         gatewayOk = gateway.ok;
         gatewayMessage = gateway.message;
       } catch (error) {
@@ -3320,7 +2344,7 @@ export function App() {
       setActiveModel(activated);
       setNotice(t("app.notice.modelActivated", { name: model.name, profile: targetProfile }));
       if (runtimeStatus.state === "ready") {
-        await ensureHermesGateway({ profile: targetProfile, replace: true });
+        await startGatewayForProfile(targetProfile, { replace: true });
         await refreshRuntime({ autoStart: false });
       } else {
         await refreshHermesCapabilities(targetProfile);
@@ -3391,7 +2415,7 @@ export function App() {
       setProviderKeyDrafts((current) => ({ ...current, [envKey]: "" }));
       setNotice(t("app.notice.providerKeySaved", { label: saved.label, profile: targetProfile }));
       if (runtimeStatus.state === "ready") {
-        await ensureHermesGateway({ profile: targetProfile, replace: true });
+        await startGatewayForProfile(targetProfile, { replace: true });
         await refreshRuntime({ autoStart: false });
       }
       await refreshConfigHealth(targetProfile);
@@ -4350,45 +3374,48 @@ export function App() {
 
   const sendMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? draft).trim();
-    if (!content && draftAttachments.length === 0) return;
-    const browseUrl = parseBrowseCommand(content);
-    if (browseUrl) {
-      setWebPreviewUrl(browseUrl);
+    const plan = planSendMessage({
+      draft,
+      draftAttachments,
+      contentOverride,
+      hasActiveTasks: hasActiveSessionTasks(state),
+      attachmentFallbackText: t("app.notice.checkAttachments"),
+    });
+    if (plan.kind === "empty") return;
+    if (plan.kind === "browse") {
+      setWebPreviewUrl(plan.url);
       setDraft("");
       setDraftAttachments([]);
-      setNotice(t("app.notice.webPreviewOpened", { url: browseUrl }));
+      setNotice(t("app.notice.webPreviewOpened", { url: plan.url }));
       return;
     }
-    const slashName = slashCommandName(content);
-    if (slashName === "/new") {
+    if (plan.kind === "new-session") {
       setDraft("");
       setDraftAttachments([]);
       void createNewSession();
       return;
     }
-    if (slashName === "/clear") {
+    if (plan.kind === "clear-session") {
       setDraft("");
       setDraftAttachments([]);
       clearChat();
       return;
     }
-    if (slashName === "/fast") {
+    if (plan.kind === "fast-mode") {
       runFastModeCommand(content);
       return;
     }
-    if (isLocalReplyCommand(content)) {
+    if (plan.kind === "local-reply") {
       runLocalSlashCommand(content);
       return;
     }
-    const attachments = contentOverride ? [] : draftAttachments;
-    const backgroundQuestion = parseBackgroundCommand(content);
-    if (hasActiveSessionTasks(state) && backgroundQuestion === null) {
+    if (plan.kind === "queue") {
       setQueuedMessages((current) => [
         ...current,
         {
           id: `queued-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          text: content || t("app.notice.checkAttachments"),
-          attachments,
+          text: plan.text,
+          attachments: plan.attachments,
         },
       ]);
       setDraft("");
@@ -4400,11 +3427,11 @@ export function App() {
     serialTrackerRef.current.markUserIntervention(state.workspace.id);
     const result = handleUserMessage(
       state,
-      backgroundQuestion !== null ? `💭 ${backgroundQuestion || content}` : content || t("app.notice.checkAttachments"),
-      attachments,
+      plan.content,
+      plan.attachments,
     );
     setState(result.state);
-    setNotice(backgroundQuestion !== null ? t("app.notice.backgroundStarted") : result.notice);
+    setNotice(plan.background ? t("app.notice.backgroundStarted") : result.notice);
     setDraft("");
     setDraftAttachments([]);
     const latestDecision = result.state.logs[0]?.decision;
@@ -4478,9 +3505,9 @@ export function App() {
     setActiveView("team");
     setNotice(t("app.notice.branched"));
     if (isTauriRuntimeAvailable()) {
-      void saveHermesTeamState(nextState).catch(() => undefined);
-      void saveHermesTeamSession(buildSessionSummary(nextState))
-        .then((items) => setSessions(normalizeLoadedSessions(items)))
+      void saveWorkspaceState(nextState).catch(() => undefined);
+      void saveSessionSnapshot(nextState)
+        .then((items) => setSessions(items))
         .catch(() => undefined);
     }
   };
@@ -4526,21 +3553,9 @@ export function App() {
   };
 
   const runDispatchedTask = async (baseState: OrchestrationState, taskId: string) => {
-    const task = baseState.tasks.find((item) => item.id === taskId);
-    if (!task) return;
-    const agent = baseState.agents.find((item) => item.id === task.agentId);
-    if (!agent) return;
-    const binding = baseState.bindings.find((item) => item.agentId === agent.id);
-    const profileName = binding?.hermesProfile ?? "default";
-    const selectedProfile = profileByName.get(profileName);
-    // Resolve the runtime model with "session override > global active model".
-    // When the session has no override, leave binding.model untouched so the
-    // Gateway keeps using the profile's global default (config.yaml).
-    const sessionOverride = baseState.workspace.modelOverride;
-    const effectiveBinding =
-      binding && sessionOverride?.model
-        ? { ...binding, model: sessionOverride.model }
-        : binding;
+    const runtimeContext = resolveTaskRuntimeContext(baseState, taskId, profiles);
+    if (runtimeContext.kind !== "ready") return;
+    const { task, agent, profileName, selectedProfile } = runtimeContext;
 
     setState((current) => markTaskRunning(current, taskId));
     setNotice(t("app.notice.taskRunning", { name: agent.name }));
@@ -4568,13 +3583,7 @@ export function App() {
           throw new Error(t("app.notice.gatewayNotReady"));
         }
       }
-      const output = await runHermesTaskStream({
-        task,
-        agent,
-        binding: effectiveBinding,
-        messages: baseState.messages,
-      });
-      const content = output.content;
+      const output = await executeTaskRuntimeStream(runtimeContext, baseState.messages);
       if (cancelledTaskIdsRef.current.has(taskId)) {
         addRuntimeEvent({
           taskId,
@@ -4584,53 +3593,9 @@ export function App() {
         });
         return;
       }
-      setState((current) => {
-        const streamMessageId = `stream-${taskId}`;
-        const hasStreamMessage = current.messages.some((message) => message.id === streamMessageId);
-        if (!hasStreamMessage) {
-          const replayedState = (output.events ?? []).reduce(
-            (nextState, event) => applyStreamEventSnapshot(nextState, event),
-            current,
-          );
-          if (replayedState.messages.some((message) => message.id === streamMessageId)) {
-            const shouldReplacePlaceholder = content.trim().length > 0;
-            return {
-              ...replayedState,
-              messages: replayedState.messages.map((message) =>
-                message.id === streamMessageId && shouldReplacePlaceholder
-                  ? {
-                      ...message,
-                      content: message.content === t("app.generating") || message.content.trim().length === 0 ? content : message.content,
-                    }
-                  : message,
-              ),
-              tasks: replayedState.tasks.map((item) =>
-                item.id === taskId ? { ...item, status: "completed", completedAt: Date.now() } : item,
-              ),
-            };
-          }
-          return completeTaskWithAgentMessage({
-            state: current,
-            taskId,
-            content,
-          });
-        }
-        const shouldReplacePlaceholder = content.trim().length > 0;
-        return {
-          ...current,
-          messages: current.messages.map((message) =>
-            message.id === streamMessageId && shouldReplacePlaceholder
-              ? {
-                  ...message,
-                  content: message.content === t("app.generating") || message.content.trim().length === 0 ? content : message.content,
-                }
-              : message,
-          ),
-          tasks: current.tasks.map((item) =>
-            item.id === taskId ? { ...item, status: "completed", completedAt: Date.now() } : item,
-          ),
-        };
-      });
+      setState((current) =>
+        applyTaskStreamOutput(current, taskId, output, { generating: t("app.generating") }),
+      );
       addRuntimeEvent({
         taskId,
         label: "completed",
@@ -7877,7 +6842,7 @@ export function App() {
                       value={currentProfile}
                       onChange={(event) => updateAgentProfile(agent.id, event.target.value)}
                     >
-                      {profileOptionsFor(currentProfile).map((name) => (
+                      {profileOptionsFor(profiles, currentProfile).map((name) => (
                         <option key={name} value={name}>
                           {name}
                         </option>
@@ -8118,398 +7083,4 @@ export function App() {
       )}
     </main>
   );
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) {
-    const value = (n / 1_000_000).toFixed(1);
-    return `${value.endsWith(".0") ? value.slice(0, -2) : value}M`;
-  }
-  if (n >= 1000) {
-    const value = (n / 1000).toFixed(1);
-    return `${value.endsWith(".0") ? value.slice(0, -2) : value}k`;
-  }
-  return String(Math.round(n));
-}
-
-function ContextUsageStat({
-  used,
-  window: ctxWindow,
-  cacheReadTokens,
-  cacheWriteTokens,
-}: {
-  used: number;
-  window: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-}) {
-  const t = useTranslation();
-  const hasWindow = ctxWindow > 0;
-  const hasUsed = used > 0;
-  const pct = hasWindow && hasUsed ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
-  const usedLabel = hasUsed ? formatTokens(used) : "—";
-  const windowLabel = hasWindow ? formatTokens(ctxWindow) : "—";
-  const hasCache = (cacheReadTokens ?? 0) > 0 || (cacheWriteTokens ?? 0) > 0;
-  const cacheHitPct =
-    hasUsed && (cacheReadTokens ?? 0) > 0
-      ? Math.min(100, Math.round(((cacheReadTokens ?? 0) / used) * 100))
-      : 0;
-  const cacheTitle = hasCache
-    ? t("settings.statusbar.cacheTitle", {
-        pct: cacheHitPct,
-        read: formatTokens(cacheReadTokens ?? 0),
-        write: formatTokens(cacheWriteTokens ?? 0),
-      })
-    : "";
-  return (
-    <span
-      className="status-seg status-ctx"
-      title={t("settings.statusbar.contextTitle", { cache: cacheTitle })}
-    >
-      <span className="status-key">ctx</span>
-      <span className="status-ctx-bar" aria-hidden>
-        <span
-          className={`status-ctx-fill ${pct >= 90 ? "hot" : pct >= 70 ? "warm" : ""}`}
-          style={{ width: `${pct}%` }}
-        />
-      </span>
-      <span className="status-val">
-        {usedLabel}/{windowLabel}
-        {hasUsed && hasWindow ? ` · ${pct}%` : ""}
-      </span>
-    </span>
-  );
-}
-
-function SessionTimer({ startedAt }: { startedAt: number }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-  const total = Math.max(0, Math.floor((now - startedAt) / 1000));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const label = hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
-  return <span className="status-val status-mono">{label}</span>;
-}
-
-function StatusRow({
-  label,
-  value,
-  ok,
-  warn,
-}: {
-  label: string;
-  value: string;
-  ok: boolean;
-  warn?: boolean;
-}) {
-  const t = useTranslation();
-  const tone = ok ? "ok" : warn ? "warning" : "danger";
-  const text = ok ? "OK" : warn ? t("app.status.warn") : t("app.status.needAction");
-  return (
-    <div className="status-row">
-      <span>{label}</span>
-      <strong title={value}>{value}</strong>
-      <em className={tone}>{text}</em>
-    </div>
-  );
-}
-
-function TransportSelector({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: "auto" | "dashboard" | "legacy";
-  onChange: (value: "auto" | "dashboard" | "legacy") => void;
-}) {
-  const t = useTranslation();
-  return (
-    <div className="transport-selector">
-      <strong>{label}</strong>
-      <div>
-        {chatTransportOptions.map((option) => (
-          <button
-            className={value === option.id ? "active" : ""}
-            key={option.id}
-            type="button"
-            onClick={() => onChange(option.id)}
-            title={t(option.detailKey)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function configSeverityLabel(severity: string, t: TranslateFn): string {
-  switch (severity) {
-    case "error":
-      return t("app.severity.error");
-    case "warning":
-      return t("app.severity.warning");
-    case "info":
-      return t("app.severity.info");
-    default:
-      return severity;
-  }
-}
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
-}
-
-function decisionLabel(type: string, t: TranslateFn): string {
-  switch (type) {
-    case "dispatch":
-      return t("app.dispatch.dispatched");
-    case "ask_user":
-      return t("app.dispatch.askUser");
-    case "blocked":
-      return t("app.dispatch.blocked");
-    default:
-      return t("app.dispatch.noAction");
-  }
-}
-
-function decisionDetail(decision: OrchestrationState["logs"][number]["decision"], t: TranslateFn): string {
-  if (decision.type === "dispatch") {
-    return t("app.dispatch.detail", {
-      mode: decision.mode,
-      count: decision.assignments.length,
-      reason: decision.reason,
-    });
-  }
-  if (decision.type === "ask_user") return decision.question;
-  return decision.reason;
-}
-
-function taskSummary(state: OrchestrationState, t: TranslateFn): string {
-  if (state.tasks.length === 0) return "";
-  const running = state.tasks.filter((task) => task.status === "running").length;
-  const pending = state.tasks.filter((task) => task.status === "pending").length;
-  const completed = state.tasks.filter((task) => task.status === "completed").length;
-  const failed = state.tasks.filter((task) => task.status === "failed").length;
-  if (running > 0) return t("app.taskSummary.running", { count: running });
-  if (pending > 0) return t("app.taskSummary.pending", { count: pending });
-  if (failed > 0) return t("app.taskSummary.failed", { count: failed });
-  return t("app.taskSummary.completed", { count: completed });
-}
-
-function buildStateFromHermesStateSession(
-  session: HermesStateSessionSummary,
-  rows: HermesStateMessage[],
-  workspaceMode: WorkspaceMode,
-  t: TranslateFn,
-): OrchestrationState {
-  const base = buildFreshOrchestrationState(workspaceMode);
-  const importedWorkspaceId = `desktop-${session.id}`;
-  const agentId = base.agents[0]?.id ?? "agent-hermes";
-  return {
-    ...base,
-    workspace: {
-      ...base.workspace,
-      id: importedWorkspaceId,
-      name: "Hermes Chat",
-      description: t("app.importDesc", { title: session.title }),
-    },
-    agents: base.agents.map((agent) => ({ ...agent, workspaceId: importedWorkspaceId })),
-    messages: rows.map((row, index) => {
-      const kind = row.kind === "reasoning" ? "reasoning" : row.kind === "tool" ? "tool" : "message";
-      return {
-        id: `desktop-${session.id}-${row.kind}-${row.id}-${index}`,
-        workspaceId: importedWorkspaceId,
-        kind,
-        authorKind: row.kind === "user" ? "user" : "agent",
-        authorId: row.kind === "user" ? undefined : agentId,
-        authorName: row.kind === "user" ? "You" : row.kind === "tool" ? row.name || t("app.toolCall") : "Hermes",
-        content: decodeHermesStateContent(row.content),
-        createdAt: normalizeHermesStateTimestamp(row.timestamp),
-      } satisfies Message;
-    }),
-    tasks: [],
-    logs: [],
-  };
-}
-
-function normalizeHermesStateTimestamp(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return Date.now();
-  return value < 10_000_000_000 ? value * 1000 : value;
-}
-
-function decodeHermesStateContent(raw: string): string {
-  const prefix = "\u0000json:";
-  if (!raw.startsWith(prefix)) return raw;
-  try {
-    const parsed = JSON.parse(raw.slice(prefix.length));
-    if (!Array.isArray(parsed)) return typeof parsed === "string" ? parsed : raw;
-    const texts = parsed
-      .map((item) => {
-        if (typeof item === "string") return item;
-        if (!item || typeof item !== "object") return "";
-        const record = item as Record<string, unknown>;
-        const type = String(record.type || "").toLowerCase();
-        if (type === "text" || type === "input_text" || type === "output_text") {
-          return typeof record.text === "string" ? record.text : "";
-        }
-        if (type === "image_url" || type === "input_image") return "[image]";
-        return "";
-      })
-      .filter(Boolean);
-    return texts.join("\n\n") || raw;
-  } catch {
-    return raw;
-  }
-}
-
-function parseBackgroundCommand(text: string): string | null {
-  const match = /^\/(?:btw|bg|background)(?:\s+([\s\S]*))?$/i.exec(text.trim());
-  if (!match) return null;
-  return (match[1] ?? "").trim();
-}
-
-function parseBrowseCommand(text: string): string | null {
-  const match = /^\/browse(?:\s+([\s\S]*))?$/i.exec(text.trim());
-  if (!match) return null;
-  const value = (match[1] ?? "").trim();
-  return value || null;
-}
-
-function normalizeLoadedState(saved: OrchestrationState): OrchestrationState {
-  const workspaceName =
-    saved.workspace.name === LEGACY_PRODUCT_RD_WORKSPACE_NAME ||
-    saved.workspace.name === LEGACY_AGENT_WORKSPACE_NAME
-      ? DEFAULT_WORKSPACE_NAME
-      : saved.workspace.name;
-  const workspaceDescription =
-    saved.workspace.description === LEGACY_PRODUCT_RD_WORKSPACE_DESCRIPTION ||
-    saved.workspace.description === LEGACY_AGENT_WORKSPACE_DESCRIPTION
-      ? DEFAULT_WORKSPACE_DESCRIPTION
-      : saved.workspace.description;
-  const hasLegacyWorkspace =
-    saved.workspace.name === LEGACY_PRODUCT_RD_WORKSPACE_NAME ||
-    saved.workspace.name === LEGACY_AGENT_WORKSPACE_NAME;
-  const normalizedAgents = hasLegacyWorkspace
-    ? seedAgents.map((agent) => ({ ...agent, workspaceId: saved.workspace.id }))
-    : saved.agents;
-  const normalizedBindings = hasLegacyWorkspace ? seedBindings : saved.bindings;
-
-  return {
-    ...saved,
-    workspace: {
-      ...saved.workspace,
-      name: workspaceName,
-      description: workspaceDescription,
-      defaultAgentId: hasLegacyWorkspace ? seedWorkspace.defaultAgentId : saved.workspace.defaultAgentId,
-    },
-    agents: normalizedAgents,
-    bindings: normalizedBindings,
-    messages: saved.messages.filter((message) => !LEGACY_SEED_MESSAGE_CONTENTS.has(message.content)),
-    tasks: saved.tasks.map((task) =>
-      task.status === "running" || task.status === "pending"
-        ? { ...task, status: "failed", completedAt: Date.now() }
-        : task,
-    ),
-  };
-}
-
-function normalizeLoadedSessions(sessions: HermesTeamSessionSummary[]): HermesTeamSessionSummary[] {
-  const normalized = sessions.map((session) => {
-    const state = normalizeLoadedState(session.state);
-    const defaultAgentId = state.workspace.defaultAgentId ?? state.agents[0]?.id;
-    // A manually moved session keeps its stored folder verbatim (including an
-    // explicit "no folder"); otherwise fall back to the agent binding's workDir.
-    const contextFolder = session.folderEdited
-      ? session.contextFolder ?? null
-      : session.contextFolder ??
-        state.bindings.find((binding) => binding.agentId === defaultAgentId)?.workDir?.trim() ??
-        null;
-    return {
-      ...session,
-      title:
-        session.title === LEGACY_PRODUCT_RD_WORKSPACE_NAME ||
-        session.title === LEGACY_AGENT_WORKSPACE_NAME
-          ? DEFAULT_WORKSPACE_NAME
-          : session.title,
-      pinned: session.pinned ?? false,
-      contextFolder,
-      state,
-      messageCount: state.messages.length,
-      taskCount: state.tasks.length,
-    };
-  });
-  // Mirror the backend ordering: pinned first, then most-recently-updated.
-  return normalized.sort(
-    (left, right) =>
-      Number(right.pinned ?? false) - Number(left.pinned ?? false) ||
-      right.updatedAt - left.updatedAt,
-  );
-}
-
-function sessionSummaryForSave(
-  state: OrchestrationState,
-  sessions: HermesTeamSessionSummary[],
-): HermesTeamSessionSummary {
-  const summary = buildSessionSummary(state);
-  const existing = sessions.find((session) => session.id === summary.id);
-  if (!existing) return summary;
-  // Carry over user-controlled fields (pin, manual move, edited title) so the
-  // periodic auto-save of the active session doesn't clobber them.
-  return {
-    ...summary,
-    title: existing.titleEdited ? existing.title : summary.title,
-    titleEdited: existing.titleEdited,
-    pinned: existing.pinned ?? false,
-    folderEdited: existing.folderEdited,
-    contextFolder: existing.folderEdited ? existing.contextFolder ?? null : summary.contextFolder,
-  };
-}
-
-function runtimeErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (
-    message.includes("__TAURI") ||
-    message.includes("ipc") ||
-    message.includes("Tauri") ||
-    message.includes("not a function")
-  ) {
-    return TAURI_UNAVAILABLE_MESSAGE;
-  }
-  if (message === "undefined" || message === "[object Object]") {
-    return "无法调用 Tauri Hermes Gateway 探测命令。请确认当前运行的是 Tauri 桌面应用，而不是浏览器预览页。";
-  }
-  return message;
-}
-
-function isConnectionRefused(error: unknown): boolean {
-  const message = runtimeErrorMessage(error);
-  return message.includes("Connection refused") || message.includes("连接 127.0.0.1");
-}
-
-function profileStatusClass(
-  profile: HermesProfileInfo | undefined,
-  discoveryReady: boolean,
-): string {
-  if (!discoveryReady) return "profile-status muted";
-  if (!profile) return "profile-status warning";
-  if (!profile.hasApiKey) return "profile-status warning";
-  return "profile-status ok";
-}
-
-function profileStatusText(
-  profile: HermesProfileInfo | undefined,
-  discoveryReady: boolean,
-  t: TranslateFn,
-): string {
-  if (!discoveryReady) return t("app.profileStatus.waiting");
-  if (!profile) return t("app.profileStatus.notFound");
-  if (!profile.hasApiKey) return t("app.profileStatus.noKey", { url: profile.gatewayUrl });
-  return t("app.profileStatus.hasKey", { url: profile.gatewayUrl });
 }
