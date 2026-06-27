@@ -12,6 +12,7 @@ import {
   FileCode2,
   ExternalLink,
   History,
+  LayoutGrid,
   MoreHorizontal,
   Pause,
   Pencil,
@@ -65,6 +66,7 @@ import {
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
 import { DiscoverView, type DiscoverKind } from "./DiscoverView";
+import { KanbanView } from "./KanbanView";
 import { MessagingPlatformCard } from "./MessagingPlatformCard";
 import { OnboardingFlow, type OnboardingConfigureInput } from "./OnboardingFlow";
 import ProfileAvatar from "./ProfileAvatar";
@@ -239,7 +241,7 @@ import {
   type UpdateStatus,
 } from "../runtime/hermes-runtime";
 
-type ActiveView = "team" | "sessions" | "discover" | "settings";
+type ActiveView = "team" | "sessions" | "discover" | "kanban" | "settings";
 type SettingsPanel = "overview" | "appearance" | "privacy" | "network" | "profiles" | "providers" | "models" | "gateway" | "messaging" | "schedules" | "capabilities" | "skills" | "memory" | "update" | "logs";
 type InspectorPanel = "agents" | "dispatch" | "sessions" | "runtime" | "logs";
 type ModelForm = {
@@ -4864,6 +4866,16 @@ export function App() {
               <CalendarClock size={18} />
               <span>{t("nav.schedules")}</span>
             </button>
+            <button
+              className={`workspace-item ${activeView === "kanban" ? "active" : ""}`}
+              type="button"
+              onClick={() => setActiveView("kanban")}
+              title={t("nav.kanban")}
+              aria-label={t("nav.kanban")}
+            >
+              <LayoutGrid size={18} />
+              <span>{t("nav.kanban")}</span>
+            </button>
           </div>
 
           <div className="nav-group">
@@ -7600,6 +7612,12 @@ export function App() {
               </section>
             </div>
           </>
+        ) : activeView === "kanban" ? (
+          <KanbanView
+            profile={installStatus?.activeProfile}
+            t={t}
+            onNotice={setNotice}
+          />
         ) : activeView === "discover" ? (
           <DiscoverView
             installedSkills={skills}

@@ -1424,6 +1424,182 @@ export async function updateMessagingPlatform(input: {
   });
 }
 
+export interface KanbanBoard {
+  slug: string;
+  name: string;
+  description?: string | null;
+  icon?: string | null;
+  color?: string | null;
+  is_current: boolean;
+  archived?: boolean | null;
+  total: number;
+  counts: Record<string, number>;
+  db_path?: string | null;
+}
+
+export interface KanbanTask {
+  id: string;
+  title: string;
+  body?: string | null;
+  assignee?: string | null;
+  status: string;
+  priority: number;
+  tenant?: string | null;
+  workspace_kind?: string | null;
+  workspace_path?: string | null;
+  created_by?: string | null;
+  created_at?: number | null;
+  started_at?: number | null;
+  completed_at?: number | null;
+  result?: string | null;
+  skills: string[];
+  max_retries?: number | null;
+}
+
+export interface KanbanComment {
+  id: number;
+  task_id: string;
+  author?: string | null;
+  body: string;
+  created_at: number;
+}
+
+export interface KanbanEvent {
+  id: number;
+  task_id: string;
+  kind: string;
+  payload?: Record<string, unknown> | null;
+  created_at: number;
+  run_id?: number | null;
+}
+
+export interface KanbanRun {
+  id: number;
+  task_id: string;
+  profile?: string | null;
+  status?: string | null;
+  outcome?: string | null;
+  summary?: string | null;
+  error?: string | null;
+  started_at?: number | null;
+  ended_at?: number | null;
+  last_heartbeat_at?: number | null;
+}
+
+export interface KanbanTaskDetail {
+  task: KanbanTask;
+  comments: KanbanComment[];
+  events: KanbanEvent[];
+  parents: string[];
+  children: string[];
+  runs: KanbanRun[];
+  latest_summary?: string | null;
+}
+
+export interface CreateKanbanTaskInput {
+  title: string;
+  body?: string;
+  assignee?: string;
+  priority?: number;
+  tenant?: string;
+  workspace?: string;
+  triage?: boolean;
+  skills?: string[];
+  maxRetries?: number;
+}
+
+export type KanbanAction =
+  | "specify"
+  | "promote"
+  | "unblock"
+  | "archive"
+  | "complete"
+  | "block"
+  | "schedule"
+  | "reclaim"
+  | "assign"
+  | "comment";
+
+export async function listKanbanBoards(params: {
+  profile?: string;
+  includeArchived?: boolean;
+} = {}): Promise<KanbanBoard[]> {
+  ensureTauriRuntime();
+  return invoke<KanbanBoard[]>("list_kanban_boards", {
+    profile: params.profile,
+    includeArchived: params.includeArchived ?? false,
+  });
+}
+
+export async function currentKanbanBoard(params: { profile?: string } = {}): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("current_kanban_board", { profile: params.profile });
+}
+
+export async function switchKanbanBoard(input: { profile?: string; slug: string }): Promise<void> {
+  ensureTauriRuntime();
+  await invoke("switch_kanban_board", { profile: input.profile, slug: input.slug });
+}
+
+export async function listKanbanTasks(params: {
+  profile?: string;
+  status?: string;
+  assignee?: string;
+  includeArchived?: boolean;
+} = {}): Promise<KanbanTask[]> {
+  ensureTauriRuntime();
+  return invoke<KanbanTask[]>("list_kanban_tasks", {
+    profile: params.profile,
+    status: params.status,
+    assignee: params.assignee,
+    includeArchived: params.includeArchived ?? false,
+  });
+}
+
+export async function getKanbanTask(input: { profile?: string; taskId: string }): Promise<KanbanTaskDetail> {
+  ensureTauriRuntime();
+  return invoke<KanbanTaskDetail>("get_kanban_task", {
+    profile: input.profile,
+    taskId: input.taskId,
+  });
+}
+
+export async function createKanbanTask(input: {
+  profile?: string;
+  task: CreateKanbanTaskInput;
+}): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("create_kanban_task", {
+    profile: input.profile,
+    input: {
+      title: input.task.title,
+      body: input.task.body,
+      assignee: input.task.assignee,
+      priority: input.task.priority,
+      tenant: input.task.tenant,
+      workspace: input.task.workspace,
+      triage: input.task.triage,
+      skills: input.task.skills,
+      max_retries: input.task.maxRetries,
+    },
+  });
+}
+
+export async function kanbanTaskAction(input: {
+  profile?: string;
+  taskId: string;
+  action: KanbanAction;
+  value?: string;
+}): Promise<void> {
+  ensureTauriRuntime();
+  await invoke("kanban_task_action", {
+    profile: input.profile,
+    taskId: input.taskId,
+    action: input.action,
+    value: input.value,
+  });
+}
+
 export async function testMessagingPlatform(input: {
   profile?: string;
   platform: string;

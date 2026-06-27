@@ -10650,6 +10650,411 @@ fn encode_path_segment(value: &str) -> String {
     encoded
 }
 
+// ----------------------------------------------------------------------------
+// Kanban board (mirrors the upstream `hermes kanban` CLI surface). Local CLI
+// only: the board reflects the local Hermes install for the active profile.
+// Plain remote (HTTP) and SSH kanban are not wired here yet; CLI failures are
+// surfaced honestly rather than faked.
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KanbanBoard {
+    slug: String,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    is_current: bool,
+    #[serde(default)]
+    archived: Option<bool>,
+    #[serde(default)]
+    total: i64,
+    #[serde(default)]
+    counts: HashMap<String, i64>,
+    #[serde(default)]
+    db_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KanbanTask {
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    priority: i64,
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    workspace_kind: Option<String>,
+    #[serde(default)]
+    workspace_path: Option<String>,
+    #[serde(default)]
+    created_by: Option<String>,
+    #[serde(default)]
+    created_at: Option<f64>,
+    #[serde(default)]
+    started_at: Option<f64>,
+    #[serde(default)]
+    completed_at: Option<f64>,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default)]
+    max_retries: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KanbanComment {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    task_id: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    created_at: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KanbanEvent {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    task_id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+    #[serde(default)]
+    created_at: f64,
+    #[serde(default)]
+    run_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KanbanRun {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    task_id: String,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    started_at: Option<f64>,
+    #[serde(default)]
+    ended_at: Option<f64>,
+    #[serde(default)]
+    last_heartbeat_at: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KanbanTaskDetail {
+    task: KanbanTask,
+    #[serde(default)]
+    comments: Vec<KanbanComment>,
+    #[serde(default)]
+    events: Vec<KanbanEvent>,
+    #[serde(default)]
+    parents: Vec<String>,
+    #[serde(default)]
+    children: Vec<String>,
+    #[serde(default)]
+    runs: Vec<KanbanRun>,
+    #[serde(default)]
+    latest_summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateKanbanTaskInput {
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
+    priority: Option<i64>,
+    #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    triage: Option<bool>,
+    #[serde(default)]
+    skills: Option<Vec<String>>,
+    #[serde(default)]
+    max_retries: Option<i64>,
+}
+
+const KANBAN_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Run `hermes [-p profile] kanban <args>` against the local install and return
+/// trimmed stdout. Errors surface the CLI's own stderr/stdout.
+fn run_kanban_cli(args: &[String], profile: Option<&str>) -> Result<String, String> {
+    let command = find_hermes_command()?;
+    let mut process = Command::new(command);
+    if let Some(profile_name) = normalize_profile(profile) {
+        process.arg("-p").arg(profile_name);
+    }
+    process
+        .arg("kanban")
+        .args(args)
+        .env("HOME", home_dir()?)
+        .env("PATH", enhanced_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let repo_dir = hermes_home()?.join("hermes-agent");
+    if repo_dir.exists() {
+        process.current_dir(repo_dir);
+    }
+    let started = SystemTime::now();
+    let mut child = process
+        .spawn()
+        .map_err(|error| format!("启动 hermes kanban 失败：{error}"))?;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("等待 hermes kanban 失败：{error}"))?
+        {
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                let _ = pipe.read_to_string(&mut stdout);
+            }
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            if status.success() {
+                return Ok(stdout.trim().to_string());
+            }
+            let message = if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else if !stdout.trim().is_empty() {
+                stdout.trim().to_string()
+            } else {
+                format!("hermes kanban 退出：{status}")
+            };
+            return Err(message);
+        }
+        if SystemTime::now()
+            .duration_since(started)
+            .unwrap_or_default()
+            > KANBAN_TIMEOUT
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("hermes kanban 执行超时。".to_string());
+        }
+        sleep(Duration::from_millis(80));
+    }
+}
+
+#[tauri::command]
+fn list_kanban_boards(
+    profile: Option<String>,
+    include_archived: Option<bool>,
+) -> Result<Vec<KanbanBoard>, String> {
+    let mut args = vec!["boards".to_string(), "list".to_string(), "--json".to_string()];
+    if include_archived.unwrap_or(false) {
+        args.push("--all".to_string());
+    }
+    let stdout = run_kanban_cli(&args, profile.as_deref())?;
+    serde_json::from_str::<Vec<KanbanBoard>>(&stdout)
+        .map_err(|error| format!("解析 kanban boards 失败：{error}"))
+}
+
+#[tauri::command]
+fn current_kanban_board(profile: Option<String>) -> Result<String, String> {
+    let stdout = run_kanban_cli(&["boards".to_string(), "show".to_string()], profile.as_deref())?;
+    Ok(stdout.trim().to_string())
+}
+
+#[tauri::command]
+fn switch_kanban_board(profile: Option<String>, slug: String) -> Result<(), String> {
+    if slug.trim().is_empty() {
+        return Err("缺少看板 slug。".to_string());
+    }
+    run_kanban_cli(
+        &["boards".to_string(), "switch".to_string(), slug],
+        profile.as_deref(),
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_kanban_tasks(
+    profile: Option<String>,
+    status: Option<String>,
+    assignee: Option<String>,
+    include_archived: Option<bool>,
+) -> Result<Vec<KanbanTask>, String> {
+    let mut args = vec!["list".to_string(), "--json".to_string()];
+    if let Some(value) = status.filter(|v| !v.trim().is_empty()) {
+        args.push("--status".to_string());
+        args.push(value);
+    }
+    if let Some(value) = assignee.filter(|v| !v.trim().is_empty()) {
+        args.push("--assignee".to_string());
+        args.push(value);
+    }
+    if include_archived.unwrap_or(false) {
+        args.push("--archived".to_string());
+    }
+    let stdout = run_kanban_cli(&args, profile.as_deref())?;
+    serde_json::from_str::<Vec<KanbanTask>>(&stdout)
+        .map_err(|error| format!("解析 kanban tasks 失败：{error}"))
+}
+
+#[tauri::command]
+fn get_kanban_task(profile: Option<String>, task_id: String) -> Result<KanbanTaskDetail, String> {
+    if task_id.trim().is_empty() {
+        return Err("缺少任务 ID。".to_string());
+    }
+    let stdout = run_kanban_cli(
+        &["show".to_string(), task_id, "--json".to_string()],
+        profile.as_deref(),
+    )?;
+    serde_json::from_str::<KanbanTaskDetail>(&stdout)
+        .map_err(|error| format!("解析 kanban 任务详情失败：{error}"))
+}
+
+#[tauri::command]
+fn create_kanban_task(
+    profile: Option<String>,
+    input: CreateKanbanTaskInput,
+) -> Result<String, String> {
+    if input.title.trim().is_empty() {
+        return Err("标题不能为空。".to_string());
+    }
+    let mut args = vec!["create".to_string(), input.title];
+    if let Some(body) = input.body.filter(|v| !v.trim().is_empty()) {
+        args.push("--body".to_string());
+        args.push(body);
+    }
+    if let Some(assignee) = input.assignee.filter(|v| !v.trim().is_empty()) {
+        args.push("--assignee".to_string());
+        args.push(assignee);
+    }
+    if let Some(priority) = input.priority {
+        args.push("--priority".to_string());
+        args.push(priority.to_string());
+    }
+    if let Some(tenant) = input.tenant.filter(|v| !v.trim().is_empty()) {
+        args.push("--tenant".to_string());
+        args.push(tenant);
+    }
+    if let Some(workspace) = input.workspace.filter(|v| !v.trim().is_empty()) {
+        args.push("--workspace".to_string());
+        args.push(workspace);
+    }
+    if input.triage.unwrap_or(false) {
+        args.push("--triage".to_string());
+    }
+    if let Some(max_retries) = input.max_retries {
+        args.push("--max-retries".to_string());
+        args.push(max_retries.to_string());
+    }
+    for skill in input.skills.unwrap_or_default() {
+        if !skill.trim().is_empty() {
+            args.push("--skill".to_string());
+            args.push(skill);
+        }
+    }
+    args.push("--json".to_string());
+    let stdout = run_kanban_cli(&args, profile.as_deref())?;
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|error| format!("解析创建结果失败：{error}"))?;
+    Ok(value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// Single entry point for lifecycle verbs so the frontend stays compact.
+/// `value` carries the optional argument (result/reason/assignee/comment body).
+#[tauri::command]
+fn kanban_task_action(
+    profile: Option<String>,
+    task_id: String,
+    action: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    if task_id.trim().is_empty() {
+        return Err("缺少任务 ID。".to_string());
+    }
+    let value_trimmed = value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let args: Vec<String> = match action.as_str() {
+        "specify" => vec!["specify".to_string(), task_id],
+        "promote" => vec!["promote".to_string(), task_id],
+        "unblock" => vec!["unblock".to_string(), task_id],
+        "archive" => vec!["archive".to_string(), task_id],
+        "complete" => {
+            let mut a = vec!["complete".to_string(), task_id];
+            if let Some(result) = value_trimmed {
+                a.push("--result".to_string());
+                a.push(result);
+            }
+            a
+        }
+        "block" => {
+            let mut a = vec!["block".to_string(), task_id];
+            if let Some(reason) = value_trimmed {
+                a.push(reason);
+            }
+            a
+        }
+        "schedule" => {
+            let mut a = vec!["schedule".to_string(), task_id];
+            if let Some(reason) = value_trimmed {
+                a.push(reason);
+            }
+            a
+        }
+        "reclaim" => {
+            let mut a = vec!["reclaim".to_string(), task_id];
+            if let Some(reason) = value_trimmed {
+                a.push("--reason".to_string());
+                a.push(reason);
+            }
+            a
+        }
+        "assign" => vec![
+            "assign".to_string(),
+            task_id,
+            value_trimmed.unwrap_or_else(|| "none".to_string()),
+        ],
+        "comment" => {
+            let body = value_trimmed.ok_or_else(|| "评论内容不能为空。".to_string())?;
+            vec!["comment".to_string(), task_id, body]
+        }
+        other => return Err(format!("不支持的看板操作：{other}")),
+    };
+    run_kanban_cli(&args, profile.as_deref())?;
+    Ok(())
+}
+
 struct MessagingPlatformDef {
     id: &'static str,
     name: &'static str,
@@ -13335,6 +13740,13 @@ pub fn run() {
             list_messaging_platforms,
             update_messaging_platform,
             test_messaging_platform,
+            list_kanban_boards,
+            current_kanban_board,
+            switch_kanban_board,
+            list_kanban_tasks,
+            get_kanban_task,
+            create_kanban_task,
+            kanban_task_action,
             load_hermes_team_state,
             save_hermes_team_state,
             load_hermes_team_sessions,
