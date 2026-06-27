@@ -11055,6 +11055,429 @@ fn kanban_task_action(
     Ok(())
 }
 
+// ----------------------------------------------------------------------------
+// Wallet (Base mainnet). BIP-39 mnemonic + BIP-44 (m/44'/60'/0'/0/0) Ethereum
+// account. The recovery phrase is encrypted at rest with a user passphrase
+// (PBKDF2-HMAC-SHA256 → AES-256-GCM) and stored in the profile home; only the
+// public address is kept in cleartext. No secret is ever logged or returned
+// except the one-time mnemonic on create / explicit reveal.
+// ----------------------------------------------------------------------------
+
+const WALLET_ETH_PATH: &str = "m/44'/60'/0'/0/0";
+const WALLET_PBKDF2_ITERATIONS: u32 = 600_000;
+const WALLET_HD_CONTRACT: &str = "0xfda75f77a22b4f4b783bbbb21915ef64d149bba3";
+const WALLET_DEFAULT_RPC: &str = "https://mainnet.base.org";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WalletFile {
+    version: u32,
+    address: String,
+    created_at: u64,
+    imported: bool,
+    kdf: String,
+    iterations: u32,
+    salt: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WalletStatus {
+    exists: bool,
+    address: Option<String>,
+    created_at: Option<u64>,
+    imported: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct WalletInfo {
+    address: String,
+    created_at: u64,
+    imported: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateWalletResult {
+    address: String,
+    mnemonic: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WalletBalance {
+    token_id: String,
+    symbol: String,
+    decimals: u32,
+    raw: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WalletBalancesResult {
+    address: String,
+    balances: Vec<WalletBalance>,
+    fetched_at: u64,
+}
+
+fn wallet_file_path(profile: Option<&str>) -> Result<PathBuf, String> {
+    Ok(profile_home(profile)?.join("wallet.json"))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// EIP-55 mixed-case checksum address (with `0x` prefix) from 20 raw bytes.
+fn eth_checksum_address(addr: &[u8]) -> String {
+    use sha3::{Digest, Keccak256};
+    let hex = hex_lower(addr);
+    let hash = Keccak256::digest(hex.as_bytes());
+    let mut out = String::from("0x");
+    for (i, ch) in hex.chars().enumerate() {
+        if ch.is_ascii_digit() {
+            out.push(ch);
+        } else {
+            let byte = hash[i / 2];
+            let nibble = if i % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+            if nibble >= 8 {
+                out.push(ch.to_ascii_uppercase());
+            } else {
+                out.push(ch);
+            }
+        }
+    }
+    out
+}
+
+/// Derive the checksummed Base/Ethereum address for a BIP-39 phrase.
+fn wallet_address_from_phrase(phrase: &str) -> Result<String, String> {
+    use bip32::{DerivationPath, XPrv};
+    use bip39::{Language, Mnemonic};
+    use sha3::{Digest, Keccak256};
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, phrase.trim())
+        .map_err(|_| "助记词无效，请检查后重试。".to_string())?;
+    let seed = mnemonic.to_seed("");
+    let path: DerivationPath = WALLET_ETH_PATH
+        .parse()
+        .map_err(|_| "派生路径无效。".to_string())?;
+    let xprv = XPrv::derive_from_path(seed, &path)
+        .map_err(|error| format!("密钥派生失败：{error}"))?;
+    let verifying_key = xprv.private_key().verifying_key();
+    let point = verifying_key.to_encoded_point(false);
+    let bytes = point.as_bytes();
+    if bytes.len() != 65 {
+        return Err("公钥格式异常。".to_string());
+    }
+    let hash = Keccak256::digest(&bytes[1..]);
+    Ok(eth_checksum_address(&hash[12..]))
+}
+
+fn wallet_derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
+    use pbkdf2::pbkdf2_hmac;
+    use sha2::Sha256;
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iterations, &mut key);
+    key
+}
+
+fn wallet_encrypt_phrase(phrase: &str, passphrase: &str) -> Result<(String, String, String), String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use base64::Engine;
+    use rand::RngCore;
+
+    let mut salt = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
+    rand::rngs::OsRng.fill_bytes(&mut salt);
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+
+    let key_bytes = wallet_derive_key(passphrase, &salt, WALLET_PBKDF2_ITERATIONS);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), phrase.as_bytes())
+        .map_err(|_| "加密助记词失败。".to_string())?;
+
+    let engine = base64::engine::general_purpose::STANDARD;
+    Ok((
+        engine.encode(salt),
+        engine.encode(nonce_bytes),
+        engine.encode(ciphertext),
+    ))
+}
+
+fn wallet_decrypt_phrase(file: &WalletFile, passphrase: &str) -> Result<String, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use base64::Engine;
+
+    let engine = base64::engine::general_purpose::STANDARD;
+    let salt = engine
+        .decode(&file.salt)
+        .map_err(|_| "钱包数据损坏（salt）。".to_string())?;
+    let nonce = engine
+        .decode(&file.nonce)
+        .map_err(|_| "钱包数据损坏（nonce）。".to_string())?;
+    let ciphertext = engine
+        .decode(&file.ciphertext)
+        .map_err(|_| "钱包数据损坏（ciphertext）。".to_string())?;
+    if nonce.len() != 12 {
+        return Err("钱包数据损坏（nonce 长度）。".to_string());
+    }
+    let key_bytes = wallet_derive_key(passphrase, &salt, file.iterations);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_slice())
+        .map_err(|_| "口令错误或钱包数据损坏。".to_string())?;
+    String::from_utf8(plaintext).map_err(|_| "助记词解码失败。".to_string())
+}
+
+fn wallet_read_file(profile: Option<&str>) -> Result<Option<WalletFile>, String> {
+    let path = wallet_file_path(profile)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path).map_err(|error| format!("读取钱包失败：{error}"))?;
+    let file: WalletFile =
+        serde_json::from_str(&raw).map_err(|error| format!("解析钱包失败：{error}"))?;
+    Ok(Some(file))
+}
+
+fn wallet_write_file(profile: Option<&str>, file: &WalletFile) -> Result<(), String> {
+    let path = wallet_file_path(profile)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建目录失败：{error}"))?;
+    }
+    let json = serde_json::to_string_pretty(file).map_err(|error| format!("序列化失败：{error}"))?;
+    fs::write(&path, json).map_err(|error| format!("写入钱包失败：{error}"))
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn wallet_persist(
+    profile: Option<&str>,
+    phrase: &str,
+    passphrase: &str,
+    imported: bool,
+) -> Result<String, String> {
+    if passphrase.len() < 8 {
+        return Err("口令至少需要 8 个字符。".to_string());
+    }
+    let address = wallet_address_from_phrase(phrase)?;
+    let (salt, nonce, ciphertext) = wallet_encrypt_phrase(phrase, passphrase)?;
+    let file = WalletFile {
+        version: 1,
+        address: address.clone(),
+        created_at: now_secs(),
+        imported,
+        kdf: "pbkdf2-hmac-sha256".to_string(),
+        iterations: WALLET_PBKDF2_ITERATIONS,
+        salt,
+        nonce,
+        ciphertext,
+    };
+    wallet_write_file(profile, &file)?;
+    Ok(address)
+}
+
+#[tauri::command]
+fn wallet_status(profile: Option<String>) -> Result<WalletStatus, String> {
+    match wallet_read_file(profile.as_deref())? {
+        Some(file) => Ok(WalletStatus {
+            exists: true,
+            address: Some(file.address),
+            created_at: Some(file.created_at),
+            imported: Some(file.imported),
+        }),
+        None => Ok(WalletStatus {
+            exists: false,
+            address: None,
+            created_at: None,
+            imported: None,
+        }),
+    }
+}
+
+#[tauri::command]
+fn create_wallet(profile: Option<String>, passphrase: String) -> Result<CreateWalletResult, String> {
+    use bip39::{Language, Mnemonic};
+    if wallet_read_file(profile.as_deref())?.is_some() {
+        return Err("该 Profile 已存在钱包。请先删除现有钱包。".to_string());
+    }
+    let mnemonic = Mnemonic::generate_in(Language::English, 12)
+        .map_err(|error| format!("生成助记词失败：{error}"))?;
+    let phrase = mnemonic.to_string();
+    let address = wallet_persist(profile.as_deref(), &phrase, &passphrase, false)?;
+    Ok(CreateWalletResult {
+        address,
+        mnemonic: phrase,
+    })
+}
+
+#[tauri::command]
+fn import_wallet(
+    profile: Option<String>,
+    mnemonic: String,
+    passphrase: String,
+) -> Result<WalletInfo, String> {
+    if wallet_read_file(profile.as_deref())?.is_some() {
+        return Err("该 Profile 已存在钱包。请先删除现有钱包。".to_string());
+    }
+    let address = wallet_persist(profile.as_deref(), mnemonic.trim(), &passphrase, true)?;
+    Ok(WalletInfo {
+        address,
+        created_at: now_secs(),
+        imported: true,
+    })
+}
+
+#[tauri::command]
+fn reveal_wallet_mnemonic(profile: Option<String>, passphrase: String) -> Result<String, String> {
+    let file = wallet_read_file(profile.as_deref())?
+        .ok_or_else(|| "该 Profile 尚未创建钱包。".to_string())?;
+    wallet_decrypt_phrase(&file, &passphrase)
+}
+
+#[tauri::command]
+fn remove_wallet(profile: Option<String>) -> Result<(), String> {
+    let path = wallet_file_path(profile.as_deref())?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|error| format!("删除钱包失败：{error}"))?;
+    }
+    Ok(())
+}
+
+/// Convert a `0x`-prefixed hex quantity into a base-10 decimal string. Pure
+/// big-int string math so balances far beyond u128 stay exact.
+fn hex_to_decimal_string(hex: &str) -> String {
+    let trimmed = hex.trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.is_empty() {
+        return "0".to_string();
+    }
+    let mut digits: Vec<u8> = vec![0];
+    for ch in trimmed.chars() {
+        let value = match ch.to_digit(16) {
+            Some(v) => v as u16,
+            None => continue,
+        };
+        let mut carry = value;
+        for digit in digits.iter_mut() {
+            let acc = (*digit as u16) * 16 + carry;
+            *digit = (acc % 10) as u8;
+            carry = acc / 10;
+        }
+        while carry > 0 {
+            digits.push((carry % 10) as u8);
+            carry /= 10;
+        }
+    }
+    let mut out: String = digits.iter().rev().map(|d| (b'0' + d) as char).collect();
+    while out.len() > 1 && out.starts_with('0') {
+        out.remove(0);
+    }
+    out
+}
+
+fn wallet_rpc_call(rpc_url: &str, method: &str, params: serde_json::Value) -> Result<String, String> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": method,
+        "params": params,
+    });
+    let response = ureq::post(rpc_url)
+        .timeout(Duration::from_secs(10))
+        .set("content-type", "application/json")
+        .send_json(body)
+        .map_err(|error| format!("RPC 请求失败：{error}"))?;
+    let value: serde_json::Value = response
+        .into_json()
+        .map_err(|error| format!("解析 RPC 响应失败：{error}"))?;
+    if let Some(err) = value.get("error") {
+        return Err(format!("RPC 错误：{err}"));
+    }
+    value
+        .get("result")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "RPC 响应缺少 result。".to_string())
+}
+
+#[tauri::command]
+fn wallet_balances(
+    profile: Option<String>,
+    rpc_url: Option<String>,
+) -> Result<WalletBalancesResult, String> {
+    let file = wallet_read_file(profile.as_deref())?
+        .ok_or_else(|| "该 Profile 尚未创建钱包。".to_string())?;
+    let address = file.address;
+    let rpc = rpc_url
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| WALLET_DEFAULT_RPC.to_string());
+
+    let mut balances = Vec::new();
+
+    // Native ETH
+    match wallet_rpc_call(
+        &rpc,
+        "eth_getBalance",
+        json!([address, "latest"]),
+    ) {
+        Ok(hex) => balances.push(WalletBalance {
+            token_id: "eth".to_string(),
+            symbol: "ETH".to_string(),
+            decimals: 18,
+            raw: hex_to_decimal_string(&hex),
+            error: None,
+        }),
+        Err(error) => balances.push(WalletBalance {
+            token_id: "eth".to_string(),
+            symbol: "ETH".to_string(),
+            decimals: 18,
+            raw: "0".to_string(),
+            error: Some(error),
+        }),
+    }
+
+    // ERC-20 $HD via balanceOf(address)
+    let addr_hex = address.trim_start_matches("0x").to_lowercase();
+    let data = format!("0x70a08231{:0>64}", addr_hex);
+    match wallet_rpc_call(
+        &rpc,
+        "eth_call",
+        json!([{ "to": WALLET_HD_CONTRACT, "data": data }, "latest"]),
+    ) {
+        Ok(hex) => balances.push(WalletBalance {
+            token_id: "hd".to_string(),
+            symbol: "HD".to_string(),
+            decimals: 18,
+            raw: hex_to_decimal_string(&hex),
+            error: None,
+        }),
+        Err(error) => balances.push(WalletBalance {
+            token_id: "hd".to_string(),
+            symbol: "HD".to_string(),
+            decimals: 18,
+            raw: "0".to_string(),
+            error: Some(error),
+        }),
+    }
+
+    Ok(WalletBalancesResult {
+        address,
+        balances,
+        fetched_at: now_secs() * 1000,
+    })
+}
+
 struct MessagingPlatformDef {
     id: &'static str,
     name: &'static str,
@@ -13747,6 +14170,12 @@ pub fn run() {
             get_kanban_task,
             create_kanban_task,
             kanban_task_action,
+            wallet_status,
+            create_wallet,
+            import_wallet,
+            reveal_wallet_mnemonic,
+            remove_wallet,
+            wallet_balances,
             load_hermes_team_state,
             save_hermes_team_state,
             load_hermes_team_sessions,
@@ -13795,6 +14224,48 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_known_eth_address_from_mnemonic() {
+        // Well-known Hardhat/Anvil test mnemonic; account 0 (m/44'/60'/0'/0/0)
+        // must derive to this checksummed address. Guards the BIP-39/BIP-44 +
+        // keccak + EIP-55 pipeline against regressions.
+        let phrase =
+            "test test test test test test test test test test test junk";
+        let address = wallet_address_from_phrase(phrase).expect("derivation");
+        assert_eq!(address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+    }
+
+    #[test]
+    fn hex_to_decimal_string_handles_large_values() {
+        assert_eq!(hex_to_decimal_string("0x0"), "0");
+        assert_eq!(hex_to_decimal_string("0xde0b6b3a7640000"), "1000000000000000000");
+        assert_eq!(hex_to_decimal_string("0x"), "0");
+    }
+
+    #[test]
+    fn wallet_roundtrip_encrypts_and_decrypts() {
+        let phrase =
+            "test test test test test test test test test test test junk";
+        let (salt, nonce, ciphertext) =
+            wallet_encrypt_phrase(phrase, "correct horse battery").expect("encrypt");
+        let file = WalletFile {
+            version: 1,
+            address: "0x0".to_string(),
+            created_at: 0,
+            imported: false,
+            kdf: "pbkdf2-hmac-sha256".to_string(),
+            iterations: WALLET_PBKDF2_ITERATIONS,
+            salt,
+            nonce,
+            ciphertext,
+        };
+        assert_eq!(
+            wallet_decrypt_phrase(&file, "correct horse battery").expect("decrypt"),
+            phrase
+        );
+        assert!(wallet_decrypt_phrase(&file, "wrong passphrase").is_err());
+    }
 
     #[test]
     fn parses_gateway_thinking_tool_progress_payload() {

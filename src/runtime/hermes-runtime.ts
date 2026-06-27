@@ -1600,6 +1600,94 @@ export async function kanbanTaskAction(input: {
   });
 }
 
+export interface WalletStatus {
+  exists: boolean;
+  address?: string | null;
+  created_at?: number | null;
+  imported?: boolean | null;
+}
+
+export interface WalletInfo {
+  address: string;
+  created_at: number;
+  imported: boolean;
+}
+
+export interface CreateWalletResult {
+  address: string;
+  mnemonic: string;
+}
+
+export interface WalletBalance {
+  token_id: string;
+  symbol: string;
+  decimals: number;
+  raw: string;
+  error?: string | null;
+}
+
+export interface WalletBalancesResult {
+  address: string;
+  balances: WalletBalance[];
+  fetched_at: number;
+}
+
+export async function walletStatus(params: { profile?: string } = {}): Promise<WalletStatus> {
+  ensureTauriRuntime();
+  return invoke<WalletStatus>("wallet_status", { profile: params.profile });
+}
+
+export async function createWallet(input: {
+  profile?: string;
+  passphrase: string;
+}): Promise<CreateWalletResult> {
+  ensureTauriRuntime();
+  return invoke<CreateWalletResult>("create_wallet", {
+    profile: input.profile,
+    passphrase: input.passphrase,
+  });
+}
+
+export async function importWallet(input: {
+  profile?: string;
+  mnemonic: string;
+  passphrase: string;
+}): Promise<WalletInfo> {
+  ensureTauriRuntime();
+  return invoke<WalletInfo>("import_wallet", {
+    profile: input.profile,
+    mnemonic: input.mnemonic,
+    passphrase: input.passphrase,
+  });
+}
+
+export async function revealWalletMnemonic(input: {
+  profile?: string;
+  passphrase: string;
+}): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("reveal_wallet_mnemonic", {
+    profile: input.profile,
+    passphrase: input.passphrase,
+  });
+}
+
+export async function removeWallet(params: { profile?: string } = {}): Promise<void> {
+  ensureTauriRuntime();
+  await invoke("remove_wallet", { profile: params.profile });
+}
+
+export async function walletBalances(input: {
+  profile?: string;
+  rpcUrl?: string;
+}): Promise<WalletBalancesResult> {
+  ensureTauriRuntime();
+  return invoke<WalletBalancesResult>("wallet_balances", {
+    profile: input.profile,
+    rpcUrl: input.rpcUrl,
+  });
+}
+
 export async function testMessagingPlatform(input: {
   profile?: string;
   platform: string;

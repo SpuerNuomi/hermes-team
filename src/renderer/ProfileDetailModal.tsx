@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import ProfileAvatar from "./ProfileAvatar";
+import WalletPane from "./WalletPane";
 import { useTranslation } from "../i18n";
 import { PROFILE_COLORS, defaultColorForName } from "./profileColors";
 import { fileToAvatarDataUrl } from "./profileImage";
@@ -27,7 +28,7 @@ import {
   type HermesProfileInfo,
 } from "../runtime/hermes-runtime";
 
-type ProfileSection = "profile" | "persona" | "advanced";
+type ProfileSection = "profile" | "persona" | "wallet" | "advanced";
 
 interface ProfileDetailModalProps {
   profile: HermesProfileInfo;
@@ -53,6 +54,7 @@ const SECTIONS: ReadonlyArray<{
 }> = [
   { id: "profile", labelKey: "profileDetail.sectionProfile", Icon: User },
   { id: "persona", labelKey: "profileDetail.sectionPersona", Icon: Sparkles },
+  { id: "wallet", labelKey: "profileDetail.sectionWallet", Icon: Wallet },
   { id: "advanced", labelKey: "profileDetail.sectionAdvanced", Icon: Settings },
 ];
 
@@ -257,10 +259,6 @@ export default function ProfileDetailModal({
                 <span>{t(item.labelKey)}</span>
               </button>
             ))}
-            <span className="profile-detail-nav-note">
-              <Wallet size={14} />
-              <span>{t("profileDetail.walletUnsupported")}</span>
-            </span>
           </nav>
 
           <div className="profile-detail-content">
@@ -371,6 +369,12 @@ export default function ProfileDetailModal({
                   onChange={(event) => setPersonaDraft(event.target.value)}
                 />
                 {error && <div className="profile-detail-error">{error}</div>}
+              </div>
+            )}
+
+            {section === "wallet" && (
+              <div className="profile-detail-pane">
+                <WalletPane profile={name} t={t} />
               </div>
             )}
 
