@@ -5,6 +5,8 @@ import type { DispatchTask, MessageAttachment } from "../src/core/types";
 import type { HermesProfileInfo } from "../src/runtime/hermes-runtime";
 import {
   applyTaskStreamOutput,
+  detachParallelChatRunTasks,
+  planParallelChatRunSessions,
   planSendMessage,
   resolveTaskRuntimeContext,
 } from "../src/renderer/chatRuntimeController";
@@ -40,6 +42,51 @@ function state(overrides: Partial<OrchestrationState> = {}): OrchestrationState 
     tasks: [task()],
     logs: [],
     ...overrides,
+  };
+}
+
+function parallelState(): OrchestrationState {
+  return {
+    workspace: { ...seedWorkspace, id: "workspace-parent" },
+    agents: [
+      { ...seedAgents[0], id: "agent-alpha", workspaceId: "workspace-parent", name: "Alpha" },
+      { ...seedAgents[0], id: "agent-beta", workspaceId: "workspace-parent", name: "Beta" },
+    ],
+    bindings: [
+      { ...seedBindings[0], agentId: "agent-alpha", hermesProfile: "alpha-profile" },
+      { ...seedBindings[0], agentId: "agent-beta", hermesProfile: "beta-profile" },
+    ],
+    messages: [
+      {
+        id: "msg-1",
+        workspaceId: "workspace-parent",
+        authorKind: "user",
+        authorName: "You",
+        content: "@Alpha @Beta compare options",
+        createdAt: 1,
+      },
+    ],
+    tasks: [
+      {
+        id: "task-alpha",
+        workspaceId: "workspace-parent",
+        agentId: "agent-alpha",
+        triggerMessageId: "msg-1",
+        instruction: "compare options",
+        status: "pending",
+        createdAt: 2,
+      },
+      {
+        id: "task-beta",
+        workspaceId: "workspace-parent",
+        agentId: "agent-beta",
+        triggerMessageId: "msg-1",
+        instruction: "compare options",
+        status: "pending",
+        createdAt: 3,
+      },
+    ],
+    logs: [],
   };
 }
 
@@ -149,6 +196,49 @@ describe("chat runtime controller", () => {
     expect(runtimeContext.selectedProfile?.name).toBe("default");
     expect(runtimeContext.binding?.model).toBeUndefined();
     expect(runtimeContext.effectiveBinding?.model).toBe("gpt-override");
+  });
+
+  it("plans independent child sessions for parallel chat runs", () => {
+    const plans = planParallelChatRunSessions(parallelState(), ["task-alpha", "task-beta"]);
+
+    expect(plans).toHaveLength(2);
+    expect(plans[0]).toMatchObject({
+      taskId: "task-alpha",
+      agentId: "agent-alpha",
+      agentName: "Alpha",
+      profile: "alpha-profile",
+      sessionId: "chatrun-task-alpha",
+      parentSessionId: "workspace-parent",
+      source: "parallel",
+      label: "Child · Alpha · alpha-profile",
+    });
+    expect(plans[0].state.workspace).toMatchObject({
+      id: "chatrun-task-alpha",
+      defaultAgentId: "agent-alpha",
+    });
+    expect(plans[0].state.messages[0].workspaceId).toBe("chatrun-task-alpha");
+    expect(plans[0].state.tasks).toEqual([
+      expect.objectContaining({
+        id: "task-alpha",
+        workspaceId: "chatrun-task-alpha",
+        status: "pending",
+      }),
+    ]);
+  });
+
+  it("detaches parallel child tasks from the main window state", () => {
+    const next = detachParallelChatRunTasks(
+      parallelState(),
+      ["task-alpha", "task-beta"],
+      "opened child windows",
+    );
+
+    expect(next.tasks).toEqual([]);
+    expect(next.messages.at(-1)).toMatchObject({
+      authorKind: "system",
+      content: "opened child windows",
+      replyToMessageId: "msg-1",
+    });
   });
 
   it("completes a task with a fallback agent message when no stream replay exists", () => {

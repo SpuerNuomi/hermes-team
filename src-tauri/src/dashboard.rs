@@ -93,8 +93,12 @@ struct WsClient {
 
 impl WsClient {
     fn connect(endpoint: &DashboardEndpoint) -> Result<WsClient, String> {
-        let mut stream = TcpStream::connect((&*endpoint.host, endpoint.port))
-            .map_err(|error| format!("连接 dashboard {}:{} 失败：{error}", endpoint.host, endpoint.port))?;
+        let mut stream = TcpStream::connect((&*endpoint.host, endpoint.port)).map_err(|error| {
+            format!(
+                "连接 dashboard {}:{} 失败：{error}",
+                endpoint.host, endpoint.port
+            )
+        })?;
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .map_err(|error| format!("设置 dashboard 读取超时失败：{error}"))?;
@@ -145,7 +149,9 @@ impl WsClient {
                         });
                     }
                 }
-                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
                     continue;
                 }
                 Err(error) => return Err(format!("读取 dashboard 握手失败：{error}")),
@@ -376,7 +382,10 @@ fn ensure_local_dashboard(profile: Option<&str>) -> Result<(u16, String), String
             .try_wait()
             .map(|status| status.is_none())
             .unwrap_or(false);
-        if alive && existing.profile == profile_key && dashboard_status_ok(existing.port, &existing.token) {
+        if alive
+            && existing.profile == profile_key
+            && dashboard_status_ok(existing.port, &existing.token)
+        {
             return Ok((existing.port, existing.token.clone()));
         }
         // Stale/different profile — tear it down before respawning.
@@ -473,7 +482,8 @@ fn remote_dashboard_endpoint(base_url: &str, token: &str) -> Result<DashboardEnd
     let (host, port) = match host_port.rsplit_once(':') {
         Some((host, port)) => (
             host.to_string(),
-            port.parse::<u16>().map_err(|_| format!("无效端口：{port}"))?,
+            port.parse::<u16>()
+                .map_err(|_| format!("无效端口：{port}"))?,
         ),
         None => (host_port.to_string(), 80),
     };
@@ -521,9 +531,7 @@ fn resolve_dashboard_endpoint(
             let token = auth
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    "dashboard 远程/SSH 传输需要 API 密钥作为会话令牌。".to_string()
-                })?;
+                .ok_or_else(|| "dashboard 远程/SSH 传输需要 API 密钥作为会话令牌。".to_string())?;
             remote_dashboard_endpoint(base_url, token)
         }
     }
@@ -918,7 +926,8 @@ fn handle_dashboard_event(
                         task_id: task_id.to_string(),
                         kind: "clarify".to_string(),
                         delta: question,
-                        content: serde_json::to_string(&choices).unwrap_or_else(|_| "[]".to_string()),
+                        content: serde_json::to_string(&choices)
+                            .unwrap_or_else(|_| "[]".to_string()),
                         message: request_id,
                     },
                 )?;

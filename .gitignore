@@ -6,4 +6,5 @@ src-tauri/gen
 .env
 .env.local
 *.log
+.vscode/
 .specstory/

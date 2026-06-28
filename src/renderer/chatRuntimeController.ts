@@ -9,6 +9,18 @@ import { parseBackgroundCommand, parseBrowseCommand } from "./chatCommands";
 import { isLocalReplyCommand, slashCommandName } from "./chatInput/localCommands";
 import { applyStreamEventSnapshot } from "./chatStreamState";
 
+export interface ParallelChatRunSessionPlan {
+  taskId: string;
+  agentId: string;
+  agentName: string;
+  profile: string;
+  sessionId: string;
+  parentSessionId: string;
+  source: string;
+  label: string;
+  state: OrchestrationState;
+}
+
 export type SendMessagePlan =
   | { kind: "empty" }
   | { kind: "browse"; url: string }
@@ -107,6 +119,78 @@ export function resolveTaskRuntimeContext(
     effectiveBinding,
     profileName,
     selectedProfile,
+  };
+}
+
+export function planParallelChatRunSessions(
+  state: OrchestrationState,
+  taskIds: string[],
+): ParallelChatRunSessionPlan[] {
+  const idSet = new Set(taskIds);
+  return state.tasks
+    .filter((task) => idSet.has(task.id))
+    .map((task) => {
+      const agent = state.agents.find((item) => item.id === task.agentId);
+      const binding = state.bindings.find((item) => item.agentId === task.agentId);
+      const profile = binding?.hermesProfile ?? "default";
+      const agentName = agent?.name ?? task.agentId;
+      const sessionId = `chatrun-${task.id}`;
+      const label = `Child · ${agentName} · ${profile}`;
+      const childState: OrchestrationState = {
+        ...state,
+        workspace: {
+          ...state.workspace,
+          id: sessionId,
+          name: label,
+          defaultAgentId: task.agentId,
+        },
+        agents: state.agents.map((item) => ({ ...item, workspaceId: sessionId })),
+        messages: state.messages.map((message) => ({ ...message, workspaceId: sessionId })),
+        tasks: [
+          {
+            ...task,
+            workspaceId: sessionId,
+            status: "pending",
+            completedAt: undefined,
+          },
+        ],
+      };
+      return {
+        taskId: task.id,
+        agentId: task.agentId,
+        agentName,
+        profile,
+        sessionId,
+        parentSessionId: state.workspace.id,
+        source: "parallel",
+        label,
+        state: childState,
+      };
+    });
+}
+
+export function detachParallelChatRunTasks(
+  state: OrchestrationState,
+  taskIds: string[],
+  systemContent: string,
+): OrchestrationState {
+  const idSet = new Set(taskIds);
+  const firstTask = state.tasks.find((task) => idSet.has(task.id));
+  return {
+    ...state,
+    tasks: state.tasks.filter((task) => !idSet.has(task.id)),
+    messages: [
+      ...state.messages,
+      {
+        id: `chatrun-launch-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        workspaceId: state.workspace.id,
+        authorKind: "system",
+        authorName: "系统",
+        content: systemContent,
+        createdAt: Date.now(),
+        replyToMessageId: firstTask?.triggerMessageId,
+      },
+    ],
   };
 }
 

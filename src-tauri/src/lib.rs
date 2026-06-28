@@ -6,10 +6,12 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 mod dashboard;
 
@@ -26,6 +28,42 @@ fn app_ready() -> &'static str {
     "hermes-team-ready"
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenChatRunWindowRequest {
+    window_label: Option<String>,
+    chat_run_id: Option<String>,
+    session_id: Option<String>,
+    parent_session_id: Option<String>,
+    source: Option<String>,
+    url: String,
+    title: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatRunWindowResult {
+    window_label: String,
+    chat_run_id: Option<String>,
+    session_id: Option<String>,
+    parent_session_id: Option<String>,
+    source: Option<String>,
+    url: String,
+    title: String,
+    reused: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatRunWindowClosedEvent {
+    window_label: String,
+    chat_run_id: Option<String>,
+    session_id: Option<String>,
+    parent_session_id: Option<String>,
+    source: Option<String>,
+    title: String,
+}
+
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<bool, String> {
     let trimmed = url.trim();
@@ -37,6 +75,167 @@ async fn open_external_url(url: String) -> Result<bool, String> {
         .spawn()
         .map_err(|error| format!("打开外部浏览器失败：{error}"))?;
     Ok(true)
+}
+
+#[tauri::command]
+async fn open_chat_run_window(
+    app: AppHandle,
+    request: OpenChatRunWindowRequest,
+) -> Result<ChatRunWindowResult, String> {
+    let window_label = normalize_chat_run_window_label(
+        request.window_label.as_deref(),
+        request.chat_run_id.as_deref(),
+    )?;
+    let app_url = normalize_chat_run_app_url(&request.url)?;
+    let title = normalize_chat_run_title(request.title.as_deref());
+    let chat_run_id = clean_chat_run_metadata(request.chat_run_id.as_deref());
+    let session_id = clean_chat_run_metadata(request.session_id.as_deref());
+    let parent_session_id = clean_chat_run_metadata(request.parent_session_id.as_deref());
+    let source = clean_chat_run_metadata(request.source.as_deref());
+
+    if let Some(existing) = app.get_webview_window(&window_label) {
+        existing
+            .set_title(&title)
+            .map_err(|error| format!("更新 ChatRun 窗口标题失败：{error}"))?;
+        existing
+            .set_focus()
+            .map_err(|error| format!("聚焦 ChatRun 窗口失败：{error}"))?;
+        return Ok(ChatRunWindowResult {
+            window_label,
+            chat_run_id,
+            session_id,
+            parent_session_id,
+            source,
+            url: app_url,
+            title,
+            reused: true,
+        });
+    }
+
+    let closed_payload = ChatRunWindowClosedEvent {
+        window_label: window_label.clone(),
+        chat_run_id: chat_run_id.clone(),
+        session_id: session_id.clone(),
+        parent_session_id: parent_session_id.clone(),
+        source: source.clone(),
+        title: title.clone(),
+    };
+    let app_for_event = app.clone();
+    let emitted = Arc::new(AtomicBool::new(false));
+    let emitted_for_event = Arc::clone(&emitted);
+    let window =
+        WebviewWindowBuilder::new(&app, &window_label, WebviewUrl::App(app_url.clone().into()))
+            .title(title.clone())
+            .inner_size(1180.0, 820.0)
+            .min_inner_size(900.0, 640.0)
+            .resizable(true)
+            .focused(true)
+            .build()
+            .map_err(|error| format!("创建 ChatRun 子窗口失败：{error}"))?;
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Destroyed)
+            && !emitted_for_event.swap(true, Ordering::SeqCst)
+        {
+            let _ = app_for_event.emit("chat-run-window-closed", closed_payload.clone());
+        }
+    });
+
+    Ok(ChatRunWindowResult {
+        window_label,
+        chat_run_id,
+        session_id,
+        parent_session_id,
+        source,
+        url: app_url,
+        title,
+        reused: false,
+    })
+}
+
+fn normalize_chat_run_title(raw: Option<&str>) -> String {
+    let title = raw.unwrap_or("").trim();
+    if title.is_empty() {
+        "Hermes Team · ChatRun".to_string()
+    } else {
+        truncate(title, 96)
+    }
+}
+
+fn normalize_chat_run_app_url(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err("ChatRun URL 不能为空。".to_string());
+    }
+    if value.contains('\\')
+        || value.starts_with("//")
+        || value.contains("://")
+        || value.starts_with("file:")
+    {
+        return Err("ChatRun URL 必须是当前应用内的相对地址。".to_string());
+    }
+
+    let suffix = if value == "/" {
+        String::new()
+    } else if let Some(query) = value.strip_prefix("/?") {
+        format!("?{query}")
+    } else if let Some(hash) = value.strip_prefix("/#") {
+        format!("#{hash}")
+    } else if value.starts_with('?') || value.starts_with('#') {
+        value.to_string()
+    } else {
+        return Err("ChatRun URL 只允许根路径 query/hash。".to_string());
+    };
+
+    Ok(format!("index.html{suffix}"))
+}
+
+fn normalize_chat_run_window_label(
+    window_label: Option<&str>,
+    chat_run_id: Option<&str>,
+) -> Result<String, String> {
+    let raw = window_label
+        .and_then(non_empty_trimmed)
+        .or_else(|| chat_run_id.and_then(non_empty_trimmed))
+        .ok_or_else(|| "ChatRun 窗口 label 不能为空。".to_string())?;
+    let mut normalized = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            normalized.push(ch.to_ascii_lowercase());
+        } else {
+            normalized.push('-');
+        }
+    }
+    let normalized = normalized
+        .trim_matches('-')
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if normalized.is_empty() {
+        return Err("ChatRun 窗口 label 不能为空。".to_string());
+    }
+    let prefixed = if normalized.starts_with("chat-run-") {
+        normalized
+    } else {
+        format!("chat-run-{normalized}")
+    };
+    Ok(truncate(&prefixed, 80))
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn clean_chat_run_metadata(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate(value, 256))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1430,22 +1629,50 @@ async fn run_hermes_doctor(profile: Option<String>) -> Result<HermesDoctorReport
     });
     checks.push(DoctorCheck {
         label: "版本".to_string(),
-        status: if install.version.is_some() { "ok" } else { "warn" }.to_string(),
-        detail: install.version.clone().unwrap_or_else(|| "未返回".to_string()),
+        status: if install.version.is_some() {
+            "ok"
+        } else {
+            "warn"
+        }
+        .to_string(),
+        detail: install
+            .version
+            .clone()
+            .unwrap_or_else(|| "未返回".to_string()),
     });
     checks.push(DoctorCheck {
         label: "config.yaml".to_string(),
         status: if install.config_exists { "ok" } else { "warn" }.to_string(),
-        detail: if install.config_exists { "已存在" } else { "未发现" }.to_string(),
+        detail: if install.config_exists {
+            "已存在"
+        } else {
+            "未发现"
+        }
+        .to_string(),
     });
     checks.push(DoctorCheck {
         label: "API_SERVER_KEY".to_string(),
-        status: if install.api_server_key_present { "ok" } else { "warn" }.to_string(),
-        detail: if install.api_server_key_present { "已配置" } else { "未配置" }.to_string(),
+        status: if install.api_server_key_present {
+            "ok"
+        } else {
+            "warn"
+        }
+        .to_string(),
+        detail: if install.api_server_key_present {
+            "已配置"
+        } else {
+            "未配置"
+        }
+        .to_string(),
     });
     checks.push(DoctorCheck {
         label: "Gateway".to_string(),
-        status: if install.gateway_running { "ok" } else { "warn" }.to_string(),
+        status: if install.gateway_running {
+            "ok"
+        } else {
+            "warn"
+        }
+        .to_string(),
         detail: install.gateway_health.clone(),
     });
 
@@ -2183,8 +2410,7 @@ async fn install_hermes_registry_workflow(
         return Err("注册表中未找到该工作流的文件。".to_string());
     }
     let dest = profile_home(profile.as_deref())?.join("workflows").join(id);
-    fs::create_dir_all(&dest)
-        .map_err(|error| format!("创建工作流目录失败：{error}"))?;
+    fs::create_dir_all(&dest).map_err(|error| format!("创建工作流目录失败：{error}"))?;
     let base = registry_raw_base();
     for file in &files {
         let rel = &file[path.len() + 1..];
@@ -2195,8 +2421,7 @@ async fn install_hermes_registry_workflow(
         let body = registry_get_text(&url)?;
         let target = dest.join(rel);
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("创建目录失败：{error}"))?;
+            fs::create_dir_all(parent).map_err(|error| format!("创建目录失败：{error}"))?;
         }
         fs::write(&target, body)
             .map_err(|error| format!("写入 {} 失败：{error}", target.to_string_lossy()))?;
@@ -2493,8 +2718,7 @@ fn write_profile_meta(home: &Path, meta: &ProfileMeta) -> Result<(), String> {
     let path = home.join("profile-meta.json");
     let body = serde_json::to_string_pretty(meta)
         .map_err(|error| format!("序列化 profile-meta 失败：{error}"))?;
-    fs::write(&path, body)
-        .map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
+    fs::write(&path, body).map_err(|error| format!("写入 {} 失败：{error}", path.to_string_lossy()))
 }
 
 #[tauri::command]
@@ -2667,7 +2891,10 @@ async fn check_for_app_updates() -> Result<UpdateStatus, String> {
             status.checked = true;
             status.check_ok = false;
             status.message = format!("Release 源无效：{error}");
-            append_update_log(&format!("check failed: invalid repo {}", status.release_repo))?;
+            append_update_log(&format!(
+                "check failed: invalid repo {}",
+                status.release_repo
+            ))?;
             return Ok(status);
         }
     };
@@ -2701,7 +2928,11 @@ async fn check_for_app_updates() -> Result<UpdateStatus, String> {
             let newer = is_newer_version(&status.app_version, &latest_norm);
             if newer {
                 status.update_available = Some(latest_norm.clone());
-                let channel = if release.prerelease { "预览版" } else { "新版本" };
+                let channel = if release.prerelease {
+                    "预览版"
+                } else {
+                    "新版本"
+                };
                 status.message = format!(
                     "发现{channel} {latest_norm}（当前 {}）。",
                     status.app_version
@@ -3616,9 +3847,11 @@ fn cron_run_timestamp(name: &str) -> Option<String> {
     if date_parts.len() != 3 || time_parts.len() != 3 {
         return None;
     }
-    if date_parts.iter().chain(time_parts.iter()).any(|part| {
-        part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit())
-    }) {
+    if date_parts
+        .iter()
+        .chain(time_parts.iter())
+        .any(|part| part.is_empty() || !part.chars().all(|ch| ch.is_ascii_digit()))
+    {
         return None;
     }
     Some(format!(
@@ -4359,7 +4592,9 @@ fn find_char_subsequence(haystack: &[char], needle: &[char]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn sqlite_json_rows(db_path: &Path, sql: &str) -> Result<Vec<serde_json::Value>, String> {
@@ -6249,7 +6484,11 @@ fn remembered_tool_preview(task_id: &str, call_id: &str) -> String {
     tool_event_previews()
         .lock()
         .ok()
-        .and_then(|previews| previews.get(task_id).and_then(|items| items.get(call_id).cloned()))
+        .and_then(|previews| {
+            previews
+                .get(task_id)
+                .and_then(|items| items.get(call_id).cloned())
+        })
         .unwrap_or_default()
 }
 
@@ -6266,9 +6505,7 @@ fn trace_stream_event(label: &str, detail: &str) {
             .duration_since(UNIX_EPOCH)
             .map(|value| value.as_secs().to_string())
             .unwrap_or_else(|_| "0".to_string());
-        let line = format!(
-            "{ts} {label} {sanitized}\n",
-        );
+        let line = format!("{ts} {label} {sanitized}\n",);
         let _ = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -8484,15 +8721,11 @@ fn fetch_latest_release(repo: &str) -> Result<GithubRelease, String> {
         Ok(resp) => resp
             .into_json::<GithubRelease>()
             .map_err(|error| format!("解析 release 响应失败：{error}")),
-        Err(ureq::Error::Status(404, _)) => {
-            Err(format!("{repo} 暂无已发布的正式版本（404）。"))
-        }
+        Err(ureq::Error::Status(404, _)) => Err(format!("{repo} 暂无已发布的正式版本（404）。")),
         Err(ureq::Error::Status(403, _)) => {
             Err("GitHub API 速率受限（403），请稍后再试。".to_string())
         }
-        Err(ureq::Error::Status(code, _)) => {
-            Err(format!("GitHub API 返回状态 {code}。"))
-        }
+        Err(ureq::Error::Status(code, _)) => Err(format!("GitHub API 返回状态 {code}。")),
         Err(ureq::Error::Transport(transport)) => {
             Err(format!("无法连接 GitHub（网络不可用？）：{transport}"))
         }
@@ -10875,7 +11108,11 @@ fn list_kanban_boards(
     profile: Option<String>,
     include_archived: Option<bool>,
 ) -> Result<Vec<KanbanBoard>, String> {
-    let mut args = vec!["boards".to_string(), "list".to_string(), "--json".to_string()];
+    let mut args = vec![
+        "boards".to_string(),
+        "list".to_string(),
+        "--json".to_string(),
+    ];
     if include_archived.unwrap_or(false) {
         args.push("--all".to_string());
     }
@@ -10886,7 +11123,10 @@ fn list_kanban_boards(
 
 #[tauri::command]
 fn current_kanban_board(profile: Option<String>) -> Result<String, String> {
-    let stdout = run_kanban_cli(&["boards".to_string(), "show".to_string()], profile.as_deref())?;
+    let stdout = run_kanban_cli(
+        &["boards".to_string(), "show".to_string()],
+        profile.as_deref(),
+    )?;
     Ok(stdout.trim().to_string())
 }
 
@@ -10983,8 +11223,8 @@ fn create_kanban_task(
     }
     args.push("--json".to_string());
     let stdout = run_kanban_cli(&args, profile.as_deref())?;
-    let value: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|error| format!("解析创建结果失败：{error}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).map_err(|error| format!("解析创建结果失败：{error}"))?;
     Ok(value
         .get("id")
         .and_then(|v| v.as_str())
@@ -11004,7 +11244,9 @@ fn kanban_task_action(
     if task_id.trim().is_empty() {
         return Err("缺少任务 ID。".to_string());
     }
-    let value_trimmed = value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let value_trimmed = value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     let args: Vec<String> = match action.as_str() {
         "specify" => vec!["specify".to_string(), task_id],
         "promote" => vec!["promote".to_string(), task_id],
@@ -11164,8 +11406,8 @@ fn wallet_address_from_phrase(phrase: &str) -> Result<String, String> {
     let path: DerivationPath = WALLET_ETH_PATH
         .parse()
         .map_err(|_| "派生路径无效。".to_string())?;
-    let xprv = XPrv::derive_from_path(seed, &path)
-        .map_err(|error| format!("密钥派生失败：{error}"))?;
+    let xprv =
+        XPrv::derive_from_path(seed, &path).map_err(|error| format!("密钥派生失败：{error}"))?;
     let verifying_key = xprv.private_key().verifying_key();
     let point = verifying_key.to_encoded_point(false);
     let bytes = point.as_bytes();
@@ -11184,7 +11426,10 @@ fn wallet_derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> [u8; 32]
     key
 }
 
-fn wallet_encrypt_phrase(phrase: &str, passphrase: &str) -> Result<(String, String, String), String> {
+fn wallet_encrypt_phrase(
+    phrase: &str,
+    passphrase: &str,
+) -> Result<(String, String, String), String> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Key, Nonce};
     use base64::Engine;
@@ -11251,7 +11496,8 @@ fn wallet_write_file(profile: Option<&str>, file: &WalletFile) -> Result<(), Str
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| format!("创建目录失败：{error}"))?;
     }
-    let json = serde_json::to_string_pretty(file).map_err(|error| format!("序列化失败：{error}"))?;
+    let json =
+        serde_json::to_string_pretty(file).map_err(|error| format!("序列化失败：{error}"))?;
     fs::write(&path, json).map_err(|error| format!("写入钱包失败：{error}"))
 }
 
@@ -11307,7 +11553,10 @@ fn wallet_status(profile: Option<String>) -> Result<WalletStatus, String> {
 }
 
 #[tauri::command]
-fn create_wallet(profile: Option<String>, passphrase: String) -> Result<CreateWalletResult, String> {
+fn create_wallet(
+    profile: Option<String>,
+    passphrase: String,
+) -> Result<CreateWalletResult, String> {
     use bip39::{Language, Mnemonic};
     if wallet_read_file(profile.as_deref())?.is_some() {
         return Err("该 Profile 已存在钱包。请先删除现有钱包。".to_string());
@@ -11386,7 +11635,11 @@ fn hex_to_decimal_string(hex: &str) -> String {
     out
 }
 
-fn wallet_rpc_call(rpc_url: &str, method: &str, params: serde_json::Value) -> Result<String, String> {
+fn wallet_rpc_call(
+    rpc_url: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<String, String> {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -11426,11 +11679,7 @@ fn wallet_balances(
     let mut balances = Vec::new();
 
     // Native ETH
-    match wallet_rpc_call(
-        &rpc,
-        "eth_getBalance",
-        json!([address, "latest"]),
-    ) {
+    match wallet_rpc_call(&rpc, "eth_getBalance", json!([address, "latest"])) {
         Ok(hex) => balances.push(WalletBalance {
             token_id: "eth".to_string(),
             symbol: "ETH".to_string(),
@@ -13739,7 +13988,11 @@ const KNOWN_MEMORY_PROVIDERS: &[KnownMemoryProvider] = &[
         label: "Hindsight",
         description: "知识图谱 + 多策略检索的长期记忆后端。",
         website: Some("https://ui.hindsight.vectorize.io"),
-        env_vars: &["HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID"],
+        env_vars: &[
+            "HINDSIGHT_API_KEY",
+            "HINDSIGHT_API_URL",
+            "HINDSIGHT_BANK_ID",
+        ],
     },
     KnownMemoryProvider {
         name: "mem0",
@@ -14079,6 +14332,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_ready,
             open_external_url,
+            open_chat_run_window,
             inspect_hermes_install,
             get_config_health,
             rerun_config_health,
@@ -14226,12 +14480,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalizes_chat_run_app_urls() {
+        assert_eq!(normalize_chat_run_app_url("/").unwrap(), "index.html");
+        assert_eq!(
+            normalize_chat_run_app_url("/?window=child&profile=ops").unwrap(),
+            "index.html?window=child&profile=ops"
+        );
+        assert_eq!(
+            normalize_chat_run_app_url("#/chat?window=child").unwrap(),
+            "index.html#/chat?window=child"
+        );
+        assert_eq!(
+            normalize_chat_run_app_url("/#/chat?window=child").unwrap(),
+            "index.html#/chat?window=child"
+        );
+    }
+
+    #[test]
+    fn rejects_external_chat_run_urls() {
+        assert!(normalize_chat_run_app_url("https://example.test").is_err());
+        assert!(normalize_chat_run_app_url("//example.test").is_err());
+        assert!(normalize_chat_run_app_url("/settings").is_err());
+        assert!(normalize_chat_run_app_url("").is_err());
+    }
+
+    #[test]
+    fn normalizes_chat_run_window_labels() {
+        assert_eq!(
+            normalize_chat_run_window_label(Some("Review Run 01"), None).unwrap(),
+            "chat-run-review-run-01"
+        );
+        assert_eq!(
+            normalize_chat_run_window_label(None, Some("chat-run-session_42")).unwrap(),
+            "chat-run-session_42"
+        );
+        assert!(normalize_chat_run_window_label(Some("   "), None).is_err());
+    }
+
+    #[test]
+    fn normalizes_chat_run_window_titles() {
+        assert_eq!(normalize_chat_run_title(None), "Hermes Team · ChatRun");
+        assert_eq!(
+            normalize_chat_run_title(Some("  Child · planner · ops  ")),
+            "Child · planner · ops"
+        );
+    }
+
+    #[test]
     fn derives_known_eth_address_from_mnemonic() {
         // Well-known Hardhat/Anvil test mnemonic; account 0 (m/44'/60'/0'/0/0)
         // must derive to this checksummed address. Guards the BIP-39/BIP-44 +
         // keccak + EIP-55 pipeline against regressions.
-        let phrase =
-            "test test test test test test test test test test test junk";
+        let phrase = "test test test test test test test test test test test junk";
         let address = wallet_address_from_phrase(phrase).expect("derivation");
         assert_eq!(address, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
     }
@@ -14239,14 +14539,16 @@ mod tests {
     #[test]
     fn hex_to_decimal_string_handles_large_values() {
         assert_eq!(hex_to_decimal_string("0x0"), "0");
-        assert_eq!(hex_to_decimal_string("0xde0b6b3a7640000"), "1000000000000000000");
+        assert_eq!(
+            hex_to_decimal_string("0xde0b6b3a7640000"),
+            "1000000000000000000"
+        );
         assert_eq!(hex_to_decimal_string("0x"), "0");
     }
 
     #[test]
     fn wallet_roundtrip_encrypts_and_decrypts() {
-        let phrase =
-            "test test test test test test test test test test test junk";
+        let phrase = "test test test test test test test test test test test junk";
         let (salt, nonce, ciphertext) =
             wallet_encrypt_phrase(phrase, "correct horse battery").expect("encrypt");
         let file = WalletFile {
@@ -14321,7 +14623,9 @@ mod tests {
 
     #[test]
     fn detects_unknown_doctor_subcommand() {
-        assert!(is_unknown_subcommand_error("Error: No such command 'doctor'."));
+        assert!(is_unknown_subcommand_error(
+            "Error: No such command 'doctor'."
+        ));
         assert!(is_unknown_subcommand_error(
             "error: unrecognized subcommand 'doctor'"
         ));
@@ -14395,8 +14699,14 @@ mod tests {
 
     #[test]
     fn builds_fts_match_expression() {
-        assert_eq!(fts_match_expression("deploy gateway"), "\"deploy\"* \"gateway\"*");
-        assert_eq!(fts_match_expression("  spaced   out "), "\"spaced\"* \"out\"*");
+        assert_eq!(
+            fts_match_expression("deploy gateway"),
+            "\"deploy\"* \"gateway\"*"
+        );
+        assert_eq!(
+            fts_match_expression("  spaced   out "),
+            "\"spaced\"* \"out\"*"
+        );
         assert_eq!(fts_match_expression("\"\""), "");
     }
 

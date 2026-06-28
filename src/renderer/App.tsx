@@ -106,12 +106,30 @@ import {
   type TokenUsage,
 } from "./chatStreamEvents";
 import { applyStreamEventSnapshot } from "./chatStreamState";
+import {
+  applyChatRunInitialProfile,
+  buildChatRunWindowRequest,
+  chatRunContextFromLocation,
+  sessionForChatRun,
+  shouldPersistGlobalState,
+  shouldRestoreGlobalState,
+  shouldSaveSessionSnapshot,
+} from "./chatRunContext";
+import {
+  chatRunClosedDedupKey,
+  chatRunClosedSessionLookupId,
+  isChatRunClosedForWorkspace,
+  summarizeChatRunSession,
+} from "./chatRunLifecycle";
 import { runLocalReplyCommand } from "./chatInput/localCommands";
 import {
   applyTaskStreamOutput,
+  detachParallelChatRunTasks,
   executeTaskRuntimeStream,
+  planParallelChatRunSessions,
   planSendMessage,
   resolveTaskRuntimeContext,
+  type ParallelChatRunSessionPlan,
 } from "./chatRuntimeController";
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
@@ -255,7 +273,9 @@ import {
   listProviderKeys,
   listProviderRegistry,
   listRegistryModelLibrary,
+  listenChatRunWindowClosed,
   listenHermesAgentStream,
+  openChatRunWindow,
   openExternalUrl,
   loadHermesTeamState,
   readHermesMemorySummary,
@@ -341,6 +361,7 @@ import {
   type RegistryLibraryProvider,
   type RemoteConnectionConfig,
   type RemoteConnectionStatus,
+  type ChatRunWindowClosedEvent,
   type RuntimeStreamEvent,
   type SavedModel,
   type ToolsetInfo,
@@ -349,14 +370,23 @@ import {
 
 export function App() {
   const { t, language, setLanguage, options: languageOptions } = useI18n();
-  const [state, setState] = useState<OrchestrationState>({
-    workspace: seedWorkspace,
-    agents: seedAgents,
-    bindings: seedBindings,
-    messages: seedMessages,
-    tasks: [],
-    logs: [],
-  });
+  const chatRunContext = useMemo(
+    () => chatRunContextFromLocation(typeof window === "undefined" ? undefined : window.location.href),
+    [],
+  );
+  const [state, setState] = useState<OrchestrationState>(() =>
+    applyChatRunInitialProfile(
+      {
+        workspace: seedWorkspace,
+        agents: seedAgents,
+        bindings: seedBindings,
+        messages: seedMessages,
+        tasks: [],
+        logs: [],
+      },
+      chatRunContext,
+    ),
+  );
   const [mode, setModeState] = useState<WorkspaceMode>(seedWorkspace.mode);
   const [activeView, setActiveView] = useState<ActiveView>("team");
   const [activeSettingsPanel, setActiveSettingsPanel] = useState<SettingsPanel>("overview");
@@ -516,8 +546,11 @@ export function App() {
   const [keyBusy, setKeyBusy] = useState(false);
   const [stateReady, setStateReady] = useState(false);
   const saveTimerRef = useRef<number | undefined>(undefined);
+  const stateRef = useRef(state);
   const sessionsRef = useRef<HermesTeamSessionSummary[]>([]);
+  const closedChatRunWindowKeysRef = useRef<Set<string>>(new Set());
   const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
+  const childAutoRunTaskIdsRef = useRef<Set<string>>(new Set());
   const parallelTrackerRef = useRef(new ParallelBatchTracker());
   const serialTrackerRef = useRef(new SerialChainTracker());
   const streamEventHandlerRef = useRef<(event: RuntimeStreamEvent) => void>(() => undefined);
@@ -1534,6 +1567,12 @@ export function App() {
   };
 
   useEffect(() => {
+    if (chatRunContext.kind === "child") {
+      document.title = `Hermes Team · ${chatRunContext.label}`;
+    }
+  }, [chatRunContext.kind, chatRunContext.label]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!isTauriRuntimeAvailable()) {
       applyAppSettings(defaultAppSettings);
@@ -1547,33 +1586,47 @@ export function App() {
         cancelled = true;
       };
     }
-    loadHermesTeamState()
-      .then((saved) => {
-        if (!cancelled && saved) {
-          setState(normalizeLoadedState(saved));
-          setModeState(saved.workspace.mode);
-          setNotice(t("app.notice.restoredLastChat"));
-        }
-      })
+    const restoreWorkspace = shouldRestoreGlobalState(chatRunContext)
+      ? loadHermesTeamState()
+          .then((saved) => {
+            if (!cancelled && saved) {
+              const restored = applyChatRunInitialProfile(normalizeLoadedState(saved), chatRunContext);
+              setState(restored);
+              setModeState(restored.workspace.mode);
+              setNotice(t("app.notice.restoredLastChat"));
+            }
+          })
+      : Promise.resolve();
+
+    restoreWorkspace
       .catch(() => {
         setNotice(t("app.notice.ready"));
       })
       .finally(() => {
-      if (cancelled) return;
-      setStateReady(true);
-      void refreshAppSettings();
-      void refreshNetworkSettings();
-      void refreshUpdateStatus().then((status) => {
-        if (startupUpdateCheckedRef.current) return;
-        if (!status?.autoCheck) return;
-        startupUpdateCheckedRef.current = true;
-        void checkUpdatesNow(false).then((checked) => {
-          if (checked?.updateAvailable) setUpdateDialogOpen(true);
+        if (cancelled) return;
+        setStateReady(true);
+        void refreshAppSettings();
+        void refreshNetworkSettings();
+        void refreshUpdateStatus().then((status) => {
+          if (startupUpdateCheckedRef.current) return;
+          if (!status?.autoCheck) return;
+          startupUpdateCheckedRef.current = true;
+          void checkUpdatesNow(false).then((checked) => {
+            if (checked?.updateAvailable) setUpdateDialogOpen(true);
+          });
         });
-      });
-      void refreshRemoteConnection();
+        void refreshRemoteConnection();
         void loadLocalSessionList()
-          .then((items) => setSessions(items))
+          .then((items) => {
+            if (cancelled) return;
+            setSessions(items);
+            const session = sessionForChatRun(items, chatRunContext);
+            if (!session?.state?.workspace) return;
+            const restored = applyChatRunInitialProfile(normalizeLoadedState(session.state), chatRunContext);
+            setState(restored);
+            setModeState(restored.workspace.mode);
+            setNotice(t("app.notice.sessionRestored", { title: session.title }));
+          })
           .catch(() => undefined);
         void refreshDesktopSessions();
         void refreshRuntime();
@@ -1584,6 +1637,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
 
@@ -1591,15 +1648,17 @@ export function App() {
     if (!stateReady) return;
     window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
-      void saveWorkspaceState(state).catch(() => undefined);
-      if (shouldPersistSessionSnapshot(state)) {
+      if (shouldPersistGlobalState(chatRunContext)) {
+        void saveWorkspaceState(state).catch(() => undefined);
+      }
+      if (shouldSaveSessionSnapshot(chatRunContext) && shouldPersistSessionSnapshot(state)) {
         void saveSessionSnapshot(state, sessionsRef.current)
           .then((items) => setSessions(items))
           .catch(() => undefined);
       }
     }, 250);
     return () => window.clearTimeout(saveTimerRef.current);
-  }, [state, stateReady]);
+  }, [chatRunContext, state, stateReady]);
 
   useEffect(() => {
     if (!isTauriRuntimeAvailable()) return undefined;
@@ -1664,7 +1723,9 @@ export function App() {
       return;
     }
 
-    void saveWorkspaceState(plan.nextState).catch(() => undefined);
+    if (shouldPersistGlobalState(chatRunContext)) {
+      void saveWorkspaceState(plan.nextState).catch(() => undefined);
+    }
   };
 
   useEffect(() => {
@@ -1740,10 +1801,14 @@ export function App() {
       applySessionTransition(transition);
       setNotice(t("app.notice.sessionImported", { title: session.title }));
       if (isTauriRuntimeAvailable()) {
-        void saveWorkspaceState(transition.nextState).catch(() => undefined);
-        void saveSessionSnapshot(transition.nextState)
-          .then((items) => setSessions(items))
-          .catch(() => undefined);
+        if (shouldPersistGlobalState(chatRunContext)) {
+          void saveWorkspaceState(transition.nextState).catch(() => undefined);
+        }
+        if (shouldSaveSessionSnapshot(chatRunContext)) {
+          void saveSessionSnapshot(transition.nextState)
+            .then((items) => setSessions(items))
+            .catch(() => undefined);
+        }
       }
     } catch (error) {
       setNotice(t("app.notice.sessionImportFailed", { error: runtimeErrorMessage(error) }));
@@ -1784,7 +1849,9 @@ export function App() {
       setSessions(next);
       if (plan.kind === "delete-and-reset") {
         applySessionTransition(plan);
-        void saveWorkspaceState(plan.nextState).catch(() => undefined);
+        if (shouldPersistGlobalState(chatRunContext)) {
+          void saveWorkspaceState(plan.nextState).catch(() => undefined);
+        }
       }
       setNotice(t("app.notice.sessionDeleted"));
     } catch (error) {
@@ -1807,7 +1874,9 @@ export function App() {
       setSessions(next);
       if (plan.kind === "delete-and-reset") {
         applySessionTransition(plan);
-        void saveWorkspaceState(plan.nextState).catch(() => undefined);
+        if (shouldPersistGlobalState(chatRunContext)) {
+          void saveWorkspaceState(plan.nextState).catch(() => undefined);
+        }
       }
       setNotice(t("app.notice.sessionsBulkDeleted", { count: plan.ids.length }));
     } catch (error) {
@@ -3372,6 +3441,137 @@ export function App() {
       .catch((error) => appendReply(t("app.notice.fastModeToggleFailed", { error: runtimeErrorMessage(error) })));
   };
 
+  const launchParallelChatRunWindows = async (plans: ParallelChatRunSessionPlan[]) => {
+    if (plans.length === 0) return;
+    if (!isTauriRuntimeAvailable()) {
+      setNotice(t("app.notice.parallelChatRunsUnavailable"));
+      return;
+    }
+    try {
+      let nextSessions = sessionsRef.current;
+      for (const plan of plans) {
+        nextSessions = await saveSessionSnapshot(plan.state, nextSessions);
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
+        await openChatRunWindow(
+          buildChatRunWindowRequest({
+            chatRunId: plan.taskId,
+            profile: plan.profile,
+            sessionId: plan.sessionId,
+            parentSessionId: plan.parentSessionId,
+            source: plan.source,
+            label: plan.label,
+          }),
+        );
+      }
+      setNotice(t("app.notice.parallelChatRunsOpened", { count: plans.length }));
+    } catch (error) {
+      setNotice(t("app.notice.parallelChatRunsOpenFailed", { error: runtimeErrorMessage(error) }));
+    }
+  };
+
+  const detachAndLaunchParallelChatRuns = (
+    nextState: OrchestrationState,
+    taskIds: string[],
+  ): OrchestrationState | null => {
+    const plans = planParallelChatRunSessions(nextState, taskIds);
+    if (plans.length === 0) return null;
+    const mainState = detachParallelChatRunTasks(
+      nextState,
+      plans.map((plan) => plan.taskId),
+      t("app.notice.parallelChatRunsOpenedContent", { count: plans.length }),
+    );
+    void launchParallelChatRunWindows(plans);
+    return mainState;
+  };
+
+  const handleChatRunWindowClosed = async (event: ChatRunWindowClosedEvent) => {
+    if (chatRunContext.kind !== "main") return;
+    const dedupKey = chatRunClosedDedupKey(event);
+    if (closedChatRunWindowKeysRef.current.has(dedupKey)) return;
+    closedChatRunWindowKeysRef.current.add(dedupKey);
+
+    try {
+      const items = await loadLocalSessionList();
+      sessionsRef.current = items;
+      setSessions(items);
+
+      const lookupId = chatRunClosedSessionLookupId(event);
+      const session = lookupId ? sessionForChatRun(items, { initialSessionId: lookupId }) : null;
+      const summary = summarizeChatRunSession(session);
+      const title = session?.title ?? event.title ?? event.windowLabel;
+      const sessionId = session?.id ?? lookupId ?? event.windowLabel;
+      const content = t("app.notice.parallelChatRunClosedContent", {
+        title,
+        sessionId,
+        completed: summary.completed,
+        failed: summary.failed,
+        cancelled: summary.cancelled,
+        unfinished: summary.unfinished,
+        total: summary.total,
+      });
+
+      if (isChatRunClosedForWorkspace(event, stateRef.current.workspace.id)) {
+        setState((current) =>
+          isChatRunClosedForWorkspace(event, current.workspace.id)
+            ? appendSystemMessage({ state: current, content })
+            : current,
+        );
+      }
+      setNotice(t("app.notice.parallelChatRunClosed", { title }));
+    } catch (error) {
+      setNotice(t("app.notice.parallelChatRunClosedRefreshFailed", { error: runtimeErrorMessage(error) }));
+    }
+  };
+
+  const mergeChatRunBatchToChat = (content: string) => {
+    setState((current) => appendSystemMessage({ state: current, content }));
+    setNotice(t("app.notice.parallelChatRunMergedToChat"));
+  };
+
+  useEffect(() => {
+    if (chatRunContext.kind !== "main") return undefined;
+    if (!isTauriRuntimeAvailable()) return undefined;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenChatRunWindowClosed((event) => {
+      if (!disposed) void handleChatRunWindowClosed(event);
+    })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+        } else {
+          unlisten = cleanup;
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [chatRunContext.kind]);
+
+  useEffect(() => {
+    if (activeView !== "multiagent" || chatRunContext.kind !== "main") return undefined;
+    if (!isTauriRuntimeAvailable()) return undefined;
+    let disposed = false;
+    const refreshChatRunSessions = () => {
+      void loadLocalSessionList()
+        .then((items) => {
+          if (disposed) return;
+          sessionsRef.current = items;
+          setSessions(items);
+        })
+        .catch(() => undefined);
+    };
+    refreshChatRunSessions();
+    const interval = window.setInterval(refreshChatRunSessions, 4000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [activeView, chatRunContext.kind]);
+
   const sendMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? draft).trim();
     const plan = planSendMessage({
@@ -3430,17 +3630,25 @@ export function App() {
       plan.content,
       plan.attachments,
     );
+    const latestDecision = result.state.logs[0]?.decision;
+    if (latestDecision?.type === "dispatch" && latestDecision.mode === "parallel") {
+      const mainState = detachAndLaunchParallelChatRuns(result.state, result.createdTaskIds);
+      setState(mainState ?? result.state);
+      setNotice(
+        mainState
+          ? t("app.notice.parallelChatRunsOpening", { count: result.createdTaskIds.length })
+          : plan.background
+            ? t("app.notice.backgroundStarted")
+            : result.notice,
+      );
+      setDraft("");
+      setDraftAttachments([]);
+      return;
+    }
     setState(result.state);
     setNotice(plan.background ? t("app.notice.backgroundStarted") : result.notice);
     setDraft("");
     setDraftAttachments([]);
-    const latestDecision = result.state.logs[0]?.decision;
-    if (latestDecision?.type === "dispatch" && latestDecision.mode === "parallel") {
-      parallelTrackerRef.current.start(
-        result.state.workspace.id,
-        latestDecision.assignments.map((assignment) => assignment.agentId),
-      );
-    }
     if (latestDecision?.type === "dispatch" && latestDecision.mode === "serial" && result.createdTaskIds[0]) {
       serialTrackerRef.current.start({
         workspaceId: result.state.workspace.id,
@@ -3505,10 +3713,14 @@ export function App() {
     setActiveView("team");
     setNotice(t("app.notice.branched"));
     if (isTauriRuntimeAvailable()) {
-      void saveWorkspaceState(nextState).catch(() => undefined);
-      void saveSessionSnapshot(nextState)
-        .then((items) => setSessions(items))
-        .catch(() => undefined);
+      if (shouldPersistGlobalState(chatRunContext)) {
+        void saveWorkspaceState(nextState).catch(() => undefined);
+      }
+      if (shouldSaveSessionSnapshot(chatRunContext)) {
+        void saveSessionSnapshot(nextState)
+          .then((items) => setSessions(items))
+          .catch(() => undefined);
+      }
     }
   };
 
@@ -3644,11 +3856,35 @@ export function App() {
   };
 
   useEffect(() => {
+    if (chatRunContext.kind !== "child" || !stateReady) return;
+    if (!isTauriRuntimeAvailable()) return;
+    const pendingTasks = state.tasks.filter((task) => task.status === "pending");
+    for (const task of pendingTasks) {
+      if (childAutoRunTaskIdsRef.current.has(task.id)) continue;
+      childAutoRunTaskIdsRef.current.add(task.id);
+      window.setTimeout(() => {
+        void runDispatchedTask(state, task.id);
+      }, 0);
+    }
+  }, [chatRunContext.kind, state, stateReady]);
+
+  useEffect(() => {
     if (queuedMessages.length === 0 || hasActiveSessionTasks(state)) return;
     const [next] = queuedMessages;
     if (!next) return;
     setQueuedMessages((current) => current.slice(1));
     const result = handleUserMessage(state, next.text, next.attachments);
+    const latestDecision = result.state.logs[0]?.decision;
+    if (latestDecision?.type === "dispatch" && latestDecision.mode === "parallel") {
+      const mainState = detachAndLaunchParallelChatRuns(result.state, result.createdTaskIds);
+      setState(mainState ?? result.state);
+      setNotice(
+        mainState
+          ? t("app.notice.parallelChatRunsOpening", { count: result.createdTaskIds.length })
+          : t("app.notice.sendingNextQueued"),
+      );
+      return;
+    }
     setState(result.state);
     setNotice(t("app.notice.sendingNextQueued"));
     scheduleDispatchedTasks(result.state, result.createdTaskIds);
@@ -6642,7 +6878,13 @@ export function App() {
             onNotice={setNotice}
           />
         ) : activeView === "multiagent" ? (
-          <MultiAgentView state={state} t={t} onCancelTask={(taskId) => void cancelTask(taskId)} />
+          <MultiAgentView
+            state={state}
+            sessions={sessions}
+            t={t}
+            onCancelTask={(taskId) => void cancelTask(taskId)}
+            onMergeChatRunBatch={mergeChatRunBatchToChat}
+          />
         ) : activeView === "office" ? (
           <OfficeView profiles={profiles} state={state} t={t} />
         ) : activeView === "discover" ? (

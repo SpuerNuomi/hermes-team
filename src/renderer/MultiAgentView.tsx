@@ -1,13 +1,35 @@
 import { useMemo } from "react";
-import { BrainCircuit, GitBranch, Layers, StopCircle, Users } from "lucide-react";
+import {
+  Activity,
+  BrainCircuit,
+  CheckCircle2,
+  Clock,
+  GitBranch,
+  GitCompare,
+  Layers,
+  Merge,
+  StopCircle,
+  Users,
+  XCircle,
+} from "lucide-react";
 import type { TranslationVars } from "../i18n/types";
 import type { OrchestrationState } from "../core/orchestrator";
 import type { DispatchMode, DispatchTask } from "../core/types";
+import type { HermesTeamSessionSummary } from "../runtime/hermes-runtime";
+import {
+  buildChatRunMergeMarkdown,
+  buildChatRunResultBatches,
+  type ChatRunBatchStatus,
+  type ChatRunResultBatch,
+  type ChatRunResultRow,
+} from "./chatRunResults";
 
 interface MultiAgentViewProps {
   state: OrchestrationState;
+  sessions: HermesTeamSessionSummary[];
   t: (key: string, vars?: TranslationVars) => string;
   onCancelTask: (taskId: string) => void;
+  onMergeChatRunBatch: (content: string) => void;
 }
 
 const MODE_TONE: Record<DispatchMode, string> = {
@@ -16,7 +38,22 @@ const MODE_TONE: Record<DispatchMode, string> = {
   serial: "serial",
 };
 
-export function MultiAgentView({ state, t, onCancelTask }: MultiAgentViewProps) {
+const BATCH_STATUS_ICON: Record<ChatRunBatchStatus, typeof Clock> = {
+  idle: Clock,
+  running: Activity,
+  completed: CheckCircle2,
+  failed: XCircle,
+  cancelled: StopCircle,
+  partial: GitCompare,
+};
+
+export function MultiAgentView({
+  state,
+  sessions,
+  t,
+  onCancelTask,
+  onMergeChatRunBatch,
+}: MultiAgentViewProps) {
   const { agents, bindings, tasks, logs, workspace } = state;
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
@@ -41,6 +78,32 @@ export function MultiAgentView({ state, t, onCancelTask }: MultiAgentViewProps) 
   );
 
   const recentLogs = useMemo(() => [...logs].reverse().slice(0, 12), [logs]);
+  const chatRunBatches = useMemo(
+    () => buildChatRunResultBatches(state, sessions).slice(0, 8),
+    [state, sessions],
+  );
+  const chatRunRows = useMemo(
+    () => chatRunBatches.flatMap((batch) => batch.rows),
+    [chatRunBatches],
+  );
+  const chatRunLiveStats = useMemo(() => {
+    const running = chatRunRows.filter((row) => row.status === "running" || row.status === "pending").length;
+    const completed = chatRunRows.filter((row) => row.status === "completed").length;
+    const failed = chatRunRows.filter((row) => row.status === "failed").length;
+    return { total: chatRunRows.length, running, completed, failed };
+  }, [chatRunRows]);
+
+  const mergeBatch = (batch: ChatRunResultBatch) => {
+    onMergeChatRunBatch(
+      buildChatRunMergeMarkdown(batch, {
+        title: t("multiAgent.mergeMarkdownTitle"),
+        prompt: t("multiAgent.mergeMarkdownPrompt"),
+        status: t("multiAgent.mergeMarkdownStatus"),
+        noResult: t("multiAgent.noResult"),
+        agent: t("multiAgent.mergeMarkdownAgent"),
+      }),
+    );
+  };
 
   return (
     <div className="multiagent-view">
@@ -65,10 +128,76 @@ export function MultiAgentView({ state, t, onCancelTask }: MultiAgentViewProps) 
             <span className="multiagent-stat-value">{logs.length}</span>
             <span className="multiagent-stat-label">{t("multiAgent.dispatches")}</span>
           </div>
+          <div className="multiagent-stat">
+            <span className="multiagent-stat-value">{chatRunLiveStats.total}</span>
+            <span className="multiagent-stat-label">{t("multiAgent.chatRuns")}</span>
+          </div>
         </div>
       </header>
 
       <div className="multiagent-body">
+        <section className="multiagent-section multiagent-live">
+          <div className="multiagent-section-head">
+            <Activity size={16} />
+            <h2>{t("multiAgent.liveStatus")}</h2>
+          </div>
+          {chatRunBatches.length === 0 ? (
+            <p className="multiagent-empty">{t("multiAgent.noChatRuns")}</p>
+          ) : (
+            <div className="multiagent-live-grid">
+              <LiveMetric label={t("multiAgent.chatRuns")} value={chatRunLiveStats.total} tone="neutral" />
+              <LiveMetric label={t("multiAgent.liveRunning")} value={chatRunLiveStats.running} tone="running" />
+              <LiveMetric label={t("multiAgent.liveCompleted")} value={chatRunLiveStats.completed} tone="completed" />
+              <LiveMetric label={t("multiAgent.liveFailed")} value={chatRunLiveStats.failed} tone="failed" />
+              <div className="multiagent-live-batches">
+                {chatRunBatches.slice(0, 3).map((batch) => (
+                  <BatchProgress key={batch.id} batch={batch} t={t} />
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="multiagent-section multiagent-results">
+          <div className="multiagent-section-head">
+            <GitCompare size={16} />
+            <h2>{t("multiAgent.resultCompare")}</h2>
+          </div>
+          {chatRunBatches.length === 0 ? (
+            <p className="multiagent-empty">{t("multiAgent.noResults")}</p>
+          ) : (
+            <div className="multiagent-result-list">
+              {chatRunBatches.map((batch) => (
+                <article className="multiagent-result-batch" key={batch.id} data-status={batch.status}>
+                  <div className="multiagent-result-head">
+                    <div>
+                      <span className="multiagent-result-status" data-status={batch.status}>
+                        <BatchStatusIcon status={batch.status} />
+                        {t(`multiAgent.batchStatus.${batch.status}`)}
+                      </span>
+                      <h3>{batch.prompt || batch.reason}</h3>
+                    </div>
+                    <button
+                      type="button"
+                      className="multiagent-merge"
+                      disabled={!batch.readyToMerge}
+                      onClick={() => mergeBatch(batch)}
+                    >
+                      <Merge size={13} />
+                      <span>{t("multiAgent.mergeToChat")}</span>
+                    </button>
+                  </div>
+                  <div className="multiagent-result-rows">
+                    {batch.rows.map((row) => (
+                      <ResultRow key={`${batch.id}-${row.agentId}`} row={row} t={t} />
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="multiagent-section multiagent-roster">
           <div className="multiagent-section-head">
             <BrainCircuit size={16} />
@@ -207,6 +336,80 @@ export function MultiAgentView({ state, t, onCancelTask }: MultiAgentViewProps) 
             </div>
           )}
         </section>
+      </div>
+    </div>
+  );
+}
+
+function LiveMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "neutral" | "running" | "completed" | "failed";
+}) {
+  return (
+    <div className="multiagent-live-metric" data-tone={tone}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function BatchProgress({
+  batch,
+  t,
+}: {
+  batch: ChatRunResultBatch;
+  t: (key: string, vars?: TranslationVars) => string;
+}) {
+  const total = Math.max(batch.summary.total, 1);
+  const completedPct = Math.round((batch.summary.completed / total) * 100);
+  const failedPct = Math.round((batch.summary.failed / total) * 100);
+  const cancelledPct = Math.round((batch.summary.cancelled / total) * 100);
+  return (
+    <div className="multiagent-live-batch">
+      <div className="multiagent-live-batch-top">
+        <span>{batch.prompt || batch.reason}</span>
+        <span>{t(`multiAgent.batchStatus.${batch.status}`)}</span>
+      </div>
+      <div className="multiagent-progress" aria-hidden="true">
+        <span className="completed" style={{ width: `${completedPct}%` }} />
+        <span className="failed" style={{ width: `${failedPct}%` }} />
+        <span className="cancelled" style={{ width: `${cancelledPct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function BatchStatusIcon({ status }: { status: ChatRunBatchStatus }) {
+  const Icon = BATCH_STATUS_ICON[status];
+  return <Icon size={13} />;
+}
+
+function ResultRow({
+  row,
+  t,
+}: {
+  row: ChatRunResultRow;
+  t: (key: string, vars?: TranslationVars) => string;
+}) {
+  return (
+    <div className="multiagent-result-row" data-status={row.status}>
+      <div className="multiagent-result-row-head">
+        <strong>{row.agentName}</strong>
+        <span>{row.profile}</span>
+        <span className="multiagent-task-status" data-status={row.status}>
+          {row.status === "missing" ? t("multiAgent.taskStatus.missing") : t(`multiAgent.taskStatus.${row.status}`)}
+        </span>
+      </div>
+      <p className="multiagent-result-instruction">{row.instruction}</p>
+      <p className="multiagent-result-preview">{row.preview || t("multiAgent.noResult")}</p>
+      <div className="multiagent-result-meta">
+        <span>{row.sessionId ?? t("multiAgent.noSession")}</span>
+        {row.updatedAt && <span>{new Date(row.updatedAt).toLocaleTimeString()}</span>}
       </div>
     </div>
   );

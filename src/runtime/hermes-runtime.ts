@@ -20,6 +20,36 @@ export interface RuntimeAttachment {
   originalSize?: number;
 }
 
+export interface ChatRunWindowRequest {
+  windowLabel: string;
+  chatRunId?: string;
+  sessionId?: string;
+  parentSessionId?: string;
+  source?: string;
+  url: string;
+  title: string;
+}
+
+export interface ChatRunWindowResult {
+  windowLabel: string;
+  chatRunId?: string;
+  sessionId?: string;
+  parentSessionId?: string;
+  source?: string;
+  url: string;
+  title: string;
+  reused: boolean;
+}
+
+export interface ChatRunWindowClosedEvent {
+  windowLabel: string;
+  chatRunId?: string;
+  sessionId?: string;
+  parentSessionId?: string;
+  source?: string;
+  title: string;
+}
+
 export interface SelectedPathInfo {
   path: string;
   name: string;
@@ -1800,6 +1830,11 @@ export async function openExternalUrl(url: string): Promise<boolean> {
   return invoke<boolean>("open_external_url", { url });
 }
 
+export async function openChatRunWindow(request: ChatRunWindowRequest): Promise<ChatRunWindowResult> {
+  ensureTauriRuntime();
+  return invoke<ChatRunWindowResult>("open_chat_run_window", { request });
+}
+
 export async function listHermesStateSessions(params: {
   profile?: string;
 } = {}): Promise<HermesStateSessionSummary[]> {
@@ -1923,6 +1958,15 @@ export async function listenHermesAgentStream(
 ): Promise<() => void> {
   ensureTauriRuntime();
   return listen<RuntimeStreamEvent>("hermes-agent-stream", (event) => {
+    handler(event.payload);
+  });
+}
+
+export async function listenChatRunWindowClosed(
+  handler: (event: ChatRunWindowClosedEvent) => void,
+): Promise<() => void> {
+  ensureTauriRuntime();
+  return listen<ChatRunWindowClosedEvent>("chat-run-window-closed", (event) => {
     handler(event.payload);
   });
 }
