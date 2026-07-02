@@ -2,6 +2,7 @@ import { classifyAssistantHandoff } from "./handoff";
 import { parseMentions } from "./mention-parser";
 import type {
   Agent,
+  Artifact,
   CapabilityBinding,
   CoordinatorDecision,
   DispatchAssignment,
@@ -26,6 +27,8 @@ export interface OrchestrationState {
   messages: Message[];
   tasks: DispatchTask[];
   logs: DispatchLogEntry[];
+  /** Task-scoped file artifacts produced by write/edit tools. */
+  artifacts?: Artifact[];
 }
 
 export interface OrchestrationResult {

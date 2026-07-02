@@ -19,15 +19,19 @@ function collectKeys(tree: TranslationTree, prefix = ""): string[] {
 
 describe("i18n resources", () => {
   it("resolves keys for each supported language", () => {
-    expect(translate("zh", "nav.newChat")).toBe("新建聊天");
-    expect(translate("en", "nav.newChat")).toBe("New chat");
+    expect(translate("zh", "nav.newChat")).toBe("新建任务");
+    expect(translate("en", "nav.newChat")).toBe("New task");
+    expect(translate("zh", "nav.tasks")).toBe("任务");
+    expect(translate("en", "nav.tasks")).toBe("Tasks");
+    expect(translate("zh", "taskHeader.workMode.ask.label")).toBe("问一问");
+    expect(translate("en", "taskHeader.workMode.craft.label")).toBe("Craft");
   });
 
   it("falls back to the source locale when a key is missing in the target", () => {
     const onlyZh: TranslationTree = { custom: { greeting: "你好" } };
     // Simulate a missing English key by querying a path that only zh defines.
     // translate() falls back to the source locale (zh) then to the raw key.
-    expect(translate("en", "nav.newChat")).toBe("New chat");
+    expect(translate("en", "nav.newChat")).toBe("New task");
     expect(collectKeys(onlyZh)).toEqual(["custom.greeting"]);
   });
 

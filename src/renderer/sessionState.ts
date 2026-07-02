@@ -46,6 +46,7 @@ export function buildFreshOrchestrationState(workspaceMode: WorkspaceMode = "sma
     messages: [],
     tasks: [],
     logs: [],
+    artifacts: [],
   };
 }
 
@@ -166,6 +167,9 @@ export function normalizeLoadedState(saved: OrchestrationState): OrchestrationSt
       name: workspaceName,
       description: workspaceDescription,
       defaultAgentId: hasLegacyWorkspace ? seedWorkspace.defaultAgentId : saved.workspace.defaultAgentId,
+      workMode: saved.workspace.workMode === "plan" || saved.workspace.workMode === "craft"
+        ? saved.workspace.workMode
+        : "ask",
     },
     agents: normalizedAgents,
     bindings: normalizedBindings,
@@ -175,6 +179,7 @@ export function normalizeLoadedState(saved: OrchestrationState): OrchestrationSt
         ? { ...task, status: "failed", completedAt: Date.now() }
         : task,
     ),
+    artifacts: saved.artifacts ?? [],
   };
 }
 

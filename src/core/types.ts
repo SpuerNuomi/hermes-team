@@ -1,5 +1,8 @@
 export type WorkspaceMode = "manual" | "smart";
 
+/** Session-scoped work mode tier controlling tool permissions (Ask / Plan / Craft). */
+export type WorkMode = "ask" | "plan" | "craft";
+
 /**
  * A session-scoped model selection made from the in-chat model picker. Unlike
  * the persisted global default (`config.yaml`, surfaced as `ActiveModelConfig`),
@@ -26,6 +29,10 @@ export interface Workspace {
   defaultAgentId?: string;
   /** Per-session model override; absent means "use the global active model". */
   modelOverride?: SessionModelOverride;
+  /** Tool permission tier for this task/session. Defaults to ask when absent. */
+  workMode?: WorkMode;
+  /** When true, destructive Craft operations skip per-action confirmation for this session. */
+  destructiveApproved?: boolean;
 }
 
 export interface Agent {
@@ -108,4 +115,25 @@ export interface DispatchTask {
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   createdAt: number;
   completedAt?: number;
+}
+
+/** File-based task output registered from write/edit tool events (Phase 2). */
+export type ArtifactKind = "code" | "doc" | "report" | "other";
+
+export interface ArtifactChange {
+  added: number;
+  removed: number;
+}
+
+export interface Artifact {
+  id: string;
+  taskId: string;
+  path: string;
+  kind: ArtifactKind;
+  /** Source tool call / message id. */
+  source: string;
+  change?: ArtifactChange;
+  status: "active" | "archived";
+  createdAt: number;
+  updatedAt: number;
 }

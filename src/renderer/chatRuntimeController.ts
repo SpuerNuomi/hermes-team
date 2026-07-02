@@ -1,4 +1,5 @@
 import { completeTaskWithAgentMessage, type OrchestrationState } from "../core/orchestrator";
+import { applyArtifactsFromToolEvents } from "../core/artifacts";
 import type { Agent, CapabilityBinding, MessageAttachment } from "../core/types";
 import {
   runHermesTaskStream,
@@ -197,12 +198,18 @@ export function detachParallelChatRunTasks(
 export async function executeTaskRuntimeStream(
   context: Extract<TaskRuntimeContext, { kind: "ready" }>,
   messages: OrchestrationState["messages"],
+  options?: {
+    workMode?: "ask" | "plan" | "craft";
+    allowDestructive?: boolean;
+  },
 ): Promise<RunHermesAgentOutput> {
   return runHermesTaskStream({
     task: context.task,
     agent: context.agent,
     binding: context.effectiveBinding,
     messages,
+    workMode: options?.workMode,
+    allowDestructive: options?.allowDestructive,
   });
 }
 
@@ -216,10 +223,12 @@ export function applyTaskStreamOutput(
   output: RunHermesAgentOutput,
   labels: ApplyTaskStreamOutputLabels,
   completedAt = Date.now(),
+  workDir?: string | null,
 ): OrchestrationState {
   const content = output.content;
   const streamMessageId = `stream-${taskId}`;
   const hasStreamMessage = state.messages.some((message) => message.id === streamMessageId);
+  let result: OrchestrationState;
 
   if (!hasStreamMessage) {
     const replayedState = (output.events ?? []).reduce(
@@ -227,16 +236,19 @@ export function applyTaskStreamOutput(
       state,
     );
     if (replayedState.messages.some((message) => message.id === streamMessageId)) {
-      return completeReplayedStreamMessage(replayedState, taskId, content, labels.generating, completedAt);
+      result = completeReplayedStreamMessage(replayedState, taskId, content, labels.generating, completedAt);
+    } else {
+      result = completeTaskWithAgentMessage({
+        state,
+        taskId,
+        content,
+      });
     }
-    return completeTaskWithAgentMessage({
-      state,
-      taskId,
-      content,
-    });
+  } else {
+    result = completeReplayedStreamMessage(state, taskId, content, labels.generating, completedAt);
   }
 
-  return completeReplayedStreamMessage(state, taskId, content, labels.generating, completedAt);
+  return applyArtifactsFromToolEvents(result, output.events ?? [], workDir);
 }
 
 function completeReplayedStreamMessage(

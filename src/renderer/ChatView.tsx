@@ -31,7 +31,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import type { Message, MessageAttachment } from "../core/types";
+import type { Message, MessageAttachment, WorkMode } from "../core/types";
 import type { ReasoningEffort } from "../core/reasoning";
 import { useTranslation } from "../i18n";
 import { filesFromClipboard } from "./attachmentProcessing";
@@ -44,6 +44,7 @@ import { ClarifyCard } from "./ClarifyCard";
 import { MessageRow, ToolCallGroup, TypingIndicator } from "./MessageRow";
 import { buildChatTranscript, copyTextToClipboard } from "./chatTranscript";
 import { WorktreePanel } from "./WorktreePanel";
+import { WorkModePicker } from "./WorkModePicker";
 import {
   readDirectory,
   type ActiveModelConfig,
@@ -259,6 +260,9 @@ export function ChatView({
   onRegenerateMessage,
   onBranchMessage,
   onAnswerClarify,
+  workMode,
+  workModeDisabled,
+  onWorkModeChange,
 }: {
   title: string;
   description: string;
@@ -309,6 +313,9 @@ export function ChatView({
   onRegenerateMessage: (messageId: string) => void;
   onBranchMessage: (messageId: string) => void;
   onAnswerClarify: (messageId: string, answer: string) => void;
+  workMode: WorkMode;
+  workModeDisabled?: boolean;
+  onWorkModeChange: (mode: WorkMode) => void;
 }) {
   const t = useTranslation();
   const canSend = draft.trim().length > 0 || draftAttachments.length > 0;
@@ -868,6 +875,15 @@ export function ChatView({
           </button>
         </div>
       </header>
+
+      <div className="task-header" aria-label={t("taskHeader.workModeLabel")}>
+        <span className="task-actor-chip">{t("taskHeader.actorSingleExpert")}</span>
+        <WorkModePicker
+          value={workMode}
+          disabled={workModeDisabled}
+          onChange={onWorkModeChange}
+        />
+      </div>
 
       <div className={`message-list ${visibleMessages.length === 0 ? "message-list-empty" : ""}`} aria-label={t("chatView.messageStream")}>
         {visibleMessages.length === 0 ? (

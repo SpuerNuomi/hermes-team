@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { OrchestrationState } from "../core/orchestrator";
 import type { ReasoningEffort } from "../core/reasoning";
 import type { Agent, CapabilityBinding, DispatchTask, Message, MessageAttachment } from "../core/types";
+import { normalizeWorkMode, workModeSystemPromptAddendum } from "../core/workMode";
 
 export interface RuntimeMessage {
   role: "user" | "assistant";
@@ -611,6 +612,8 @@ export interface RunHermesAgentInput {
   history: RuntimeMessage[];
   attachments: RuntimeAttachment[];
   contextFolder?: string;
+  workMode?: "ask" | "plan" | "craft";
+  allowDestructive?: boolean;
 }
 
 export interface RunHermesAgentOutput {
@@ -2000,6 +2003,31 @@ export async function readFile(path: string, maxBytes = 102_400): Promise<FileRe
   return invoke<FileReadResult>("read_file", { path, maxBytes });
 }
 
+export interface ArtifactChangeStats {
+  added: number;
+  removed: number;
+  isNew: boolean;
+}
+
+export async function artifactChangeStats(
+  path: string,
+  workDir?: string | null,
+): Promise<ArtifactChangeStats> {
+  ensureTauriRuntime();
+  return invoke<ArtifactChangeStats>("artifact_change_stats", {
+    path,
+    workDir: workDir ?? null,
+  });
+}
+
+export async function artifactFileDiff(path: string, workDir?: string | null): Promise<string> {
+  ensureTauriRuntime();
+  return invoke<string>("artifact_file_diff", {
+    path,
+    workDir: workDir ?? null,
+  });
+}
+
 export async function readImageFile(path: string): Promise<string> {
   ensureTauriRuntime();
   return invoke<string>("read_image_file", { path });
@@ -2016,6 +2044,8 @@ export async function runHermesTask(params: {
   binding?: CapabilityBinding;
   messages: Message[];
   baseUrl?: string;
+  workMode?: "ask" | "plan" | "craft";
+  allowDestructive?: boolean;
 }): Promise<string> {
   ensureTauriRuntime();
   const history: RuntimeMessage[] = params.messages
@@ -2033,11 +2063,13 @@ export async function runHermesTask(params: {
       profile: params.binding?.hermesProfile ?? "default",
       model: params.binding?.model,
       agentName: params.agent.name,
-      systemPrompt: buildSystemPrompt(params.agent, params.binding),
+      systemPrompt: buildSystemPrompt(params.agent, params.binding, params.workMode),
       instruction: buildInstructionWithAttachments(params.task.instruction, params.messages, params.task.triggerMessageId),
       history,
       attachments: attachmentsForTask(params.messages, params.task.triggerMessageId),
       contextFolder: params.binding?.workDir,
+      workMode: params.workMode,
+      allowDestructive: params.allowDestructive,
     } satisfies RunHermesAgentInput,
   });
 
@@ -2053,6 +2085,8 @@ export async function runHermesTaskStream(params: {
   binding?: CapabilityBinding;
   messages: Message[];
   baseUrl?: string;
+  workMode?: "ask" | "plan" | "craft";
+  allowDestructive?: boolean;
 }): Promise<RunHermesAgentOutput> {
   ensureTauriRuntime();
   const history = historyForMessages(params.messages);
@@ -2063,11 +2097,13 @@ export async function runHermesTaskStream(params: {
       profile: params.binding?.hermesProfile ?? "default",
       model: params.binding?.model,
       agentName: params.agent.name,
-      systemPrompt: buildSystemPrompt(params.agent, params.binding),
+      systemPrompt: buildSystemPrompt(params.agent, params.binding, params.workMode),
       instruction: buildInstructionWithAttachments(params.task.instruction, params.messages, params.task.triggerMessageId),
       history,
       attachments: attachmentsForTask(params.messages, params.task.triggerMessageId),
       contextFolder: params.binding?.workDir,
+      workMode: params.workMode,
+      allowDestructive: params.allowDestructive,
     } satisfies RunHermesAgentInput,
   });
 
@@ -2104,7 +2140,11 @@ function ensureTauriRuntime(): void {
   }
 }
 
-function buildSystemPrompt(agent: Agent, binding?: CapabilityBinding): string {
+function buildSystemPrompt(
+  agent: Agent,
+  binding?: CapabilityBinding,
+  workMode: "ask" | "plan" | "craft" = "ask",
+): string {
   const capabilityLines = binding
     ? [
         `Hermes Profile: ${binding.hermesProfile}`,
@@ -2122,6 +2162,8 @@ function buildSystemPrompt(agent: Agent, binding?: CapabilityBinding): string {
     "",
     "当前能力绑定：",
     ...capabilityLines,
+    "",
+    workModeSystemPromptAddendum(normalizeWorkMode(workMode)),
     "",
     "只回答你被分配的任务。不要伪造工具结果；如果需要工具但当前运行时未提供，请明确说明缺口。",
   ].join("\n");

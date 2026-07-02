@@ -5,6 +5,7 @@ export const seedWorkspace: Workspace = {
   name: "Hermes Chat",
   description: "与 Hermes 助手开始一次新的聊天。",
   mode: "smart",
+  workMode: "ask",
   defaultAgentId: "agent-hermes",
 };
 

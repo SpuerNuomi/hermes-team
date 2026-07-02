@@ -24,8 +24,9 @@ use tauri::AppHandle;
 
 use crate::{
     completion_suffix, emit_stream_event, enhanced_path, extract_run_usage, find_free_port,
-    find_hermes_command, format_tool_event_content, hermes_home, home_dir, is_task_cancelled,
-    parse_clarify_choices, tool_event_from_payload, trace_stream_event, RuntimeStreamEvent,
+    find_hermes_command, format_tool_event_content, hermes_home, home_dir, is_destructive_tool_call,
+    is_task_cancelled, normalize_work_mode, parse_clarify_choices, tool_allowed_for_work_mode,
+    tool_event_from_payload, trace_stream_event, RuntimeStreamEvent,
 };
 
 /// Outcome of a dashboard transport attempt.
@@ -621,6 +622,8 @@ pub(crate) fn stream_dashboard_chat(
     instruction: &str,
     conversation_history: &[Value],
     context_folder: Option<&str>,
+    work_mode: Option<&str>,
+    allow_destructive: bool,
 ) -> Result<DashboardOutcome, String> {
     let endpoint = match resolve_dashboard_endpoint(mode, base_url, auth, profile) {
         Ok(endpoint) => endpoint,
@@ -706,6 +709,8 @@ pub(crate) fn stream_dashboard_chat(
         &mut client,
         &mut full_content,
         &mut full_reasoning,
+        normalize_work_mode(work_mode),
+        allow_destructive,
     );
     match result {
         Ok(()) => {
@@ -799,6 +804,8 @@ fn drive_stream(
     client: &mut WsClient,
     full_content: &mut String,
     full_reasoning: &mut String,
+    work_mode: &'static str,
+    allow_destructive: bool,
 ) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(900);
     loop {
@@ -833,7 +840,15 @@ fn drive_stream(
                 continue;
             }
         }
-        if handle_dashboard_event(app, task_id, &notification, full_content, full_reasoning)? {
+        if handle_dashboard_event(
+            app,
+            task_id,
+            &notification,
+            full_content,
+            full_reasoning,
+            work_mode,
+            allow_destructive,
+        )? {
             return Ok(());
         }
     }
@@ -847,6 +862,8 @@ fn handle_dashboard_event(
     notification: &Notification,
     full_content: &mut String,
     full_reasoning: &mut String,
+    work_mode: &'static str,
+    allow_destructive: bool,
 ) -> Result<bool, String> {
     let payload = &notification.payload;
     trace_stream_event("dashboard-event", &notification.event_type);
@@ -986,6 +1003,45 @@ fn handle_dashboard_event(
                 let tool_event = tool_event_from_payload(other, payload, status);
                 if tool_event.name.eq_ignore_ascii_case("clarify") {
                     return Ok(false);
+                }
+                let is_startish = matches!(
+                    other,
+                    "tool.start" | "tool.started" | "tool.generating" | "tool.progress"
+                );
+                if is_startish {
+                    if !tool_allowed_for_work_mode(work_mode, &tool_event.name) {
+                        emit_stream_event(
+                            app,
+                            RuntimeStreamEvent {
+                                task_id: task_id.to_string(),
+                                kind: "error".to_string(),
+                                delta: String::new(),
+                                content: String::new(),
+                                message: format!(
+                                    "工作模式 {} 不允许使用工具 {}。请切换到「做一做 Craft」或改用只读请求。",
+                                    work_mode, tool_event.name
+                                ),
+                            },
+                        )?;
+                        return Ok(true);
+                    }
+                    if work_mode == "craft"
+                        && is_destructive_tool_call(&tool_event.name, &tool_event.preview)
+                        && !allow_destructive
+                    {
+                        emit_stream_event(
+                            app,
+                            RuntimeStreamEvent {
+                                task_id: task_id.to_string(),
+                                kind: "error".to_string(),
+                                delta: String::new(),
+                                content: String::new(),
+                                message: "破坏性操作需要先确认。请重新发送指令并在确认框中批准。"
+                                    .to_string(),
+                            },
+                        )?;
+                        return Ok(true);
+                    }
                 }
                 emit_stream_event(
                     app,

@@ -1319,6 +1319,8 @@ struct RunHermesAgentInput {
     history: Vec<RuntimeMessage>,
     attachments: Vec<RuntimeAttachment>,
     context_folder: Option<String>,
+    work_mode: Option<String>,
+    allow_destructive: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -5725,6 +5727,8 @@ async fn run_hermes_agent_stream(
                 runs_input,
                 &conversation_history,
                 input.context_folder.as_deref(),
+                input.work_mode.as_deref(),
+                input.allow_destructive.unwrap_or(false),
             ) {
                 Ok(dashboard::DashboardOutcome::Completed(content)) => {
                     emit_stream_event(
@@ -6227,6 +6231,179 @@ fn read_directory(path: String) -> Result<Vec<DirectoryEntryInfo>, String> {
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+#[derive(Serialize)]
+struct ArtifactChangeStats {
+    added: u32,
+    removed: u32,
+    is_new: bool,
+}
+
+fn expand_home_path(path: &str) -> PathBuf {
+    let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Ok(home) = home_dir() {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+fn resolve_artifact_path(path: &str, work_dir: Option<&str>) -> PathBuf {
+    let candidate = expand_home_path(path);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    if let Some(dir) = work_dir.map(str::trim).filter(|value| !value.is_empty()) {
+        return expand_home_path(dir).join(&candidate);
+    }
+    candidate
+}
+
+fn count_file_lines(path: &Path) -> Result<u32, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("读取文件 {} 失败：{error}", path.to_string_lossy()))?;
+    Ok(content.lines().count().max(1) as u32)
+}
+
+fn git_repo_root(work_dir: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(work_dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(root))
+    }
+}
+
+fn git_numstat(work_dir: &Path, file_path: &Path) -> Option<(u32, u32, bool)> {
+    let rel = file_path
+        .strip_prefix(work_dir)
+        .ok()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(work_dir)
+        .args(["diff", "--numstat", "--", rel.as_str()])
+        .output()
+        .ok()?;
+    if diff.status.success() {
+        let line = String::from_utf8_lossy(&diff.stdout).lines().next()?.trim().to_string();
+        if !line.is_empty() {
+            let mut parts = line.split_whitespace();
+            let added = parts.next()?.parse::<u32>().ok()?;
+            let removed = parts.next()?.parse::<u32>().ok()?;
+            return Some((added, removed, false));
+        }
+    }
+    let untracked = Command::new("git")
+        .arg("-C")
+        .arg(work_dir)
+        .args(["ls-files", "--others", "--exclude-standard", "--", rel.as_str()])
+        .output()
+        .ok()?;
+    if untracked.status.success()
+        && !String::from_utf8_lossy(&untracked.stdout).trim().is_empty()
+    {
+        return count_file_lines(file_path).ok().map(|lines| (lines, 0, true));
+    }
+    None
+}
+
+#[tauri::command]
+fn artifact_change_stats(path: String, work_dir: Option<String>) -> Result<ArtifactChangeStats, String> {
+    let file_path = resolve_artifact_path(&path, work_dir.as_deref());
+    if !file_path.exists() {
+        return Err(format!("文件不存在：{}", file_path.to_string_lossy()));
+    }
+    if let Some(work) = work_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(expand_home_path)
+    {
+        if let Some(root) = git_repo_root(&work) {
+            if let Some((added, removed, is_new)) = git_numstat(&root, &file_path) {
+                return Ok(ArtifactChangeStats {
+                    added,
+                    removed,
+                    is_new,
+                });
+            }
+        }
+    }
+    let added = count_file_lines(&file_path)?;
+    Ok(ArtifactChangeStats {
+        added,
+        removed: 0,
+        is_new: true,
+    })
+}
+
+#[tauri::command]
+fn artifact_file_diff(path: String, work_dir: Option<String>) -> Result<String, String> {
+    let file_path = resolve_artifact_path(&path, work_dir.as_deref());
+    if !file_path.exists() {
+        return Err(format!("文件不存在：{}", file_path.to_string_lossy()));
+    }
+    if let Some(work) = work_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(expand_home_path)
+    {
+        if let Some(root) = git_repo_root(&work) {
+            let rel = file_path
+                .strip_prefix(&root)
+                .ok()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| file_path.to_string_lossy().to_string());
+            let diff = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["diff", "--", rel.as_str()])
+                .output()
+                .map_err(|error| format!("执行 git diff 失败：{error}"))?;
+            if diff.status.success() {
+                let text = String::from_utf8_lossy(&diff.stdout).trim().to_string();
+                if !text.is_empty() {
+                    return Ok(text);
+                }
+            }
+            let untracked = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["ls-files", "--others", "--exclude-standard", "--", rel.as_str()])
+                .output()
+                .map_err(|error| format!("执行 git ls-files 失败：{error}"))?;
+            if untracked.status.success()
+                && !String::from_utf8_lossy(&untracked.stdout).trim().is_empty()
+            {
+                let content = fs::read_to_string(&file_path)
+                    .map_err(|error| format!("读取文件 {} 失败：{error}", file_path.to_string_lossy()))?;
+                let mut lines = vec![format!("--- /dev/null")];
+                lines.push(format!("+++ b/{}", rel));
+                lines.push("@@".to_string());
+                for line in content.lines() {
+                    lines.push(format!("+{line}"));
+                }
+                return Ok(lines.join("\n"));
+            }
+        }
+    }
+    let content = fs::read_to_string(&file_path)
+        .map_err(|error| format!("读取文件 {} 失败：{error}", file_path.to_string_lossy()))?;
+    Ok(content)
 }
 
 #[tauri::command]
@@ -8062,6 +8239,80 @@ fn stream_json_string(value: Option<&serde_json::Value>) -> Option<String> {
     Some(truncate(&item.to_string(), 2000))
 }
 
+pub(crate) fn normalize_work_mode(value: Option<&str>) -> &'static str {
+    match value.map(|s| s.trim().to_lowercase()).as_deref() {
+        Some("plan") => "plan",
+        Some("craft") => "craft",
+        _ => "ask",
+    }
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    name.trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+}
+
+fn tool_name_matches(name: &str, hints: &[&str]) -> bool {
+    hints.iter().any(|hint| name.contains(hint))
+}
+
+fn is_write_or_exec_tool(tool_name: &str) -> bool {
+    let name = normalize_tool_name(tool_name);
+    tool_name_matches(
+        &name,
+        &[
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "patch",
+            "create_file",
+            "delete_file",
+            "remove_file",
+            "move_file",
+            "rename",
+            "write",
+            "edit",
+            "delete",
+            "remove",
+            "terminal",
+            "run_command",
+            "execute",
+            "bash",
+            "shell",
+            "code_execution",
+            "browser",
+            "delegation",
+            "cronjob",
+        ],
+    )
+}
+
+pub(crate) fn tool_allowed_for_work_mode(work_mode: &str, tool_name: &str) -> bool {
+    if work_mode == "craft" {
+        return true;
+    }
+    !is_write_or_exec_tool(tool_name)
+}
+
+pub(crate) fn is_destructive_tool_call(tool_name: &str, preview: &str) -> bool {
+    let name = normalize_tool_name(tool_name);
+    let text = format!("{name} {preview}").to_ascii_lowercase();
+    if name.contains("delete") || name.contains("remove") || name.contains("unlink") {
+        return true;
+    }
+    if text.contains(" rm ")
+        || text.contains("unlink")
+        || text.contains("delete")
+        || text.contains("remove")
+        || text.contains("删掉")
+        || text.contains("删除")
+    {
+        return true;
+    }
+    false
+}
+
 fn format_tool_event_content(event: &ParsedToolEvent) -> String {
     let status = match event.status.as_str() {
         "completed" => "completed",
@@ -8147,6 +8398,8 @@ fn tool_event_title(name: &str, preview: &str) -> String {
     match name {
         "read_file" => format!("read: {detail}"),
         "write_file" => format!("write: {detail}"),
+        "edit_file" => format!("edit: {detail}"),
+        "apply_patch" => format!("patch: {detail}"),
         "patch" => format!("patch: {detail}"),
         "search_files" => format!("search: {detail}"),
         "skill_view" => format!("skill view ({detail})"),
@@ -14464,6 +14717,8 @@ pub fn run() {
             select_context_folder,
             stage_attachment_file,
             read_directory,
+            artifact_change_stats,
+            artifact_file_diff,
             read_file,
             read_image_file,
             open_file_in_editor,

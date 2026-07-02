@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   BrainCircuit,
   Building2,
-  CalendarClock,
   CheckCircle2,
   ChevronDown,
   CircleDot,
@@ -44,6 +43,13 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { classifyAssistantHandoff } from "../core/handoff";
+import {
+  applyArtifactsFromToolEvents,
+  archiveArtifact,
+  parseWriteToolEvent,
+  resolveArtifactPath,
+  updateArtifactChange,
+} from "../core/artifacts";
 import { parseMentions } from "../core/mention-parser";
 import {
   appendSystemMessage,
@@ -58,7 +64,8 @@ import { ParallelBatchTracker } from "../core/parallel-batch-tracker";
 import { SerialChainTracker } from "../core/serial-chain-tracker";
 import { seedAgents, seedBindings, seedMessages, seedWorkspace } from "../core/seed";
 import { useI18n, type Language } from "../i18n";
-import type { Message, MessageAttachment, SessionModelOverride, WorkspaceMode } from "../core/types";
+import type { Message, MessageAttachment, SessionModelOverride, WorkMode, WorkspaceMode } from "../core/types";
+import { looksDestructiveInstruction, normalizeWorkMode } from "../core/workMode";
 import {
   basename,
   configSeverityLabel,
@@ -130,9 +137,12 @@ import {
   planSendMessage,
   resolveTaskRuntimeContext,
   type ParallelChatRunSessionPlan,
+  type SendMessagePlan,
 } from "./chatRuntimeController";
 import { SLASH_COMMANDS } from "./chatInput/slashCommands";
 import { ChatView } from "./ChatView";
+import { ArtifactPanel } from "./ArtifactPanel";
+import { DestructiveConfirmModal } from "./DestructiveConfirmModal";
 import { DiscoverView, type DiscoverKind } from "./DiscoverView";
 import { KanbanView } from "./KanbanView";
 import { MultiAgentView } from "./MultiAgentView";
@@ -321,6 +331,7 @@ import {
   writeHermesMemoryContent,
   TAURI_UNAVAILABLE_MESSAGE,
   type ActiveModelConfig,
+  artifactChangeStats,
   type AppSettings,
   type AuxiliaryModelConfig,
   type BundledSkillInfo,
@@ -394,6 +405,11 @@ export function App() {
   const [draft, setDraft] = useState("");
   const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+  const [destructivePrompt, setDestructivePrompt] = useState<{
+    content: string;
+    attachments: MessageAttachment[];
+    background: boolean;
+  } | null>(null);
   const [worktreeVisible, setWorktreeVisible] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [labsExpanded, setLabsExpanded] = useState(false);
@@ -554,6 +570,8 @@ export function App() {
   const parallelTrackerRef = useRef(new ParallelBatchTracker());
   const serialTrackerRef = useRef(new SerialChainTracker());
   const streamEventHandlerRef = useRef<(event: RuntimeStreamEvent) => void>(() => undefined);
+  const pendingStreamEventsRef = useRef<Map<string, RuntimeStreamEvent>>(new Map());
+  const streamFlushFrameRef = useRef<number | null>(null);
   const restoreBackupInputRef = useRef<HTMLInputElement | null>(null);
 
   const agents = state.agents;
@@ -653,8 +671,82 @@ export function App() {
     };
   }
 
+  function streamEventKey(event: RuntimeStreamEvent): string {
+    return `${event.taskId}:${event.kind}:${event.message || ""}`;
+  }
+
+  function resolveSessionWorkDir(current: OrchestrationState): string | null {
+    const defaultAgentId = current.workspace.defaultAgentId ?? current.agents[0]?.id;
+    const binding =
+      current.bindings.find((item) => item.agentId === defaultAgentId) ?? current.bindings[0];
+    return binding?.workDir?.trim() || null;
+  }
+
+  function queueArtifactStatRefresh(
+    nextState: OrchestrationState,
+    events: RuntimeStreamEvent[],
+    workDir: string | null,
+  ) {
+    if (!isTauriRuntimeAvailable()) return;
+    for (const event of events) {
+      if (event.kind !== "tool") continue;
+      const parsed = parseWriteToolEvent(event.content);
+      if (!parsed || parsed.status !== "completed" || !parsed.pathHint) continue;
+      const path = resolveArtifactPath(parsed.pathHint, workDir);
+      const artifact = nextState.artifacts?.find(
+        (item) => item.taskId === event.taskId && item.path === path && item.status === "active",
+      );
+      if (!artifact) continue;
+      void artifactChangeStats(path, workDir)
+        .then((stats) => {
+          setState((current) =>
+            updateArtifactChange(current, artifact.id, { added: stats.added, removed: stats.removed }),
+          );
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  function flushPendingStreamEvents() {
+    if (streamFlushFrameRef.current != null) {
+      window.cancelAnimationFrame(streamFlushFrameRef.current);
+      streamFlushFrameRef.current = null;
+    }
+    const pending = pendingStreamEventsRef.current;
+    if (pending.size === 0) return;
+    const events = Array.from(pending.values());
+    pending.clear();
+    setState((current) => {
+      const workDir = resolveSessionWorkDir(current);
+      const next = applyArtifactsFromToolEvents(
+        events.reduce(
+          (acc, event) =>
+            applyStreamEventSnapshot(acc, event, {
+              generating: t("app.generating"),
+              unknownAgentName: t("app.unknownAgent"),
+              completeDoneTask: true,
+            }),
+          current,
+        ),
+        events,
+        workDir,
+      );
+      queueArtifactStatRefresh(next, events, workDir);
+      return next;
+    });
+  }
+
+  function scheduleStreamFlush() {
+    if (streamFlushFrameRef.current != null) return;
+    streamFlushFrameRef.current = window.requestAnimationFrame(() => {
+      streamFlushFrameRef.current = null;
+      flushPendingStreamEvents();
+    });
+  }
+
   function handleStreamEvent(event: RuntimeStreamEvent) {
     if (event.kind === "start") {
+      flushPendingStreamEvents();
       const runtimeEvent = streamRuntimeEvent(event, {
         started: t("app.stream.started"),
         failed: t("app.stream.failed"),
@@ -664,11 +756,13 @@ export function App() {
       return;
     }
     if (event.kind === "usage") {
+      flushPendingStreamEvents();
       const usage = parseTokenUsageEvent(event);
       if (usage) setTokenUsage(usage);
       return;
     }
     if (event.kind === "error") {
+      flushPendingStreamEvents();
       const message = event.message || t("app.stream.failed");
       const runtimeEvent = streamRuntimeEvent(event, {
         started: t("app.stream.started"),
@@ -687,6 +781,12 @@ export function App() {
       });
       return;
     }
+    if (event.kind === "delta" || event.kind === "reasoning" || event.kind === "tool") {
+      pendingStreamEventsRef.current.set(streamEventKey(event), event);
+      scheduleStreamFlush();
+      return;
+    }
+    flushPendingStreamEvents();
     setState((current) =>
       applyStreamEventSnapshot(current, event, {
         generating: t("app.generating"),
@@ -1678,6 +1778,11 @@ export function App() {
     return () => {
       disposed = true;
       unlisten?.();
+      if (streamFlushFrameRef.current != null) {
+        window.cancelAnimationFrame(streamFlushFrameRef.current);
+        streamFlushFrameRef.current = null;
+      }
+      pendingStreamEventsRef.current.clear();
     };
   }, []);
 
@@ -3572,6 +3677,55 @@ export function App() {
     };
   }, [activeView, chatRunContext.kind]);
 
+  const taskWorkMode = normalizeWorkMode(state.workspace.workMode);
+
+  const setTaskWorkMode = (mode: WorkMode) => {
+    setState((current) => ({
+      ...current,
+      workspace: { ...current.workspace, workMode: mode },
+    }));
+  };
+
+  const dispatchPlannedMessage = (
+    plan: Extract<SendMessagePlan, { kind: "dispatch" }>,
+    baseState = stateRef.current,
+  ) => {
+    parallelTrackerRef.current.markUserIntervention(baseState.workspace.id);
+    serialTrackerRef.current.markUserIntervention(baseState.workspace.id);
+    const result = handleUserMessage(baseState, plan.content, plan.attachments);
+    const latestDecision = result.state.logs[0]?.decision;
+    if (latestDecision?.type === "dispatch" && latestDecision.mode === "parallel") {
+      const mainState = detachAndLaunchParallelChatRuns(result.state, result.createdTaskIds);
+      setState(mainState ?? result.state);
+      setNotice(
+        mainState
+          ? t("app.notice.parallelChatRunsOpening", { count: result.createdTaskIds.length })
+          : plan.background
+            ? t("app.notice.backgroundStarted")
+            : result.notice,
+      );
+      setDraft("");
+      setDraftAttachments([]);
+      return;
+    }
+    setState(result.state);
+    setNotice(plan.background ? t("app.notice.backgroundStarted") : result.notice);
+    setDraft("");
+    setDraftAttachments([]);
+    if (latestDecision?.type === "dispatch" && latestDecision.mode === "serial" && result.createdTaskIds[0]) {
+      serialTrackerRef.current.start({
+        workspaceId: result.state.workspace.id,
+        triggerMessageId:
+          result.state.tasks.find((task) => task.id === result.createdTaskIds[0])?.triggerMessageId ??
+          result.state.messages.at(-1)?.id ??
+          "",
+        firstTaskId: result.createdTaskIds[0],
+        assignments: latestDecision.assignments,
+      });
+    }
+    scheduleDispatchedTasks(result.state, result.createdTaskIds);
+  };
+
   const sendMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? draft).trim();
     const plan = planSendMessage({
@@ -3623,41 +3777,46 @@ export function App() {
       setNotice(t("app.notice.messageQueued"));
       return;
     }
-    parallelTrackerRef.current.markUserIntervention(state.workspace.id);
-    serialTrackerRef.current.markUserIntervention(state.workspace.id);
-    const result = handleUserMessage(
-      state,
-      plan.content,
-      plan.attachments,
-    );
-    const latestDecision = result.state.logs[0]?.decision;
-    if (latestDecision?.type === "dispatch" && latestDecision.mode === "parallel") {
-      const mainState = detachAndLaunchParallelChatRuns(result.state, result.createdTaskIds);
-      setState(mainState ?? result.state);
-      setNotice(
-        mainState
-          ? t("app.notice.parallelChatRunsOpening", { count: result.createdTaskIds.length })
-          : plan.background
-            ? t("app.notice.backgroundStarted")
-            : result.notice,
-      );
+    const currentState = stateRef.current;
+    const workMode = normalizeWorkMode(currentState.workspace.workMode);
+    if (
+      workMode === "craft" &&
+      !currentState.workspace.destructiveApproved &&
+      looksDestructiveInstruction(plan.content)
+    ) {
+      setDestructivePrompt({
+        content: plan.content,
+        attachments: plan.attachments,
+        background: plan.background,
+      });
       setDraft("");
       setDraftAttachments([]);
       return;
     }
-    setState(result.state);
-    setNotice(plan.background ? t("app.notice.backgroundStarted") : result.notice);
-    setDraft("");
-    setDraftAttachments([]);
-    if (latestDecision?.type === "dispatch" && latestDecision.mode === "serial" && result.createdTaskIds[0]) {
-      serialTrackerRef.current.start({
-        workspaceId: result.state.workspace.id,
-        triggerMessageId: result.state.tasks.find((task) => task.id === result.createdTaskIds[0])?.triggerMessageId ?? result.state.messages.at(-1)?.id ?? "",
-        firstTaskId: result.createdTaskIds[0],
-        assignments: latestDecision.assignments,
-      });
+    dispatchPlannedMessage(plan);
+  };
+
+  const confirmDestructiveSend = (rememberForTask: boolean) => {
+    if (!destructivePrompt) return;
+    const prompt = destructivePrompt;
+    setDestructivePrompt(null);
+    let baseState = stateRef.current;
+    if (rememberForTask) {
+      baseState = {
+        ...baseState,
+        workspace: { ...baseState.workspace, destructiveApproved: true },
+      };
+      setState(baseState);
     }
-    scheduleDispatchedTasks(result.state, result.createdTaskIds);
+    dispatchPlannedMessage(
+      {
+        kind: "dispatch",
+        content: prompt.content,
+        attachments: prompt.attachments,
+        background: prompt.background,
+      },
+      baseState,
+    );
   };
 
   const regenerateFromMessage = (messageId: string) => {
@@ -3702,6 +3861,7 @@ export function App() {
       messages: branchedMessages,
       tasks: [],
       logs: [],
+      artifacts: [],
     };
     parallelTrackerRef.current.clear(state.workspace.id);
     serialTrackerRef.current.clear(state.workspace.id);
@@ -3795,7 +3955,10 @@ export function App() {
           throw new Error(t("app.notice.gatewayNotReady"));
         }
       }
-      const output = await executeTaskRuntimeStream(runtimeContext, baseState.messages);
+      const output = await executeTaskRuntimeStream(runtimeContext, baseState.messages, {
+        workMode: normalizeWorkMode(baseState.workspace.workMode),
+        allowDestructive: baseState.workspace.destructiveApproved === true,
+      });
       if (cancelledTaskIdsRef.current.has(taskId)) {
         addRuntimeEvent({
           taskId,
@@ -3805,9 +3968,22 @@ export function App() {
         });
         return;
       }
-      setState((current) =>
-        applyTaskStreamOutput(current, taskId, output, { generating: t("app.generating") }),
-      );
+      const workDir =
+        runtimeContext.effectiveBinding?.workDir?.trim() ||
+        runtimeContext.binding?.workDir?.trim() ||
+        null;
+      setState((current) => {
+        const next = applyTaskStreamOutput(
+          current,
+          taskId,
+          output,
+          { generating: t("app.generating") },
+          Date.now(),
+          workDir,
+        );
+        queueArtifactStatRefresh(next, output.events ?? [], workDir);
+        return next;
+      });
       addRuntimeEvent({
         taskId,
         label: "completed",
@@ -3940,6 +4116,7 @@ export function App() {
     : { kind: "none" as const, targetNames: [] };
   const scratchSession = isScratchSession(state);
   const showInspector = false;
+  const showArtifactPanel = activeView === "team";
   const chatTitle = scratchSession ? t("chat.newChatTitle") : "Hermes Chat";
   const chatDescription = scratchSession
     ? t("chat.newChatDescription")
@@ -3988,7 +4165,9 @@ export function App() {
 
   return (
     <main
-      className={`app-shell ${activeView !== "team" || !showInspector ? "app-shell-utility" : ""} ${
+      className={`app-shell ${
+        activeView !== "team" || (!showInspector && !showArtifactPanel) ? "app-shell-utility" : ""
+      } ${showArtifactPanel ? "app-shell-artifacts" : ""} ${
         sidebarCollapsed ? "app-shell-collapsed" : ""
       }`.trim()}
     >
@@ -4032,11 +4211,11 @@ export function App() {
               }`}
               type="button"
               onClick={() => setActiveView("team")}
-              title={t("nav.chat")}
-              aria-label={t("nav.chat")}
+              title={t("nav.tasks")}
+              aria-label={t("nav.tasks")}
             >
               <MessageSquareText size={18} />
-              <span>{t("nav.chat")}</span>
+              <span>{t("nav.tasks")}</span>
             </button>
             <button
               className={`workspace-item ${activeView === "discover" ? "active" : ""}`}
@@ -4051,28 +4230,6 @@ export function App() {
             >
               <Compass size={18} />
               <span>{t("nav.discover")}</span>
-            </button>
-          </div>
-
-          <div className="nav-group">
-            <p className="nav-group-label">{t("nav.groupAutomation")}</p>
-            <button
-              className={`workspace-item ${
-                activeView === "settings" && activeSettingsPanel === "schedules" ? "active" : ""
-              }`}
-              type="button"
-              onClick={() => {
-                setActiveView("settings");
-                setActiveSettingsPanel("schedules");
-                void refreshInstallStatus();
-                void refreshCronJobs();
-                void refreshCronScripts();
-              }}
-              title={t("nav.schedules")}
-              aria-label={t("nav.schedules")}
-            >
-              <CalendarClock size={18} />
-              <span>{t("nav.schedules")}</span>
             </button>
           </div>
 
@@ -4092,7 +4249,7 @@ export function App() {
                     aria-expanded={showLabsItems}
                   >
                     <FlaskConical size={13} />
-                    <span>{t("nav.groupLabs")}</span>
+                    <span>{t("nav.groupObservation")}</span>
                     <ChevronDown
                       size={14}
                       className={`nav-group-chevron ${showLabsItems ? "open" : ""}`}
@@ -7023,7 +7180,17 @@ export function App() {
           onRegenerateMessage={regenerateFromMessage}
           onBranchMessage={branchFromMessage}
           onAnswerClarify={answerClarify}
+          workMode={taskWorkMode}
+          workModeDisabled={Boolean(activeTask)}
+          onWorkModeChange={setTaskWorkMode}
         />
+        {destructivePrompt && (
+          <DestructiveConfirmModal
+            preview={destructivePrompt.content}
+            onCancel={() => setDestructivePrompt(null)}
+            onConfirm={confirmDestructiveSend}
+          />
+        )}
         {webPreviewUrl && (
           <WebPreviewPanel
             url={webPreviewUrl}
@@ -7041,6 +7208,16 @@ export function App() {
           </>
         )}
       </section>
+
+      {showArtifactPanel && (
+        <ArtifactPanel
+          artifacts={state.artifacts ?? []}
+          workDir={chatBinding?.workDir ?? null}
+          onArchive={(artifactId) => {
+            setState((current) => archiveArtifact(current, artifactId));
+          }}
+        />
+      )}
 
       {activeView === "team" && showInspector && (
       <aside className="inspector">
